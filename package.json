@@ -1,0 +1,26 @@
+{
+  "name": "requests",
+  "version": "0.1.0",
+  "description": "A shared email inbox for communities — nothing falls through the cracks.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "@libsql/client": "^0.14.0",
+    "@vercel/blob": "2.6.1",
+    "hono": "^4.6.16",
+    "mailparser": "^3.7.2"
+  },
+  "devDependencies": {
+    "@types/mailparser": "^3.4.5",
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}
