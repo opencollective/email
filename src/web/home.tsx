@@ -244,6 +244,7 @@ if (hero) {
 }
 document.getElementById('claim-btn').addEventListener('click', () => { wl.value = slug(hero.value); });
 if (wl) wl.addEventListener('blur', () => { wl.value = slug(wl.value); });
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 `
 
 export const HomePage: FC<{ joined?: boolean; currency?: 'USD' | 'EUR' }> = ({ joined, currency = 'USD' }) => {
@@ -257,7 +258,9 @@ export const HomePage: FC<{ joined?: boolean; currency?: 'USD' | 'EUR' }> = ({ j
         <meta name="theme-color" content="#10141d" media="(prefers-color-scheme: dark)" />
         <title>collective.email — an email address for your collective</title>
         <meta name="description" content="Share one inbox within your group, assign any conversation to any member, and have the internal conversation right next to the email. yourcollective@collective.email" />
-        <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>✉️</text></svg>" />
+        <link rel="icon" href="/static/icon-192.png" type="image/png" />
+        <link rel="manifest" href="/manifest.webmanifest" />
+        <link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
         <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" />
         <style dangerouslySetInnerHTML={{ __html: CSS }} />

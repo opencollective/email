@@ -22,6 +22,11 @@ document.addEventListener('click', (e) => {
       setTimeout(() => { copy.textContent = old; }, 1500);
     });
   }
+  if (e.target.closest('[data-drawer]')) document.body.classList.toggle('drawer-open');
+  const dlgBtn = e.target.closest('[data-dialog]');
+  if (dlgBtn) document.querySelector(dlgBtn.getAttribute('data-dialog'))?.showModal();
+  const closeBtn = e.target.closest('[data-close]');
+  if (closeBtn) closeBtn.closest('dialog')?.close();
 });
 const code = document.querySelector('input[name=code]');
 if (code) { code.focus(); code.addEventListener('input', () => { if (code.value.trim().length === 6) code.form.submit(); }); }
@@ -32,6 +37,7 @@ document.querySelectorAll('.file-input').forEach((inp) => {
     label.firstChild.textContent = n ? '📎 ' + n + ' file' + (n > 1 ? 's' : '') + ' ' : '📎 Attach';
   });
 });
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 `
 
 export const Avatar: FC<{ member?: Member | null; empty?: boolean }> = ({ member, empty }) => {
@@ -101,7 +107,12 @@ export const Page: FC<{ title?: string; flash?: string; children?: Child }> = (p
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
       <link rel="stylesheet" href="/static/style.css" />
-      <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>✉️</text></svg>" />
+      <link rel="manifest" href="/manifest.webmanifest" />
+      <link rel="icon" href="/static/icon-192.png" type="image/png" />
+      <link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
+      <meta name="mobile-web-app-capable" content="yes" />
+      <meta name="apple-mobile-web-app-capable" content="yes" />
+      <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     </head>
     <body>
       {props.flash ? <div class="flash">{props.flash}</div> : null}
@@ -122,6 +133,15 @@ export const AuthCard: FC<{ title?: string; flash?: string; children?: Child }> 
   </Page>
 )
 
+const Menu: FC<{ base: string; active: string; isAdmin: boolean }> = ({ base, active, isAdmin }) => (
+  <nav class="nav">
+    <a class={`nav-item ${active === 'inbox' ? 'active' : ''}`} href={base}>📥 Inbox</a>
+    <a class={`nav-item ${active === 'members' ? 'active' : ''}`} href={`${base}/members`}>☺ Members</a>
+    <a class={`nav-item ${active === 'notifications' ? 'active' : ''}`} href={`${base}/notifications`}>🔔 Notifications</a>
+    {isAdmin ? <a class={`nav-item ${active === 'billing' ? 'active' : ''}`} href={`${base}/billing`}>💳 Billing</a> : null}
+  </nav>
+)
+
 export const Shell: FC<{
   member: Member
   collective: Collective
@@ -131,30 +151,62 @@ export const Shell: FC<{
   sidebar?: Child
   children?: Child
 }> = (props) => {
-  const base = `/c/${props.collective.slug}`
+  const base = `/inbox/${props.collective.slug}`
+  const addr = `${props.collective.slug}@${cfg.emailDomain}`
+  const isAdmin = props.member.role === 'admin'
+  const userBlock = (
+    <div class="me">
+      <Avatar member={props.member} />
+      <span class="me-id">
+        {props.member.name || props.member.email.split('@')[0]}
+        <small>{props.member.email}</small>
+      </span>
+      <form method="post" action="/logout"><button class="linkish" type="submit">Sign out</button></form>
+    </div>
+  )
   return (
     <Page title={props.title ? `${props.title} · ${props.collective.name}` : props.collective.name} flash={props.flash}>
       <div class="app">
+        {/* desktop sidebar */}
         <aside class="side">
-          <div class="org">
+          <a class="org" href={base}>
             <span class="mark">{initials(props.collective.name)}</span>
             <div>
               <span class="org-name">{props.collective.name}</span>
-              <small>{props.collective.slug}@{cfg.emailDomain}</small>
+              <small>{addr}</small>
             </div>
-          </div>
+          </a>
           {props.sidebar}
-          <div class="side-foot">
-            <a class={`nav-item ${props.active === 'collective' ? 'active' : ''}`} href={`${base}/collective`}>
-              ☺ Collective
-            </a>
-            <div class="me">
-              <Avatar member={props.member} />
-              <span>{props.member.name || props.member.email.split('@')[0]}</span>
-              <form method="post" action="/logout"><button class="linkish" type="submit">Sign out</button></form>
-            </div>
-          </div>
+          <div class="label">Menu</div>
+          <Menu base={base} active={props.active} isAdmin={isAdmin} />
+          <div class="side-foot">{userBlock}</div>
         </aside>
+
+        {/* mobile header: hamburger + address, then swipeable page nav */}
+        <div class="m-head">
+          <div class="m-row">
+            <button class="hamburger" data-drawer type="button" aria-label="Menu">☰</button>
+            <a class="m-addr" href={base}>{addr}</a>
+          </div>
+          {props.sidebar ? <div class="m-pills">{props.sidebar}</div> : null}
+        </div>
+
+        {/* drawer (mobile menu) */}
+        <div class="drawer" aria-hidden="true">
+          <div class="drawer-backdrop" data-drawer />
+          <div class="drawer-panel">
+            <div class="org">
+              <span class="mark">{initials(props.collective.name)}</span>
+              <div>
+                <span class="org-name">{props.collective.name}</span>
+                <small>{addr}</small>
+              </div>
+            </div>
+            <Menu base={base} active={props.active} isAdmin={isAdmin} />
+            <div class="drawer-foot">{userBlock}</div>
+          </div>
+        </div>
+
         <main class="main">{props.children}</main>
       </div>
     </Page>

@@ -171,8 +171,49 @@ small { color: var(--muted); }
 }
 .side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 8px; padding-top: 16px; }
 .me { display: flex; align-items: center; gap: 8px; font-size: 13.5px; padding: 0 10px; }
+.me-id { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
+.me-id small { font-family: var(--mono); font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
 .me form { margin-left: auto; }
 .main { min-width: 0; }
+a.org { text-decoration: none; }
+
+/* ---------- mobile header + drawer ---------- */
+.m-head { display: none; }
+.hamburger {
+  background: none; border: 1.5px solid var(--line); border-radius: 8px;
+  font-size: 18px; line-height: 1; color: var(--ink); padding: 7px 11px; cursor: pointer;
+}
+.m-addr {
+  font-family: var(--mono); font-size: 14px; font-weight: 700; color: var(--ink);
+  text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.drawer { display: none; }
+body.drawer-open .drawer { display: block; position: fixed; inset: 0; z-index: 60; }
+body.drawer-open { overflow: hidden; }
+.drawer-backdrop { position: absolute; inset: 0; background: rgba(10, 12, 16, 0.45); }
+.drawer-panel {
+  position: absolute; top: 0; left: 0; bottom: 0; width: min(300px, 84vw);
+  background: var(--card); border-right: 1.5px solid var(--line);
+  padding: 18px 14px calc(18px + env(safe-area-inset-bottom));
+  display: flex; flex-direction: column; gap: 6px; overflow-y: auto;
+}
+.drawer-panel .nav { flex-direction: column; }
+.drawer-panel .nav-item { border-radius: 8px; padding: 11px 12px; font-size: 15px; }
+.drawer-foot { margin-top: auto; border-top: 1.5px solid var(--line-soft); padding-top: 14px; }
+
+/* sort modal */
+.icon-btn {
+  background: var(--fill); border: 1.5px solid var(--line-soft); border-radius: 7px;
+  font-size: 16px; color: var(--ink); padding: 6px 12px; cursor: pointer;
+}
+.modal {
+  border: 1.5px solid var(--line); border-radius: 14px; background: var(--card); color: var(--ink);
+  padding: 20px; max-width: 380px; width: calc(100vw - 40px); box-shadow: var(--shadow);
+  margin: auto;
+}
+.modal::backdrop { background: rgba(10, 12, 16, 0.45); }
+.modal h2 { margin-bottom: 12px; }
+.modal-form { display: grid; gap: 8px; }
 
 .avatar {
   width: 26px; height: 26px; border-radius: 50%; flex: none;
@@ -354,29 +395,29 @@ small { color: var(--muted); }
   .btn, .nav-item, .tab { min-height: 42px; }
 
   .app { display: block; }
-  .side {
-    position: sticky; top: 0; z-index: 20; height: auto; overflow: visible;
-    display: grid; grid-template-columns: 1fr auto; align-items: center;
-    gap: 6px; padding: 10px 12px 8px;
-    border-right: none; border-bottom: 1.5px solid var(--line-soft);
+  .side { display: none; }
+
+  /* line 1: hamburger + collective address · line 2: swipeable page nav */
+  .m-head {
+    display: block; position: sticky; top: 0; z-index: 20;
+    background: var(--paper); border-bottom: 1.5px solid var(--line-soft);
+    padding: 10px 12px 8px;
   }
-  .org { padding: 0; }
-  .org small { display: none; }
-  .nav {
-    grid-column: 1 / -1; flex-direction: row; overflow-x: auto; gap: 6px;
+  .m-row { display: flex; align-items: center; gap: 12px; }
+  .m-pills { margin-top: 8px; }
+  .m-pills .nav {
+    flex-direction: row; overflow-x: auto; gap: 6px;
     padding-bottom: 2px; scrollbar-width: none;
   }
-  .nav::-webkit-scrollbar { display: none; }
-  .nav-item { white-space: nowrap; flex: none; padding: 6px 12px; min-height: 0; border: 1.5px solid var(--line-soft); border-radius: 999px; }
-  .nav-item.active { border-radius: 999px; }
-  .label { display: none; }
-  .side-foot { margin: 0; padding: 0; flex-direction: row; align-items: center; gap: 6px; }
-  .side-foot .nav-item { border-radius: 999px; }
-  .me span { display: none; }
-  .me { padding: 0; }
+  .m-pills .nav::-webkit-scrollbar { display: none; }
+  .m-pills .nav-item {
+    white-space: nowrap; flex: none; padding: 6px 12px; min-height: 0;
+    border: 1.5px solid var(--line-soft); border-radius: 999px;
+  }
+  .m-pills .label { display: none; }
 
-  .topbar { flex-wrap: wrap; gap: 8px; padding: 10px 14px; position: static; }
-  .search-form { max-width: none; flex: 1 1 100%; order: 2; }
+  .topbar { gap: 8px; padding: 10px 14px; position: static; }
+  .search-form { max-width: none; flex: 1; }
 
   /* inbox rows: two lines — sender + waiting time, then subject + assignee */
   .row {

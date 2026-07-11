@@ -7,6 +7,8 @@ import { app } from './app.js'
 // Local/Docker entry point. On Vercel, api/index.js serves the app instead
 // (static files come from public/, digests from the cron hitting /cron/digest).
 app.use('/static/*', serveStatic({ root: './public' }))
+app.use('/sw.js', serveStatic({ root: './public' }))
+app.use('/manifest.webmanifest', serveStatic({ root: './public' }))
 
 serve({ fetch: app.fetch, port: cfg.port }, (info) => {
   console.log(`[web] collective.email listening on :${info.port} (${cfg.baseUrl}, addresses @${cfg.emailDomain})`)

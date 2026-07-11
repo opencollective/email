@@ -6,8 +6,8 @@ import {
 import { sendAppEmail } from './appmail.js'
 import { escapeHtml, excerpt, fmtDateTime, replyAddress, signToken, waitingFor } from './util.js'
 
-const threadUrl = (c: Collective, id: number) => `${cfg.baseUrl}/c/${c.slug}/thread/${id}`
-const inboxUrl = (c: Collective) => `${cfg.baseUrl}/c/${c.slug}/inbox`
+const threadUrl = (c: Collective, id: number) => `${cfg.baseUrl}/inbox/${c.slug}/thread/${id}`
+const inboxUrl = (c: Collective) => `${cfg.baseUrl}/inbox/${c.slug}`
 
 /** One-click action link: `actor` (the recipient) assigns `target` to the thread. */
 function assignUrl(threadId: number, targetId: number, actorId: number, thenReply = false): string {

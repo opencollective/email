@@ -62,13 +62,24 @@ app.use('*', async (c, next) => {
   await next()
 })
 
-/** Resolve the collective from :slug and the signed-in member within it.
+/** The :addr URL segment is the collective's address — `commonshub` or
+ *  `commonshub@collective.email` (the domain part is optional). */
+function slugFromAddr(c: Context<Env>): string | null {
+  const raw = decodeURIComponent(c.req.param('addr') || '').toLowerCase().trim()
+  if (!raw) return null
+  const at = raw.indexOf('@')
+  if (at === -1) return raw
+  return raw.slice(at + 1) === cfg.emailDomain ? raw.slice(0, at) : null
+}
+
+/** Resolve the collective from :addr and the signed-in member within it.
  *  Returns a Response when access fails: login redirect (preserving the
  *  destination) or an explicit "wrong account" page — never a silent bounce. */
 async function tenant(c: Context<Env>): Promise<{ collective: Collective; member: Member } | Response> {
   const email = c.get('email')
   if (!email) return c.redirect('/login?next=' + encodeURIComponent(c.req.path))
-  const collective = await getCollectiveBySlug(c.req.param('slug') || '')
+  const slug = slugFromAddr(c)
+  const collective = slug ? await getCollectiveBySlug(slug) : undefined
   if (!collective || collective.status !== 'active') return c.notFound()
   const member = await getMemberIn(collective.id, email)
   if (!member || member.removed_at) {
@@ -84,7 +95,7 @@ async function tenant(c: Context<Env>): Promise<{ collective: Collective; member
           <button class="btn" type="submit">Sign out & use another email</button>
         </form>
         {isPlatformAdmin(email) ? (
-          <form method="post" action={`/c/${collective.slug}/join-admin`}>
+          <form method="post" action={`/inbox/${collective.slug}/join-admin`}>
             <button class="btn ghost" type="submit">Add {email} as admin of this collective</button>
           </form>
         ) : (
@@ -114,7 +125,7 @@ app.get('/', async (c) => {
   const email = c.get('email')
   if (!email) return c.html(<HomePage joined={c.req.query('joined') === '1'} currency={visitorCurrency(c)} />)
   const memberships = await membershipsByEmail(email)
-  if (memberships.length === 1) return c.redirect(`/c/${memberships[0].collective_slug}/inbox`)
+  if (memberships.length === 1) return c.redirect(`/inbox/${memberships[0].collective_slug}`)
   if (memberships.length === 0 && isPlatformAdmin(email)) return c.redirect('/admin')
   return c.html(
     <AuthCard title="Your collectives" flash={c.req.query('m')}>
@@ -127,7 +138,7 @@ app.get('/', async (c) => {
       ) : (
         <div class="chooser">
           {memberships.map((m) => (
-            <a class="chooser-item" href={`/c/${m.collective_slug}/inbox`}>
+            <a class="chooser-item" href={`/inbox/${m.collective_slug}`}>
               <b>{m.collective_name}</b>
               <small>{m.collective_slug}@{cfg.emailDomain}</small>
             </a>
@@ -235,7 +246,7 @@ app.post('/verify', async (c) => {
         await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
           [collective.id, email, res.row.join_name || email.split('@')[0], 'member', res.row.join_level || 'every', now()])
       }
-      redirect = `/c/${collective.slug}/inbox?m=` + encodeURIComponent(`Welcome to ${collective.name}!`)
+      redirect = `/inbox/${collective.slug}?m=` + encodeURIComponent(`Welcome to ${collective.name}!`)
     }
   }
 
@@ -330,12 +341,12 @@ app.get('/a/:token', async (c) => {
   const collective = thread ? await getCollective(thread.collective_id) : undefined
   if (!thread || !collective || !target || target.removed_at) return c.redirect('/')
   await setAssignee(thread, target.id, actor?.id ?? null, 'one_click')
-  if (c.get('email')) return c.redirect(`/c/${collective.slug}/thread/${thread.id}${payload.r ? '#composer' : ''}`)
+  if (c.get('email')) return c.redirect(`/inbox/${collective.slug}/thread/${thread.id}${payload.r ? '#composer' : ''}`)
   return c.html(
     <AuthCard title="Assigned">
       <h1>✓ Assigned to {memberName(target)}</h1>
       <p class="muted">“{thread.subject}” is now {target.id === actor?.id ? 'yours' : `with ${memberName(target)}`}.</p>
-      <a class="btn" href={`/c/${collective.slug}/thread/${thread.id}`}>Sign in to open the thread</a>
+      <a class="btn" href={`/inbox/${collective.slug}/thread/${thread.id}`}>Sign in to open the thread</a>
     </AuthCard>,
   )
 })
@@ -460,11 +471,11 @@ function filterArgs(key: string, memberId: number): (string | number)[] {
   return key === 'mine' ? [memberId] : []
 }
 
-app.get('/c/:slug/inbox', async (c) => {
+app.get('/inbox/:addr', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
   const { collective, member } = t
-  const base = `/c/${collective.slug}`
+  const base = `/inbox/${collective.slug}`
   const f = FILTERS[c.req.query('f') || 'needs_reply'] ? (c.req.query('f') || 'needs_reply') : 'needs_reply'
   const tag = c.req.query('tag') || ''
   const q = (c.req.query('q') || '').trim()
@@ -479,7 +490,9 @@ app.get('/c/:slug/inbox', async (c) => {
     where += ' AND (t.subject LIKE ? OR t.counterpart_email LIKE ? OR t.counterpart_name LIKE ?)'
     args.push(`%${q}%`, `%${q}%`, `%${q}%`)
   }
-  const order = f === 'needs_reply' ? 't.last_message_at ASC' : 't.last_message_at DESC'
+  const sortQ = c.req.query('sort')
+  const sort = sortQ === 'newest' || sortQ === 'oldest' ? sortQ : f === 'needs_reply' ? 'oldest' : 'newest'
+  const order = sort === 'oldest' ? 't.last_message_at ASC' : 't.last_message_at DESC'
   const threads = await all<Thread>(`SELECT t.* FROM threads t WHERE ${where} ORDER BY ${order} LIMIT 200`, args)
 
   const counts: Record<string, number> = {}
@@ -507,13 +520,13 @@ app.get('/c/:slug/inbox', async (c) => {
   const sidebar = (
     <nav class="nav">
       {Object.entries(FILTERS).filter(([k]) => k !== 'spam' || counts.spam > 0).map(([key, def]) => (
-        <a class={`nav-item ${f === key && !tag ? 'active' : ''}`} href={`${base}/inbox?f=${key}`}>
+        <a class={`nav-item ${f === key && !tag ? 'active' : ''}`} href={`${base}?f=${key}`}>
           {def.label} <span class="count">{counts[key]}</span>
         </a>
       ))}
       {tagRows.length > 0 ? <div class="label">Tags</div> : null}
       {tagRows.map((tr) => (
-        <a class={`nav-item ${tag === tr.name ? 'active' : ''}`} href={`${base}/inbox?f=all&tag=${encodeURIComponent(tr.name)}`}>
+        <a class={`nav-item ${tag === tr.name ? 'active' : ''}`} href={`${base}?f=all&tag=${encodeURIComponent(tr.name)}`}>
           # {tr.name} <span class="count">{tr.n}</span>
         </a>
       ))}
@@ -523,12 +536,34 @@ app.get('/c/:slug/inbox', async (c) => {
   return c.html(
     <Shell member={member} collective={collective} active="inbox" flash={c.req.query('m')} sidebar={sidebar}>
       <div class="topbar">
-        <form method="get" action={`${base}/inbox`} class="search-form">
+        <form method="get" action={base} class="search-form">
           <input type="hidden" name="f" value={f} />
+          {tag ? <input type="hidden" name="tag" value={tag} /> : null}
+          <input type="hidden" name="sort" value={sort} />
           <input class="search" name="q" value={q} placeholder="Search threads, senders…" />
         </form>
-        <span class="topbar-title">{tag ? `# ${tag}` : FILTERS[f].label}{f === 'needs_reply' && !tag ? ' · oldest first' : ''}</span>
+        <button class="icon-btn" type="button" data-dialog="#sort-modal" aria-label="Sorting options" title="Sorting">⇅</button>
       </div>
+      <dialog id="sort-modal" class="modal">
+        <h2>Sort threads</h2>
+        <form method="get" action={base} class="modal-form">
+          <input type="hidden" name="f" value={f} />
+          {tag ? <input type="hidden" name="tag" value={tag} /> : null}
+          {q ? <input type="hidden" name="q" value={q} /> : null}
+          <label class="level-card">
+            <input type="radio" name="sort" value="oldest" checked={sort === 'oldest'} />
+            <span><b>Oldest first</b><small>Longest-waiting conversations on top.</small></span>
+          </label>
+          <label class="level-card">
+            <input type="radio" name="sort" value="newest" checked={sort === 'newest'} />
+            <span><b>Newest first</b><small>Latest activity on top.</small></span>
+          </label>
+          <div class="btn-row">
+            <button class="btn small" type="submit">Apply</button>
+            <button class="btn small ghost" type="button" data-close>Cancel</button>
+          </div>
+        </form>
+      </dialog>
       <div class="rows">
         {threads.length === 0 ? (
           <div class="empty">
@@ -578,11 +613,11 @@ async function threadOf(c: Context<Env>, t: { collective: Collective }): Promise
   return thread && thread.collective_id === t.collective.id ? thread : undefined
 }
 
-app.get('/c/:slug/thread/:id', async (c) => {
+app.get('/inbox/:addr/thread/:id', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
   const { collective, member } = t
-  const base = `/c/${collective.slug}`
+  const base = `/inbox/${collective.slug}`
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
 
@@ -621,7 +656,7 @@ app.get('/c/:slug/thread/:id', async (c) => {
 
   return c.html(
     <Shell member={member} collective={collective} active="inbox" flash={c.req.query('m')} sidebar={
-      <nav class="nav"><a class="nav-item" href={`${base}/inbox`}>← Back to inbox</a></nav>
+      <nav class="nav"><a class="nav-item" href={`${base}`}>← Back to inbox</a></nav>
     }>
       <div class="thread-wrap">
         <div class="thread-main">
@@ -785,12 +820,12 @@ app.get('/c/:slug/thread/:id', async (c) => {
 
 const MAX_UPLOAD = 15 * 1024 * 1024 // total, per reply
 
-app.post('/c/:slug/thread/:id/reply', async (c) => {
+app.post('/inbox/:addr/thread/:id/reply', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
-  const base = `/c/${t.collective.slug}`
+  const base = `/inbox/${t.collective.slug}`
   const body = await c.req.parseBody({ all: true })
   try {
     const raw = body['files']
@@ -811,7 +846,7 @@ app.post('/c/:slug/thread/:id/reply', async (c) => {
   }
 })
 
-app.post('/c/:slug/thread/:id/note', async (c) => {
+app.post('/inbox/:addr/thread/:id/note', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
   const thread = await threadOf(c, t)
@@ -822,10 +857,10 @@ app.post('/c/:slug/thread/:id/note', async (c) => {
     await run('INSERT INTO notes (thread_id, member_id, body, created_at) VALUES (?, ?, ?, ?)',
       [thread.id, t.member.id, text.slice(0, 10000), now()])
   }
-  return c.redirect(`/c/${t.collective.slug}/thread/${thread.id}`)
+  return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}`)
 })
 
-app.post('/c/:slug/thread/:id/assign', async (c) => {
+app.post('/inbox/:addr/thread/:id/assign', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
   const thread = await threadOf(c, t)
@@ -838,10 +873,10 @@ app.post('/c/:slug/thread/:id/assign', async (c) => {
     if (!tm || tm.collective_id !== t.collective.id || tm.removed_at) return c.notFound()
   }
   await setAssignee(thread, target, t.member.id, target === t.member.id ? 'claim' : 'manual')
-  return c.redirect(`/c/${t.collective.slug}/thread/${thread.id}`)
+  return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}`)
 })
 
-app.post('/c/:slug/thread/:id/status', async (c) => {
+app.post('/inbox/:addr/thread/:id/status', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
   const thread = await threadOf(c, t)
@@ -851,34 +886,35 @@ app.post('/c/:slug/thread/:id/status', async (c) => {
   if (['needs_reply', 'answered', 'closed', 'spam'].includes(status)) {
     await setStatus(thread.id, status as Thread['status'], t.member.id)
   }
-  return c.redirect(`/c/${t.collective.slug}/thread/${thread.id}`)
+  return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}`)
 })
 
-app.post('/c/:slug/thread/:id/tags', async (c) => {
+app.post('/inbox/:addr/thread/:id/tags', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
   const body = await c.req.parseBody()
   await addTag(t.collective.id, thread.id, String(body.name || ''), t.member.id)
-  return c.redirect(`/c/${t.collective.slug}/thread/${thread.id}`)
+  return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}`)
 })
 
-app.post('/c/:slug/thread/:id/tags/remove', async (c) => {
+app.post('/inbox/:addr/thread/:id/tags/remove', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
   const body = await c.req.parseBody()
   await removeTag(thread.id, Number(body.tag_id), t.member.id)
-  return c.redirect(`/c/${t.collective.slug}/thread/${thread.id}`)
+  return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}`)
 })
 
 // Platform admin can add themselves to any collective (from the "wrong account" page)
-app.post('/c/:slug/join-admin', async (c) => {
+app.post('/inbox/:addr/join-admin', async (c) => {
   const email = c.get('email')
   if (!isPlatformAdmin(email)) return c.notFound()
-  const collective = await getCollectiveBySlug(c.req.param('slug') || '')
+  const slug = slugFromAddr(c)
+  const collective = slug ? await getCollectiveBySlug(slug) : undefined
   if (!collective) return c.notFound()
   const existing = await getMemberIn(collective.id, email!)
   if (existing) {
@@ -887,20 +923,25 @@ app.post('/c/:slug/join-admin', async (c) => {
     await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
       [collective.id, email!, email!.split('@')[0], 'admin', 'every', now()])
   }
-  return c.redirect(`/c/${collective.slug}/inbox?m=` + encodeURIComponent(`Added ${email} to ${collective.name}.`))
+  return c.redirect(`/inbox/${collective.slug}?m=` + encodeURIComponent(`Added ${email} to ${collective.name}.`))
 })
 
-// ---------- tenant: collective management ----------
+
+// ---------- tenant: members / notifications / billing ----------
 
 const activeInvite = (collectiveId: number) =>
   get<Invite>('SELECT * FROM invites WHERE collective_id = ? AND revoked_at IS NULL AND expires_at > ? ORDER BY id DESC LIMIT 1',
     [collectiveId, now()])
 
-app.get('/c/:slug/collective', async (c) => {
+const BackNav = ({ base }: { base: string }) => (
+  <nav class="nav"><a class="nav-item" href={base}>← Back to inbox</a></nav>
+)
+
+app.get('/inbox/:addr/members', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
   const { collective, member } = t
-  const base = `/c/${collective.slug}`
+  const base = `/inbox/${collective.slug}`
   const isAdmin = member.role === 'admin'
   const [members, invite, replyCounts] = await Promise.all([
     activeMembers(collective.id),
@@ -918,11 +959,9 @@ app.get('/c/:slug/collective', async (c) => {
   const adminCount = members.filter((m) => m.role === 'admin').length
 
   return c.html(
-    <Shell member={member} collective={collective} active="collective" flash={c.req.query('m')} sidebar={
-      <nav class="nav"><a class="nav-item" href={`${base}/inbox`}>← Back to inbox</a></nav>
-    }>
+    <Shell member={member} collective={collective} title="Members" active="members" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
       <div class="page">
-        <h1>The collective</h1>
+        <h1>Members</h1>
         <p class="muted">Everyone here can read and answer email sent to <b>{collective.slug}@{cfg.emailDomain}</b>.</p>
 
         <section class="card">
@@ -943,11 +982,11 @@ app.get('/c/:slug/collective', async (c) => {
           )}
           {isAdmin ? (
             <div class="btn-row">
-              <form method="post" action={`${base}/collective/invite`}>
+              <form method="post" action={`${base}/members/invite`}>
                 <button class="btn small" type="submit">{invite ? '↻ Generate new link' : '+ Create invite link'}</button>
               </form>
               {invite ? (
-                <form method="post" action={`${base}/collective/invite/revoke`}>
+                <form method="post" action={`${base}/members/invite/revoke`}>
                   <button class="btn small ghost" type="submit" data-confirm="Revoke the current invite link? Anyone holding it won't be able to join.">Revoke</button>
                 </form>
               ) : null}
@@ -972,15 +1011,15 @@ app.get('/c/:slug/collective', async (c) => {
                 </span>
                 {isAdmin && m.id !== member.id ? (
                   <span class="m-actions">
-                    <form method="post" action={`${base}/collective/member/${m.id}/role`} class="inline">
+                    <form method="post" action={`${base}/members/${m.id}/role`} class="inline">
                       <button class="linkish" type="submit" disabled={m.role === 'admin' && adminCount <= 1}>
                         {m.role === 'admin' ? 'Remove admin' : 'Make admin'}
                       </button>
                     </form>
-                    <form method="post" action={`${base}/collective/member/${m.id}/disconnect`} class="inline">
+                    <form method="post" action={`${base}/members/${m.id}/disconnect`} class="inline">
                       <button class="linkish" type="submit" data-confirm={`Sign ${memberName(m)} out of all devices? They can sign back in with a code.`}>Disconnect</button>
                     </form>
-                    <form method="post" action={`${base}/collective/member/${m.id}/remove`} class="inline">
+                    <form method="post" action={`${base}/members/${m.id}/remove`} class="inline">
                       <button class="linkish danger" type="submit" disabled={m.role === 'admin' && adminCount <= 1}
                         data-confirm={`Remove ${memberName(m)} from the collective? They lose access immediately; their past replies stay attributed.`}>Remove</button>
                     </form>
@@ -990,10 +1029,77 @@ app.get('/c/:slug/collective', async (c) => {
             ))}
           </div>
         </section>
+      </div>
+    </Shell>,
+  )
+})
 
+app.post('/inbox/:addr/members/invite', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  if (t.member.role !== 'admin') return c.redirect(`/inbox/${t.collective.slug}/members`)
+  await run('UPDATE invites SET revoked_at = ? WHERE collective_id = ? AND revoked_at IS NULL', [now(), t.collective.id])
+  await run('INSERT INTO invites (collective_id, token, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?)',
+    [t.collective.id, randomToken(18), t.member.id, now(), now() + cfg.inviteHours * 3600])
+  return c.redirect(`/inbox/${t.collective.slug}/members?m=` + encodeURIComponent('New invite link created — valid 24h.'))
+})
+
+app.post('/inbox/:addr/members/invite/revoke', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  if (t.member.role !== 'admin') return c.redirect(`/inbox/${t.collective.slug}/members`)
+  await run('UPDATE invites SET revoked_at = ? WHERE collective_id = ? AND revoked_at IS NULL', [now(), t.collective.id])
+  return c.redirect(`/inbox/${t.collective.slug}/members?m=` + encodeURIComponent('Invite link revoked.'))
+})
+
+app.post('/inbox/:addr/members/:id/remove', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const back = `/inbox/${t.collective.slug}/members`
+  if (t.member.role !== 'admin') return c.redirect(back)
+  const target = await getMember(Number(c.req.param('id')))
+  if (!target || target.collective_id !== t.collective.id || target.id === t.member.id) return c.redirect(back)
+  const adminCount = (await activeMembers(t.collective.id)).filter((m) => m.role === 'admin').length
+  if (target.role === 'admin' && adminCount <= 1) return c.redirect(back + '?m=' + encodeURIComponent('Cannot remove the last admin.'))
+  await run('UPDATE members SET removed_at = ? WHERE id = ?', [now(), target.id])
+  return c.redirect(back + '?m=' + encodeURIComponent(`${memberName(target)} was removed from the collective.`))
+})
+
+app.post('/inbox/:addr/members/:id/disconnect', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const back = `/inbox/${t.collective.slug}/members`
+  if (t.member.role !== 'admin') return c.redirect(back)
+  const target = await getMember(Number(c.req.param('id')))
+  if (!target || target.collective_id !== t.collective.id) return c.redirect(back)
+  await destroyEmailSessions(target.email)
+  return c.redirect(back + '?m=' + encodeURIComponent(`${memberName(target)} was signed out of all devices.`))
+})
+
+app.post('/inbox/:addr/members/:id/role', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const back = `/inbox/${t.collective.slug}/members`
+  if (t.member.role !== 'admin') return c.redirect(back)
+  const target = await getMember(Number(c.req.param('id')))
+  if (!target || target.collective_id !== t.collective.id || target.id === t.member.id) return c.redirect(back)
+  const adminCount = (await activeMembers(t.collective.id)).filter((m) => m.role === 'admin').length
+  if (target.role === 'admin' && adminCount <= 1) return c.redirect(back + '?m=' + encodeURIComponent('Cannot demote the last admin.'))
+  await run('UPDATE members SET role = ? WHERE id = ?', [target.role === 'admin' ? 'member' : 'admin', target.id])
+  return c.redirect(back)
+})
+
+app.get('/inbox/:addr/notifications', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const { collective, member } = t
+  const base = `/inbox/${collective.slug}`
+  return c.html(
+    <Shell member={member} collective={collective} title="Notifications" active="notifications" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
+      <div class="page">
+        <h1>Notifications</h1>
         <section class="card">
-          <h2>You</h2>
-          <form method="post" action={`${base}/me`} class="me-form">
+          <form method="post" action={`${base}/notifications`} class="me-form">
             <label class="lbl">Display name</label>
             <input class="input" name="name" value={member.name} required />
             <label class="lbl">Notifications about new requests</label>
@@ -1009,71 +1115,70 @@ app.get('/c/:slug/collective', async (c) => {
               <button class="btn small" type="submit">Save</button>
             </div>
           </form>
-          <p class="fineprint">Notification emails can be answered directly: replying sends your answer to the original sender as {collective.slug}@{cfg.emailDomain} and assigns the thread to you.</p>
+          <p class="fineprint">Whatever the level, you're always notified immediately on threads assigned to you. Notification emails can be answered directly: replying sends your answer to the original sender as {collective.slug}@{cfg.emailDomain} and assigns the thread to you.</p>
         </section>
       </div>
     </Shell>,
   )
 })
 
-app.post('/c/:slug/collective/invite', async (c) => {
-  const t = await tenant(c)
-  if (t instanceof Response) return t
-  if (t.member.role !== 'admin') return c.redirect(`/c/${t.collective.slug}/collective`)
-  await run('UPDATE invites SET revoked_at = ? WHERE collective_id = ? AND revoked_at IS NULL', [now(), t.collective.id])
-  await run('INSERT INTO invites (collective_id, token, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?)',
-    [t.collective.id, randomToken(18), t.member.id, now(), now() + cfg.inviteHours * 3600])
-  return c.redirect(`/c/${t.collective.slug}/collective?m=` + encodeURIComponent('New invite link created — valid 24h.'))
-})
-
-app.post('/c/:slug/collective/invite/revoke', async (c) => {
-  const t = await tenant(c)
-  if (t instanceof Response) return t
-  if (t.member.role !== 'admin') return c.redirect(`/c/${t.collective.slug}/collective`)
-  await run('UPDATE invites SET revoked_at = ? WHERE collective_id = ? AND revoked_at IS NULL', [now(), t.collective.id])
-  return c.redirect(`/c/${t.collective.slug}/collective?m=` + encodeURIComponent('Invite link revoked.'))
-})
-
-app.post('/c/:slug/collective/member/:id/remove', async (c) => {
-  const t = await tenant(c)
-  if (t instanceof Response) return t
-  if (t.member.role !== 'admin') return c.redirect(`/c/${t.collective.slug}/collective`)
-  const target = await getMember(Number(c.req.param('id')))
-  if (!target || target.collective_id !== t.collective.id || target.id === t.member.id) return c.redirect(`/c/${t.collective.slug}/collective`)
-  const adminCount = (await activeMembers(t.collective.id)).filter((m) => m.role === 'admin').length
-  if (target.role === 'admin' && adminCount <= 1) return c.redirect(`/c/${t.collective.slug}/collective?m=` + encodeURIComponent('Cannot remove the last admin.'))
-  await run('UPDATE members SET removed_at = ? WHERE id = ?', [now(), target.id])
-  return c.redirect(`/c/${t.collective.slug}/collective?m=` + encodeURIComponent(`${memberName(target)} was removed from the collective.`))
-})
-
-app.post('/c/:slug/collective/member/:id/disconnect', async (c) => {
-  const t = await tenant(c)
-  if (t instanceof Response) return t
-  if (t.member.role !== 'admin') return c.redirect(`/c/${t.collective.slug}/collective`)
-  const target = await getMember(Number(c.req.param('id')))
-  if (!target || target.collective_id !== t.collective.id) return c.redirect(`/c/${t.collective.slug}/collective`)
-  await destroyEmailSessions(target.email)
-  return c.redirect(`/c/${t.collective.slug}/collective?m=` + encodeURIComponent(`${memberName(target)} was signed out of all devices.`))
-})
-
-app.post('/c/:slug/collective/member/:id/role', async (c) => {
-  const t = await tenant(c)
-  if (t instanceof Response) return t
-  if (t.member.role !== 'admin') return c.redirect(`/c/${t.collective.slug}/collective`)
-  const target = await getMember(Number(c.req.param('id')))
-  if (!target || target.collective_id !== t.collective.id || target.id === t.member.id) return c.redirect(`/c/${t.collective.slug}/collective`)
-  const adminCount = (await activeMembers(t.collective.id)).filter((m) => m.role === 'admin').length
-  if (target.role === 'admin' && adminCount <= 1) return c.redirect(`/c/${t.collective.slug}/collective?m=` + encodeURIComponent('Cannot demote the last admin.'))
-  await run('UPDATE members SET role = ? WHERE id = ?', [target.role === 'admin' ? 'member' : 'admin', target.id])
-  return c.redirect(`/c/${t.collective.slug}/collective`)
-})
-
-app.post('/c/:slug/me', async (c) => {
+app.post('/inbox/:addr/notifications', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
   const body = await c.req.parseBody()
   const name = String(body.name || '').trim().slice(0, 60)
   const level = ['every', 'daily', 'weekly'].includes(String(body.level)) ? String(body.level) : t.member.notify_level
   await run("UPDATE members SET name = COALESCE(NULLIF(?, ''), name), notify_level = ? WHERE id = ?", [name, level, t.member.id])
-  return c.redirect(`/c/${t.collective.slug}/collective?m=` + encodeURIComponent('Saved.'))
+  return c.redirect(`/inbox/${t.collective.slug}/notifications?m=` + encodeURIComponent('Saved.'))
 })
+
+const PLAN_INFO: Record<string, { label: string; seats: number | null; price: string }> = {
+  duo: { label: 'Duo', seats: 2, price: '$/€10 per month (or 100/year)' },
+  collective: { label: 'Collective', seats: 5, price: '$/€25 per month (or 250/year)' },
+  pro: { label: 'Pro', seats: null, price: '$/€100 per month (or 1,000/year)' },
+}
+
+app.get('/inbox/:addr/billing', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const { collective, member } = t
+  const base = `/inbox/${collective.slug}`
+  if (member.role !== 'admin') return c.redirect(base)
+  const seats = (await activeMembers(collective.id)).length
+  const plan = PLAN_INFO[collective.plan] || PLAN_INFO.collective
+  return c.html(
+    <Shell member={member} collective={collective} title="Billing" active="billing" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
+      <div class="page">
+        <h1>Billing</h1>
+        <section class="card">
+          <h2>{plan.label} plan</h2>
+          <p class="muted">{plan.price}</p>
+          <span class="kv"><span class="k">SEATS</span> {seats}{plan.seats ? ` of ${plan.seats}` : ' (no limit)'}</span>
+          <span class="kv"><span class="k">ADDRESS</span> {collective.slug}@{cfg.emailDomain}</span>
+        </section>
+        <section class="card">
+          <h2>Nothing to pay yet</h2>
+          <p class="muted">Billing isn't live — early collectives use collective.email <b>for free during the preview</b>. We'll email the admins well before anything is ever charged, and you'll choose monthly or yearly (2 months free) then.</p>
+        </section>
+      </div>
+    </Shell>,
+  )
+})
+
+// ---------- offline fallback (cached by the service worker) ----------
+
+app.get('/offline', (c) =>
+  c.html(
+    <AuthCard title="Offline">
+      <h1>You're offline</h1>
+      <p class="muted">collective.email needs a connection for fresh mail. Pages you've already opened may still be available — go back, or retry once you're online.</p>
+      <a class="btn" href="/">Retry</a>
+    </AuthCard>,
+  ))
+
+// ---------- legacy /c/:slug/* links (old notification emails) ----------
+
+app.get('/c/:slug', (c) => c.redirect(`/inbox/${c.req.param('slug')}`, 301))
+app.get('/c/:slug/inbox', (c) => c.redirect(`/inbox/${c.req.param('slug')}`, 301))
+app.get('/c/:slug/thread/:id', (c) => c.redirect(`/inbox/${c.req.param('slug')}/thread/${c.req.param('id')}`, 301))
+app.get('/c/:slug/collective', (c) => c.redirect(`/inbox/${c.req.param('slug')}/members`, 301))
