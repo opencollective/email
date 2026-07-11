@@ -159,6 +159,14 @@ export async function run(sql: string, args: Arg[] = []): Promise<{ lastId: numb
   return { lastId: Number(rs.lastInsertRowid ?? 0), changes: rs.rowsAffected }
 }
 
+/** Run several read statements in a SINGLE network round-trip to the database.
+ *  Page handlers use this so a render costs 1–2 round-trips, not one per query. */
+export async function batchAll(stmts: { sql: string; args?: Arg[] }[]): Promise<any[][]> {
+  await init()
+  const results = await db.batch(stmts.map((s) => ({ sql: s.sql, args: s.args ?? [] })), 'read')
+  return results.map((r) => r.rows as unknown as any[])
+}
+
 // ---------- types ----------
 
 export interface Collective {

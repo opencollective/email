@@ -4,7 +4,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import type { Context } from 'hono'
 import { cfg } from '../config.js'
 import {
-  activeMembers, addTag, all, allCollectives, attachmentsByMessage, createCollective, get, getCollective,
+  activeMembers, addTag, all, allCollectives, attachmentsByMessage, batchAll, createCollective, get, getCollective,
   getCollectiveBySlug, getMember, getMemberIn, getThread, kvSet, lastMessageByThread, memberMap,
   membershipsByEmail, removeTag, run, setAssignee, setStatus, tagsByThread, threadMessages, threadTags,
   type Attachment, type Collective, type Invite, type Member, type Message, type Thread,
@@ -79,9 +79,18 @@ async function tenant(c: Context<Env>): Promise<{ collective: Collective; member
   const email = c.get('email')
   if (!email) return c.redirect('/login?next=' + encodeURIComponent(c.req.path))
   const slug = slugFromAddr(c)
-  const collective = slug ? await getCollectiveBySlug(slug) : undefined
-  if (!collective || collective.status !== 'active') return c.notFound()
-  const member = await getMemberIn(collective.id, email)
+  // collective + membership resolved in a single round-trip
+  const row = slug ? await get<any>(`
+    SELECT c.id AS c_id, c.slug AS c_slug, c.name AS c_name, c.status AS c_status, c.plan AS c_plan, c.created_at AS c_created_at,
+           m.id, m.collective_id, m.email, m.name, m.role, m.notify_level, m.avatar_path, m.created_at, m.last_seen_at, m.removed_at
+    FROM collectives c LEFT JOIN members m ON m.collective_id = c.id AND m.email = ?
+    WHERE c.slug = ?
+  `, [email, slug]) : undefined
+  if (!row || row.c_status !== 'active') return c.notFound()
+  const collective: Collective = {
+    id: row.c_id, slug: row.c_slug, name: row.c_name, status: row.c_status, plan: row.c_plan, created_at: row.c_created_at,
+  }
+  const member = (row.id != null ? (row as Member) : undefined) as Member | undefined
   if (!member || member.removed_at) {
     return c.html(
       <AuthCard title={collective.name}>
@@ -493,29 +502,44 @@ app.get('/inbox/:addr', async (c) => {
   const sortQ = c.req.query('sort')
   const sort = sortQ === 'newest' || sortQ === 'oldest' ? sortQ : f === 'needs_reply' ? 'oldest' : 'newest'
   const order = sort === 'oldest' ? 't.last_message_at ASC' : 't.last_message_at DESC'
-  const threads = await all<Thread>(`SELECT t.* FROM threads t WHERE ${where} ORDER BY ${order} LIMIT 200`, args)
 
-  const counts: Record<string, number> = {}
-  await Promise.all(Object.entries(FILTERS).map(async ([key, def]) => {
-    const r = await get<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM threads t WHERE t.collective_id = ? AND (${def.where})`,
-      [collective.id, ...filterArgs(key, member.id)])
-    counts[key] = r!.n
-  }))
-
-  const ids = threads.map((th) => th.id)
-  const [members, lastMsgs, tagsMap, tagRows] = await Promise.all([
-    memberMap(collective.id),
-    lastMessageByThread(ids),
-    tagsByThread(ids),
-    all<{ name: string; n: number }>(`
-      SELECT tg.name, COUNT(*) AS n FROM tags tg
-      JOIN thread_tags tt ON tt.tag_id = tg.id
-      JOIN threads t ON t.id = tt.thread_id AND t.status != 'spam'
-      WHERE tg.collective_id = ?
-      GROUP BY tg.id ORDER BY n DESC, tg.name LIMIT 20
-    `, [collective.id]),
+  // round-trip 1: thread list + all sidebar data in ONE batched DB request
+  const filterKeys = Object.keys(FILTERS)
+  const batch1 = await batchAll([
+    { sql: `SELECT t.* FROM threads t WHERE ${where} ORDER BY ${order} LIMIT 200`, args },
+    ...filterKeys.map((key) => ({
+      sql: `SELECT COUNT(*) AS n FROM threads t WHERE t.collective_id = ? AND (${FILTERS[key].where})`,
+      args: [collective.id, ...filterArgs(key, member.id)],
+    })),
+    {
+      sql: `SELECT tg.name, COUNT(*) AS n FROM tags tg
+            JOIN thread_tags tt ON tt.tag_id = tg.id
+            JOIN threads t ON t.id = tt.thread_id AND t.status != 'spam'
+            WHERE tg.collective_id = ?
+            GROUP BY tg.id ORDER BY n DESC, tg.name LIMIT 20`,
+      args: [collective.id],
+    },
+    { sql: 'SELECT * FROM members WHERE collective_id = ?', args: [collective.id] },
   ])
+  const threads = batch1[0] as Thread[]
+  const counts: Record<string, number> = {}
+  filterKeys.forEach((key, i) => { counts[key] = (batch1[1 + i][0] as { n: number }).n })
+  const tagRows = batch1[1 + filterKeys.length] as { name: string; n: number }[]
+  const members = new Map((batch1[2 + filterKeys.length] as Member[]).map((m) => [m.id, m]))
+
+  // round-trip 2: per-thread previews for the listed threads
+  const ids = threads.map((th) => th.id)
+  const ph = ids.map(() => '?').join(',')
+  const [lastMsgRows, threadTagRows] = ids.length ? await batchAll([
+    { sql: `SELECT * FROM messages WHERE id IN (SELECT MAX(id) FROM messages WHERE thread_id IN (${ph}) GROUP BY thread_id)`, args: ids },
+    { sql: `SELECT tt.thread_id, t.id, t.name FROM tags t JOIN thread_tags tt ON tt.tag_id = t.id WHERE tt.thread_id IN (${ph}) ORDER BY t.name`, args: ids },
+  ]) : [[], []]
+  const lastMsgs = new Map((lastMsgRows as Message[]).map((m) => [m.thread_id, m]))
+  const tagsMap = new Map<number, { id: number; name: string }[]>()
+  for (const r of threadTagRows as { thread_id: number; id: number; name: string }[]) {
+    if (!tagsMap.has(r.thread_id)) tagsMap.set(r.thread_id, [])
+    tagsMap.get(r.thread_id)!.push({ id: r.id, name: r.name })
+  }
 
   const sidebar = (
     <nav class="nav">
@@ -621,15 +645,20 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
 
-  const [msgs, notes, allEvents, tags, members] = await Promise.all([
-    threadMessages(thread.id),
-    all<{ id: number; member_id: number; body: string; created_at: number }>(
-      'SELECT * FROM notes WHERE thread_id = ? ORDER BY created_at', [thread.id]),
-    all<{ actor_member_id: number | null; type: string; data_json: string | null; created_at: number }>(
-      'SELECT * FROM events WHERE thread_id = ? ORDER BY created_at', [thread.id]),
-    threadTags(thread.id),
-    memberMap(collective.id),
+  // one batched round-trip for everything the page needs (except attachments,
+  // which depend on the message ids)
+  const batch = await batchAll([
+    { sql: 'SELECT * FROM messages WHERE thread_id = ? ORDER BY sent_at, id', args: [thread.id] },
+    { sql: 'SELECT * FROM notes WHERE thread_id = ? ORDER BY created_at', args: [thread.id] },
+    { sql: 'SELECT * FROM events WHERE thread_id = ? ORDER BY created_at', args: [thread.id] },
+    { sql: 'SELECT t.id, t.name FROM tags t JOIN thread_tags tt ON tt.tag_id = t.id WHERE tt.thread_id = ? ORDER BY t.name', args: [thread.id] },
+    { sql: 'SELECT * FROM members WHERE collective_id = ?', args: [collective.id] },
   ])
+  const msgs = batch[0] as Message[]
+  const notes = batch[1] as { id: number; member_id: number; body: string; created_at: number }[]
+  const allEvents = batch[2] as { actor_member_id: number | null; type: string; data_json: string | null; created_at: number }[]
+  const tags = batch[3] as { id: number; name: string }[]
+  const members = new Map((batch[4] as Member[]).map((m) => [m.id, m]))
   const attsMap = await attachmentsByMessage(msgs.map((m) => m.id))
   const events = allEvents.filter((e) => e.type !== 'replied')
   const lastAssignEvent = [...allEvents].reverse().find((e) => e.type === 'assigned' || e.type === 'unassigned')

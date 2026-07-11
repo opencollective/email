@@ -6,6 +6,6 @@
   "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }],
   "crons": [{ "path": "/cron/digest", "schedule": "0 * * * *" }],
   "functions": {
-    "api/index.js": { "maxDuration": 60, "memory": 1024 }
+    "api/index.js": { "maxDuration": 60 }
   }
 }
