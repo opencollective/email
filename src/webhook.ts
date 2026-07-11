@@ -2,9 +2,10 @@ import crypto from 'node:crypto'
 import { Hono } from 'hono'
 import { simpleParser, type ParsedMail } from 'mailparser'
 import { cfg } from './config.js'
-import { getCollectiveBySlug } from './db.js'
+import { getCollectiveBySlug, run } from './db.js'
 import { parseReplyAddress } from './util.js'
 import { handleEmailReply, ingestInbound } from './ingest.js'
+import { verifyStripeSignature } from './stripe.js'
 
 /** Verify a svix-signed webhook (Resend uses svix).
  *  signature = base64(hmacSHA256(base64decode(secret_after_whsec), `${id}.${timestamp}.${body}`)) */
@@ -148,4 +149,46 @@ webhooks.post('/webhooks/resend', async (c) => {
     routed++
   }
   return c.json({ ok: true, routed })
+})
+
+// ---------- Stripe billing webhook ----------
+
+webhooks.post('/webhooks/stripe', async (c) => {
+  const body = await c.req.text()
+  if (cfg.stripeWebhookSecret) {
+    if (!verifyStripeSignature(body, c.req.header('stripe-signature') || '', cfg.stripeWebhookSecret)) {
+      return c.json({ error: 'invalid signature' }, 401)
+    }
+  }
+  let event: any
+  try {
+    event = JSON.parse(body)
+  } catch {
+    return c.json({ error: 'invalid json' }, 400)
+  }
+
+  if (event.type === 'checkout.session.completed') {
+    const s = event.data?.object ?? {}
+    const collectiveId = Number(s.metadata?.collective_id)
+    if (collectiveId) {
+      await run(`
+        UPDATE collectives SET
+          stripe_customer_id = ?, stripe_subscription_id = ?, stripe_status = 'active',
+          plan = COALESCE(?, plan), billing_cycle = ?, billing_currency = ?
+        WHERE id = ?
+      `, [
+        s.customer ?? null, s.subscription ?? null,
+        s.metadata?.plan ?? null, s.metadata?.cycle ?? null, s.currency ?? null,
+        collectiveId,
+      ])
+      console.log(`[stripe] collective ${collectiveId} subscribed (${s.metadata?.plan}/${s.metadata?.cycle})`)
+    }
+  } else if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.deleted') {
+    const sub = event.data?.object ?? {}
+    const status = event.type.endsWith('deleted') ? 'canceled' : String(sub.status || 'active')
+    await run('UPDATE collectives SET stripe_status = ? WHERE stripe_subscription_id = ?', [status, sub.id])
+    console.log(`[stripe] subscription ${sub.id} → ${status}`)
+  }
+
+  return c.json({ received: true })
 })

@@ -12,6 +12,11 @@ const SCHEMA = [
     name TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
     plan TEXT NOT NULL DEFAULT 'collective',
+    stripe_customer_id TEXT,
+    stripe_subscription_id TEXT,
+    stripe_status TEXT,
+    billing_cycle TEXT,
+    billing_currency TEXT,
     created_at INTEGER NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS members (
@@ -133,9 +138,19 @@ let ready: Promise<void> | null = null
 /** Idempotent schema init; awaited by every query helper (memoized). */
 function init(): Promise<void> {
   if (!ready) {
+    const migrations = [
+      'ALTER TABLE members ADD COLUMN avatar_path TEXT',
+      'ALTER TABLE collectives ADD COLUMN stripe_customer_id TEXT',
+      'ALTER TABLE collectives ADD COLUMN stripe_subscription_id TEXT',
+      'ALTER TABLE collectives ADD COLUMN stripe_status TEXT',
+      'ALTER TABLE collectives ADD COLUMN billing_cycle TEXT',
+      'ALTER TABLE collectives ADD COLUMN billing_currency TEXT',
+    ]
     ready = db.batch(SCHEMA, 'write')
       // additive migrations for pre-existing tables; ignore "duplicate column"
-      .then(() => db.execute('ALTER TABLE members ADD COLUMN avatar_path TEXT').catch(() => undefined))
+      .then(async () => {
+        for (const m of migrations) await db.execute(m).catch(() => undefined)
+      })
       .then(() => undefined)
   }
   return ready
@@ -175,6 +190,11 @@ export interface Collective {
   name: string
   status: 'active' | 'suspended'
   plan: string
+  stripe_customer_id?: string | null
+  stripe_subscription_id?: string | null
+  stripe_status?: string | null
+  billing_cycle?: string | null
+  billing_currency?: string | null
   created_at: number
 }
 

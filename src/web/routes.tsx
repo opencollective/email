@@ -16,6 +16,7 @@ import { sendCollectiveReply } from '../outbound.js'
 import { digestTick, sendOnboarding } from '../notify.js'
 import { sendAppEmail } from '../appmail.js'
 import { readBlob, saveBlob } from '../storage.js'
+import { createCheckoutSession, createPortalSession, stripeEnabled } from '../stripe.js'
 import { excerpt, fmtDateTime, now, randomToken, relTime, slugify, verifyToken, waitingFor } from '../util.js'
 import { AssigneeChip, AuthCard, Avatar, eventText, Shell, StatusChip, TimeAgo } from './ui.js'
 import { HomePage } from './home.js'
@@ -1304,16 +1305,26 @@ const PLAN_INFO: Record<string, { label: string; seats: number | null; price: st
   pro: { label: 'Pro', seats: null, price: '$/€100 per month (or 1,000/year)' },
 }
 
+const SUB_ACTIVE = new Set(['active', 'trialing', 'past_due'])
+
 app.get('/inbox/:addr/billing', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
-  const { collective, member } = t
-  const base = `/inbox/${collective.slug}`
+  const { member } = t
+  const base = `/inbox/${t.collective.slug}`
   if (member.role !== 'admin') return c.redirect(base)
+  // tenant() carries a slim collective — billing needs the stripe columns
+  const collective = (await getCollective(t.collective.id))!
   const seats = (await activeMembers(collective.id)).length
   const plan = PLAN_INFO[collective.plan] || PLAN_INFO.collective
+  const currency = visitorCurrency(c) === 'EUR' ? 'eur' : 'usd'
+  const flash = c.req.query('success') ? 'Subscription active — thank you! 🎉'
+    : c.req.query('canceled') ? 'Checkout canceled — nothing was charged.'
+    : c.req.query('m')
+  const subscribed = SUB_ACTIVE.has(collective.stripe_status || '')
+
   return c.html(
-    <Shell member={member} collective={collective} title="Billing" active="billing" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
+    <Shell member={member} collective={collective} title="Billing" active="billing" flash={flash} sidebar={<BackNav base={base} />}>
       <div class="page">
         <h1>Billing</h1>
         <section class="card">
@@ -1321,14 +1332,91 @@ app.get('/inbox/:addr/billing', async (c) => {
           <p class="muted">{plan.price}</p>
           <span class="kv"><span class="k">SEATS</span> {seats}{plan.seats ? ` of ${plan.seats}` : ' (no limit)'}</span>
           <span class="kv"><span class="k">ADDRESS</span> {collective.slug}@{cfg.emailDomain}</span>
+          {collective.stripe_status ? (
+            <span class="kv"><span class="k">STATUS</span> <span class={`chip ${subscribed ? 'status-answered' : 'unassigned'}`}>{collective.stripe_status}</span>
+              {collective.billing_cycle ? ` · ${collective.billing_cycle}` : ''}{collective.billing_currency ? ` · ${collective.billing_currency.toUpperCase()}` : ''}</span>
+          ) : null}
         </section>
-        <section class="card">
-          <h2>Nothing to pay yet</h2>
-          <p class="muted">Billing isn't live — early collectives use collective.email <b>for free during the preview</b>. We'll email the admins well before anything is ever charged, and you'll choose monthly or yearly (2 months free) then.</p>
-        </section>
+
+        {!stripeEnabled() ? (
+          <section class="card">
+            <h2>Nothing to pay yet</h2>
+            <p class="muted">Billing isn't live — early collectives use collective.email <b>for free during the preview</b>. We'll email the admins well before anything is ever charged, and you'll choose monthly or yearly (2 months free) then.</p>
+          </section>
+        ) : subscribed ? (
+          <section class="card">
+            <h2>Manage your subscription</h2>
+            <p class="muted">Update the card, switch plans, download invoices, or cancel — all in the secure Stripe portal.</p>
+            <form method="post" action={`${base}/billing/portal`}>
+              <button class="btn small" type="submit" data-busy="Opening…">Open billing portal →</button>
+            </form>
+          </section>
+        ) : (
+          <section class="card">
+            <h2>Subscribe</h2>
+            <p class="muted">Pick a plan — you'll finish on Stripe's secure checkout page. Yearly = 2 months free.</p>
+            <form method="post" action={`${base}/billing/checkout`} class="me-form">
+              <label class="lbl">Plan</label>
+              <div class="level-cards">
+                {Object.entries(PLAN_INFO).map(([key, p]) => (
+                  <label class="level-card">
+                    <input type="radio" name="plan" value={key} checked={key === collective.plan} />
+                    <span><b>{p.label}</b><small>{p.price}{p.seats ? ` · up to ${p.seats} members` : ''}</small></span>
+                  </label>
+                ))}
+              </div>
+              <label class="lbl">Billing cycle</label>
+              <div class="level-cards">
+                <label class="level-card"><input type="radio" name="cycle" value="monthly" checked /><span><b>Monthly</b></span></label>
+                <label class="level-card"><input type="radio" name="cycle" value="yearly" /><span><b>Yearly</b><small>2 months free</small></span></label>
+              </div>
+              <label class="lbl">Currency</label>
+              <div class="level-cards">
+                <label class="level-card"><input type="radio" name="currency" value="eur" checked={currency === 'eur'} /><span><b>EUR €</b></span></label>
+                <label class="level-card"><input type="radio" name="currency" value="usd" checked={currency === 'usd'} /><span><b>USD $</b></span></label>
+              </div>
+              <div class="btn-row">
+                <button class="btn" type="submit" data-busy="Redirecting to Stripe…">Continue to checkout →</button>
+              </div>
+            </form>
+          </section>
+        )}
       </div>
     </Shell>,
   )
+})
+
+app.post('/inbox/:addr/billing/checkout', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const base = `/inbox/${t.collective.slug}`
+  if (t.member.role !== 'admin') return c.redirect(base)
+  const body = await c.req.parseBody()
+  const plan = ['duo', 'collective', 'pro'].includes(String(body.plan)) ? String(body.plan) : 'collective'
+  const cycle = String(body.cycle) === 'yearly' ? 'yearly' as const : 'monthly' as const
+  const currency = String(body.currency) === 'usd' ? 'usd' as const : 'eur' as const
+  try {
+    const collective = (await getCollective(t.collective.id))!
+    const url = await createCheckoutSession(collective, t.member.email, plan, cycle, currency)
+    return c.redirect(url)
+  } catch (err) {
+    return c.redirect(`${base}/billing?m=` + encodeURIComponent(`Checkout failed: ${err instanceof Error ? err.message : 'unknown error'}`))
+  }
+})
+
+app.post('/inbox/:addr/billing/portal', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const base = `/inbox/${t.collective.slug}`
+  if (t.member.role !== 'admin') return c.redirect(base)
+  try {
+    const collective = (await getCollective(t.collective.id))!
+    if (!collective.stripe_customer_id) throw new Error('No Stripe customer yet.')
+    const url = await createPortalSession(collective.stripe_customer_id, `${cfg.baseUrl}${base}/billing`)
+    return c.redirect(url)
+  } catch (err) {
+    return c.redirect(`${base}/billing?m=` + encodeURIComponent(`Could not open the portal: ${err instanceof Error ? err.message : 'unknown error'}`))
+  }
 })
 
 // ---------- offline fallback (cached by the service worker) ----------

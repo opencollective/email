@@ -48,6 +48,9 @@ export const cfg = {
   resendFrom: env('RESEND_FROM', `collective.email <notifications@${emailDomain}>`),
   /** Signing secret of the Resend webhook endpoint (svix, `whsec_…`). Empty disables verification (dev only). */
   resendWebhookSecret: env('RESEND_WEBHOOK_SECRET'),
+  /** Stripe (test keys on staging): unset → billing shows the free-preview card. */
+  stripeKey: env('STRIPE_SECRET_KEY'),
+  stripeWebhookSecret: env('STRIPE_WEBHOOK_SECRET'),
   digestHour: Number(env('DIGEST_HOUR', '8')), // local hour (TZ env) for daily/weekly digests
   signReplies: env('SIGN_REPLIES', 'true') !== 'false',
   sessionDays: 90, // "logged in for 3 months unless explicit logout"
