@@ -37,6 +37,66 @@ document.querySelectorAll('.file-input').forEach((inp) => {
     label.firstChild.textContent = n ? '📎 ' + n + ' file' + (n > 1 ? 's' : '') + ' ' : '📎 Attach';
   });
 });
+
+// Draft persistence: never lose a reply or note to a lost connection.
+// Saved per thread+pane on every keystroke, restored on load, cleared only
+// once the server confirms with a success flash.
+const draftKey = (pane) => 'draft:' + location.pathname + ':' + pane;
+document.querySelectorAll('textarea[data-draft]').forEach((t) => {
+  const k = draftKey(t.dataset.draft);
+  try {
+    if (!t.value && localStorage.getItem(k)) t.value = localStorage.getItem(k);
+    t.addEventListener('input', () => localStorage.setItem(k, t.value));
+  } catch {}
+});
+const flashEl = document.querySelector('.flash');
+if (flashEl) {
+  try {
+    if (flashEl.textContent.includes('Reply sent')) localStorage.removeItem(draftKey('reply'));
+    if (flashEl.textContent.includes('Note added')) localStorage.removeItem(draftKey('note'));
+  } catch {}
+}
+
+// Instant feedback on every submit: disable the button and show progress,
+// so a slow network never invites a double tap.
+document.addEventListener('submit', (e) => {
+  const btn = e.target.querySelector('button[type="submit"]');
+  if (btn && !btn.disabled) {
+    btn.dataset.label = btn.textContent;
+    btn.textContent = btn.dataset.busy || btn.textContent.replace(/\\s*$/, '') + '…';
+    btn.classList.add('busy');
+    setTimeout(() => { btn.disabled = true; }, 0);
+  }
+});
+window.addEventListener('pageshow', () => {
+  document.querySelectorAll('button.busy').forEach((b) => {
+    b.disabled = false; b.classList.remove('busy');
+    if (b.dataset.label) b.textContent = b.dataset.label;
+  });
+});
+
+// Typing presence: beacon while drafting, poll to show "X is drafting…"
+const typingEl = document.getElementById('typing');
+if (typingEl) {
+  const url = typingEl.dataset.url;
+  let lastBeacon = 0;
+  document.querySelectorAll('.composer textarea').forEach((t) => t.addEventListener('input', () => {
+    const nowT = Date.now();
+    if (nowT - lastBeacon > 10000) { lastBeacon = nowT; fetch(url, { method: 'POST' }).catch(() => {}); }
+  }));
+  const poll = async () => {
+    try {
+      const d = await (await fetch(url)).json();
+      typingEl.hidden = !d.drafting || d.drafting.length === 0;
+      if (d.drafting && d.drafting.length) {
+        typingEl.textContent = '✎ ' + d.drafting.join(', ') + (d.drafting.length > 1 ? ' are' : ' is') + ' drafting a response…';
+      }
+    } catch {}
+  };
+  poll();
+  setInterval(poll, 12000);
+}
+
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 `
 
@@ -102,7 +162,8 @@ export const Page: FC<{ title?: string; flash?: string; children?: Child }> = (p
   <html lang="en">
     <head>
       <meta charset="utf-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+      {/* maximum-scale=1 stops iOS auto-zoom on input focus (pinch zoom still works on iOS) */}
+      <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>

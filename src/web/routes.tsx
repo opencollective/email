@@ -5,8 +5,8 @@ import type { Context } from 'hono'
 import { cfg } from '../config.js'
 import {
   activeMembers, addTag, all, allCollectives, attachmentsByMessage, createCollective, get, getCollective,
-  getCollectiveBySlug, getMember, getMemberIn, getThread, lastMessageByThread, memberMap, membershipsByEmail,
-  removeTag, run, setAssignee, setStatus, tagsByThread, threadMessages, threadTags,
+  getCollectiveBySlug, getMember, getMemberIn, getThread, kvSet, lastMessageByThread, memberMap,
+  membershipsByEmail, removeTag, run, setAssignee, setStatus, tagsByThread, threadMessages, threadTags,
   type Attachment, type Collective, type Invite, type Member, type Message, type Thread,
 } from '../db.js'
 import {
@@ -703,15 +703,23 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                   <div class="msg-body">{g.body_text || '(no text content)'}</div>
                   {(attsMap.get(g.id) || []).length > 0 ? (
                     <div class="msg-atts">
-                      {(attsMap.get(g.id) || []).map((a) => (
-                        <a class="chip att" href={`/attachment/${a.id}`}>📎 {a.filename} <small>{Math.ceil(a.size / 1024)} KB</small></a>
-                      ))}
+                      {(attsMap.get(g.id) || []).map((a) =>
+                        a.content_type.startsWith('image/') ? (
+                          <a class="att-img-link" href={`/attachment/${a.id}`} title={a.filename}>
+                            <img class="att-img" src={`/attachment/${a.id}`} alt={a.filename} loading="lazy" />
+                          </a>
+                        ) : (
+                          <a class="chip att" href={`/attachment/${a.id}`}>📎 {a.filename} <small>{Math.ceil(a.size / 1024)} KB</small></a>
+                        ),
+                      )}
                     </div>
                   ) : null}
                 </div>
               ),
             )}
           </div>
+
+          <div class="typing" id="typing" data-url={`${base}/thread/${thread.id}/typing`} hidden></div>
 
           <div class="composer" id="composer">
             <div class="tabs">
@@ -720,18 +728,18 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             </div>
             <form method="post" action={`${base}/thread/${thread.id}/reply`} data-pane="reply" enctype="multipart/form-data">
               <div class="to">From <b>{collectiveAddr}</b> · To <b>{thread.counterpart_email || 'unknown'}</b></div>
-              <textarea name="body" rows={5} placeholder={`Write to ${counterpartFirst}…`} required></textarea>
+              <textarea name="body" rows={5} placeholder={`Write to ${counterpartFirst}…`} data-draft="reply" required></textarea>
               <div class="actions">
-                <button class="btn" type="submit">Send as {collective.slug}@ ➤</button>
                 <label class="file-label">📎 Attach<input type="file" name="files" multiple class="file-input" /></label>
                 <span class="hint">{counterpartFirst} receives a normal email · thread → answered · reply attributed to you</span>
+                <button class="btn send-btn" type="submit" data-busy="Sending…">Send as {collective.slug}@ ➤</button>
               </div>
             </form>
             <form method="post" action={`${base}/thread/${thread.id}/note`} data-pane="note" class="hidden">
               <div class="to note-to">⌁ Only members of {collective.name} will see this</div>
-              <textarea name="body" rows={4} placeholder="Add context, ask a teammate, leave a note…" required></textarea>
+              <textarea name="body" rows={4} placeholder="Add context, ask a teammate, leave a note…" data-draft="note" required></textarea>
               <div class="actions">
-                <button class="btn" type="submit">Add internal note</button>
+                <button class="btn send-btn" type="submit" data-busy="Saving…">Add internal note</button>
               </div>
             </form>
           </div>
@@ -794,23 +802,25 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
 
           <div class="side-block">
             <span class="label">Actions</span>
-            {thread.status === 'closed' || thread.status === 'spam' ? (
-              <form method="post" action={`${base}/thread/${thread.id}/status`}>
-                <input type="hidden" name="status" value="needs_reply" />
-                <button class="btn small ghost" type="submit">↩ Reopen</button>
-              </form>
-            ) : (
-              <>
+            <div class="btn-row">
+              {thread.status === 'closed' || thread.status === 'spam' ? (
                 <form method="post" action={`${base}/thread/${thread.id}/status`}>
-                  <input type="hidden" name="status" value="closed" />
-                  <button class="btn small ghost" type="submit">✓ Close thread</button>
+                  <input type="hidden" name="status" value="needs_reply" />
+                  <button class="btn small ghost" type="submit">↩ Reopen</button>
                 </form>
-                <form method="post" action={`${base}/thread/${thread.id}/status`}>
-                  <input type="hidden" name="status" value="spam" />
-                  <button class="btn small ghost" type="submit">🚫 Mark spam</button>
-                </form>
-              </>
-            )}
+              ) : (
+                <>
+                  <form method="post" action={`${base}/thread/${thread.id}/status`}>
+                    <input type="hidden" name="status" value="closed" />
+                    <button class="btn small ghost" type="submit">✓ Close thread</button>
+                  </form>
+                  <form method="post" action={`${base}/thread/${thread.id}/status`}>
+                    <input type="hidden" name="status" value="spam" />
+                    <button class="btn small ghost" type="submit">🚫 Mark spam</button>
+                  </form>
+                </>
+              )}
+            </div>
           </div>
         </aside>
       </div>
@@ -857,7 +867,42 @@ app.post('/inbox/:addr/thread/:id/note', async (c) => {
     await run('INSERT INTO notes (thread_id, member_id, body, created_at) VALUES (?, ?, ?, ?)',
       [thread.id, t.member.id, text.slice(0, 10000), now()])
   }
-  return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}`)
+  return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}?m=` + encodeURIComponent('Note added ✓'))
+})
+
+// ---------- typing presence ("X is drafting a response…") ----------
+// Ephemeral, kv-backed, polled by open thread pages. (Vercel functions can't
+// hold websockets; a 10s beacon + poll gives near-real-time without infra.)
+
+const TYPING_TTL = 30 // seconds
+
+app.post('/inbox/:addr/thread/:id/typing', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return c.json({ ok: false }, 401)
+  const thread = await threadOf(c, t)
+  if (!thread) return c.notFound()
+  await kvSet(`typing:${thread.id}:${t.member.id}`, String(now()))
+  return c.json({ ok: true })
+})
+
+app.get('/inbox/:addr/thread/:id/typing', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return c.json({ drafting: [] }, 401)
+  const thread = await threadOf(c, t)
+  if (!thread) return c.notFound()
+  const rows = await all<{ k: string; v: string }>('SELECT k, v FROM kv WHERE k LIKE ?', [`typing:${thread.id}:%`])
+  const cutoff = now() - TYPING_TTL
+  const staleKeys = rows.filter((r) => Number(r.v) < cutoff).map((r) => r.k)
+  if (staleKeys.length) {
+    await run(`DELETE FROM kv WHERE k IN (${staleKeys.map(() => '?').join(',')})`, staleKeys)
+  }
+  const members = await memberMap(t.collective.id)
+  const drafting = rows
+    .filter((r) => Number(r.v) >= cutoff)
+    .map((r) => Number(r.k.split(':')[2]))
+    .filter((id) => id !== t.member.id)
+    .map((id) => memberName(members.get(id)))
+  return c.json({ drafting })
 })
 
 app.post('/inbox/:addr/thread/:id/assign', async (c) => {

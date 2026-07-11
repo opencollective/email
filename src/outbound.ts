@@ -4,7 +4,7 @@ import {
   addEvent, get, getThread, lastInboundMessage, run, setStatus, storeAttachment,
   type Collective, type Member, type Message,
 } from './db.js'
-import { now } from './util.js'
+import { escapeHtml, now } from './util.js'
 
 export interface OutAttachment {
   filename: string
@@ -40,26 +40,47 @@ export async function sendCollectiveReply(
     ...(lastIn?.rfc822_message_id ? [lastIn.rfc822_message_id] : []),
   ]
 
+  // Image attachments are embedded inline in an HTML body (cid references),
+  // so recipients see the pictures in the email itself.
+  const hasImages = attachments.some((a) => a.contentType.startsWith('image/'))
+  const html = hasImages
+    ? `<div style="white-space:pre-wrap;font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px">${escapeHtml(body)}</div>` +
+      attachments.map((a, i) => a.contentType.startsWith('image/')
+        ? `<p style="margin:14px 0 0"><img src="cid:att${i}" alt="${escapeHtml(a.filename)}" style="max-width:100%;border-radius:8px"></p>`
+        : '').join('')
+    : undefined
+
   let resendEmailId: string | null = null
   if (!cfg.resendKey) {
-    console.log(`\n[outbound:dev] From: ${fromAddress}\n[outbound:dev] To: ${to}\n[outbound:dev] Subject: ${subject}\n${body}\n[outbound:dev] attachments: ${attachments.map((a) => a.filename).join(', ') || 'none'}\n`)
+    console.log(`\n[outbound:dev] From: ${fromAddress}\n[outbound:dev] To: ${to}\n[outbound:dev] Subject: ${subject}\n${body}\n[outbound:dev] attachments: ${attachments.map((a) => a.filename).join(', ') || 'none'}${hasImages ? ' (images inline)' : ''}\n`)
   } else {
     const headers: Record<string, string> = { 'Message-ID': messageId }
     if (lastIn?.rfc822_message_id) headers['In-Reply-To'] = lastIn.rfc822_message_id
     if (references.length) headers['References'] = references.join(' ')
-    const res = await fetch('https://api.resend.com/emails', {
+    const payload = (inline: boolean) => JSON.stringify({
+      from: `${collective.name} <${fromAddress}>`,
+      to: [to],
+      reply_to: [fromAddress],
+      subject,
+      text: body,
+      ...(inline && html ? { html } : {}),
+      headers,
+      attachments: attachments.map((a, i) => ({
+        filename: a.filename,
+        content: a.content.toString('base64'),
+        ...(inline && a.contentType.startsWith('image/') ? { content_id: `att${i}` } : {}),
+      })),
+    })
+    const send = (inline: boolean) => fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { Authorization: `Bearer ${cfg.resendKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        from: `${collective.name} <${fromAddress}>`,
-        to: [to],
-        reply_to: [fromAddress],
-        subject,
-        text: body,
-        headers,
-        attachments: attachments.map((a) => ({ filename: a.filename, content: a.content.toString('base64') })),
-      }),
+      body: payload(inline),
     })
+    let res = await send(true)
+    if (!res.ok && hasImages && res.status < 500) {
+      // inline embedding rejected — fall back to plain attachments
+      res = await send(false)
+    }
     if (!res.ok) {
       const detail = await res.text()
       throw new Error(`Could not send (${res.status}): ${detail.slice(0, 200)}`)
