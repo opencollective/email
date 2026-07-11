@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+env:
+  VERCEL_ORG_ID: team_I5omp4RvCylLViwaJ62brFZY
+  VERCEL_PROJECT_ID: prj_EThcHLoeWVGut9XMsCzQMkAyoSTC
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -17,3 +21,32 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+
+  deploy-production:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency: deploy-production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Vercel's remote build re-runs typecheck + tests (vercel.json buildCommand)
+      - run: npx vercel deploy --prod --yes --token=${{ secrets.VERCEL_TOKEN }}
+
+  deploy-staging:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
+    runs-on: ubuntu-latest
+    concurrency: deploy-staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Deploy preview and alias to staging.collective.email
+        run: |
+          url=$(npx vercel deploy --yes --token=${{ secrets.VERCEL_TOKEN }})
+          echo "deployed: $url"
+          npx vercel alias set "$url" staging.collective.email --token=${{ secrets.VERCEL_TOKEN }} --scope team_I5omp4RvCylLViwaJ62brFZY
