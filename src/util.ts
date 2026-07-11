@@ -96,6 +96,21 @@ export function stripQuotedReply(text: string): string {
   return lines.slice(0, cut).join('\n').trim()
 }
 
+/** Crude but dependency-free HTML → plain text (for HTML-only emails). */
+export function htmlToText(html: string): string {
+  return html
+    .replace(/<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>|<head[\s\S]*?<\/head>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|h[1-6]|li|tr|blockquote)>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"').replace(/&#0?39;/g, "'")
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 export function relTime(ts: number | null | undefined): string {
   if (!ts) return '—'
   const d = now() - ts

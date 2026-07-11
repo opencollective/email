@@ -156,6 +156,21 @@ export async function sendCollisionNotice(collective: Collective, member: Member
   })
 }
 
+export async function sendReplyFailure(collective: Collective, member: Member, thread: Thread, reason: string, draft: string) {
+  const html = shell(collective.name, `
+    <p style="margin:0 0 8px;font-size:15px">⚠️ <b>Your reply to “${escapeHtml(thread.subject)}” could not be sent.</b></p>
+    <p style="margin:0 0 14px;font-size:13px;color:#6b7280">${escapeHtml(reason)}</p>
+    ${draft ? `<p style="margin:0 0 8px;font-size:13px;color:#6b7280">Your draft, so nothing is lost:</p>
+    <div style="border:1.5px dashed #d3d6da;border-radius:12px;padding:14px;font-size:14px;white-space:pre-wrap;background:#f5f7fa;margin-bottom:18px">${escapeHtml(draft)}</div>` : ''}
+    ${btn(threadUrl(collective, thread.id), 'Reply from the app instead', false)}`)
+  await sendAppEmail({
+    to: member.email,
+    subject: `⚠️ Not sent: ${thread.subject}`,
+    html,
+    text: `Your reply to "${thread.subject}" could not be sent.\nReason: ${reason}\n\n${draft ? `Your draft:\n${draft}\n\n` : ''}Reply from the app: ${threadUrl(collective, thread.id)}`,
+  })
+}
+
 export async function sendReplyConfirmation(collective: Collective, member: Member, thread: Thread, to: string) {
   const html = shell(collective.name, `
     <p style="margin:0 0 8px;font-size:15px">✓ Your reply to “${escapeHtml(thread.subject)}” was sent to <b>${escapeHtml(to)}</b> as ${escapeHtml(collective.slug)}@${escapeHtml(cfg.emailDomain)}, and the thread is assigned to you.</p>

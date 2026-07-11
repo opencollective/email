@@ -29,8 +29,8 @@ export async function sendCollectiveReply(
   if (!to) throw new Error('This thread has no external sender to reply to.')
 
   let body = text.trim()
-  if (!body) throw new Error('Reply is empty.')
-  if (cfg.signReplies) body += `\n\n— ${member.name || member.email}, for ${collective.name}`
+  if (!body && attachments.length === 0) throw new Error('Reply is empty.')
+  if (cfg.signReplies) body += `${body ? '\n\n' : ''}— ${member.name || member.email}, for ${collective.name}`
 
   const fromAddress = `${collective.slug}@${cfg.emailDomain}`
   const subject = thread.subject.match(/^re:/i) ? thread.subject : `Re: ${thread.subject}`

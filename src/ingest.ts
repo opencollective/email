@@ -4,9 +4,22 @@ import {
   addEvent, all, get, getCollective, getMember, getThread, run, setAssignee, setStatus, storeAttachment,
   suggestedAssigneeFor, type Collective, type Message, type Thread,
 } from './db.js'
-import { normalizeSubject, now, stripQuotedReply } from './util.js'
-import { notifyInbound, sendCollisionNotice, sendReplyConfirmation } from './notify.js'
+import { htmlToText, normalizeSubject, now, stripQuotedReply } from './util.js'
+import { notifyInbound, sendCollisionNotice, sendReplyConfirmation, sendReplyFailure } from './notify.js'
 import { sendCollectiveReply } from './outbound.js'
+import { kvGet, kvSet } from './db.js'
+
+/** Best-effort plain text from a parsed email; HTML-only mail (e.g. Apple Mail
+ *  with inline images) has no text part at all. `dropQuotes` also removes the
+ *  quoted history (blockquotes + "On … wrote:" tails) for member replies. */
+export function plainText(parsed: ParsedMail, dropQuotes = false): string {
+  if (parsed.text?.trim()) return dropQuotes ? stripQuotedReply(parsed.text) : parsed.text
+  const html = typeof parsed.html === 'string' ? parsed.html : ''
+  if (!html) return ''
+  const cleaned = dropQuotes ? html.replace(/<blockquote[\s\S]*?<\/blockquote>/gi, '') : html
+  const text = htmlToText(cleaned)
+  return dropQuotes ? stripQuotedReply(text) : text
+}
 
 export const addrList = (a?: AddressObject | AddressObject[]): { address: string; name: string }[] => {
   const arr = Array.isArray(a) ? a : a ? [a] : []
@@ -82,7 +95,7 @@ export async function ingestInbound(collective: Collective, parsed: ParsedMail, 
     thread.id, msgId, parsed.inReplyTo || refs || null,
     from.address, from.name,
     JSON.stringify(tos.map((t) => t.address)), JSON.stringify(ccs.map((c) => c.address)),
-    (parsed.text || '').slice(0, 100_000),
+    plainText(parsed).slice(0, 100_000),
     resendEmailId ?? null, sentAt, now(),
   ])
   const messageDbId = r.lastId
@@ -127,8 +140,26 @@ export async function handleEmailReply(
   if (!collective || collective.slug !== ref.slug) return
   // Never let vacation autoresponders or mail-loop artifacts reach the sender
   if (isAutoSubmitted(parsed)) return
-  const draft = stripQuotedReply(parsed.text || '')
-  if (!draft) return
+
+  // Dedupe: webhook deliveries can retry — never send the same reply twice
+  if (parsed.messageId) {
+    const dedupeKey = `handled:${parsed.messageId}`
+    if (await kvGet(dedupeKey)) return
+    await kvSet(dedupeKey, String(now()))
+  }
+
+  const draft = plainText(parsed, true)
+  const attachments = (parsed.attachments || []).map((a, i) => ({
+    filename: a.filename || `attachment-${i + 1}`,
+    contentType: a.contentType || 'application/octet-stream',
+    content: a.content,
+  }))
+
+  if (!draft && attachments.length === 0) {
+    // nothing sendable — tell the member instead of dropping it on the floor
+    await sendReplyFailure(collective, member, thread, 'Your email seemed to be empty (no text we could extract, no attachments).', '')
+    return
+  }
 
   // Collision: has anyone answered since the message this notification was about?
   const orig = await get<Message>('SELECT * FROM messages WHERE id = ?', [ref.msgId])
@@ -145,12 +176,6 @@ export async function handleEmailReply(
     return
   }
 
-  const attachments = (parsed.attachments || []).map((a, i) => ({
-    filename: a.filename || `attachment-${i + 1}`,
-    contentType: a.contentType || 'application/octet-stream',
-    content: a.content,
-  }))
-
   try {
     await sendCollectiveReply(collective, thread.id, draft, member, 'email', attachments)
     const fresh = (await getThread(thread.id))!
@@ -159,5 +184,7 @@ export async function handleEmailReply(
     console.log(`[ingest] ${member.email} replied via email on thread ${thread.id}`)
   } catch (err) {
     console.error('[ingest] email reply failed to send:', err)
+    await sendReplyFailure(collective, member, thread,
+      err instanceof Error ? err.message : 'Unknown error while sending.', draft).catch(() => {})
   }
 }
