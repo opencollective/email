@@ -21,6 +21,7 @@ const SCHEMA = [
     name TEXT NOT NULL DEFAULT '',
     role TEXT NOT NULL DEFAULT 'member',
     notify_level TEXT NOT NULL DEFAULT 'every',
+    avatar_path TEXT,
     created_at INTEGER NOT NULL,
     last_seen_at INTEGER,
     removed_at INTEGER,
@@ -131,7 +132,12 @@ const SCHEMA = [
 let ready: Promise<void> | null = null
 /** Idempotent schema init; awaited by every query helper (memoized). */
 function init(): Promise<void> {
-  if (!ready) ready = db.batch(SCHEMA, 'write').then(() => undefined)
+  if (!ready) {
+    ready = db.batch(SCHEMA, 'write')
+      // additive migrations for pre-existing tables; ignore "duplicate column"
+      .then(() => db.execute('ALTER TABLE members ADD COLUMN avatar_path TEXT').catch(() => undefined))
+      .then(() => undefined)
+  }
   return ready
 }
 
@@ -171,6 +177,7 @@ export interface Member {
   name: string
   role: 'admin' | 'member'
   notify_level: 'every' | 'daily' | 'weekly'
+  avatar_path: string | null
   created_at: number
   last_seen_at: number | null
   removed_at: number | null

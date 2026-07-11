@@ -102,6 +102,7 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').cat
 
 export const Avatar: FC<{ member?: Member | null; empty?: boolean }> = ({ member, empty }) => {
   if (empty || !member) return <span class="avatar empty" title="Unassigned">–</span>
+  if (member.avatar_path) return <img class="avatar avatar-img" src={`/avatar/${member.id}`} alt={member.name || member.email} title={member.name || member.email} />
   return <span class="avatar" title={member.name || member.email}>{initials(member.name, member.email)}</span>
 }
 
@@ -167,7 +168,28 @@ export const Page: FC<{ title?: string; flash?: string; children?: Child }> = (p
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css" />
+      <link rel="stylesheet" href="/static/style.css?v=3" />
+      {/* Chromium prerenders links on hover/press → clicking a thread is instant.
+          GET routes with side effects (/a one-click actions, downloads) are excluded. */}
+      <script
+        type="speculationrules"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify({
+            prerender: [{
+              where: {
+                and: [
+                  { href_matches: '/*' },
+                  { not: { href_matches: '/a/*' } },
+                  { not: { href_matches: '/attachment/*' } },
+                  { not: { href_matches: '/avatar/*' } },
+                  { not: { href_matches: '/logout' } },
+                ],
+              },
+              eagerness: 'moderate',
+            }],
+          }),
+        }}
+      />
       <link rel="manifest" href="/manifest.webmanifest" />
       <link rel="icon" href="/static/icon-192.png" type="image/png" />
       <link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
@@ -216,14 +238,14 @@ export const Shell: FC<{
   const addr = `${props.collective.slug}@${cfg.emailDomain}`
   const isAdmin = props.member.role === 'admin'
   const userBlock = (
-    <div class="me">
+    <a class="me" href={`${base}/profile`} title="Your profile">
       <Avatar member={props.member} />
       <span class="me-id">
         {props.member.name || props.member.email.split('@')[0]}
         <small>{props.member.email}</small>
       </span>
-      <form method="post" action="/logout"><button class="linkish" type="submit">Sign out</button></form>
-    </div>
+      <span class="me-chevron">›</span>
+    </a>
   )
   return (
     <Page title={props.title ? `${props.title} · ${props.collective.name}` : props.collective.name} flash={props.flash}>

@@ -15,7 +15,7 @@ import {
 import { sendCollectiveReply } from '../outbound.js'
 import { digestTick, sendOnboarding } from '../notify.js'
 import { sendAppEmail } from '../appmail.js'
-import { readBlob } from '../storage.js'
+import { readBlob, saveBlob } from '../storage.js'
 import { excerpt, fmtDateTime, now, randomToken, relTime, slugify, verifyToken, waitingFor } from '../util.js'
 import { AssigneeChip, AuthCard, Avatar, eventText, Shell, StatusChip, TimeAgo } from './ui.js'
 import { HomePage } from './home.js'
@@ -731,7 +731,6 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               <textarea name="body" rows={5} placeholder={`Write to ${counterpartFirst}…`} data-draft="reply" required></textarea>
               <div class="actions">
                 <label class="file-label">📎 Attach<input type="file" name="files" multiple class="file-input" /></label>
-                <span class="hint">{counterpartFirst} receives a normal email · thread → answered · reply attributed to you</span>
                 <button class="btn send-btn" type="submit" data-busy="Sending…">Send as {collective.slug}@ ➤</button>
               </div>
             </form>
@@ -1145,8 +1144,6 @@ app.get('/inbox/:addr/notifications', async (c) => {
         <h1>Notifications</h1>
         <section class="card">
           <form method="post" action={`${base}/notifications`} class="me-form">
-            <label class="lbl">Display name</label>
-            <input class="input" name="name" value={member.name} required />
             <label class="lbl">Notifications about new requests</label>
             <div class="level-cards">
               {LEVELS.map((l) => (
@@ -1157,7 +1154,7 @@ app.get('/inbox/:addr/notifications', async (c) => {
               ))}
             </div>
             <div class="btn-row">
-              <button class="btn small" type="submit">Save</button>
+              <button class="btn small" type="submit" data-busy="Saving…">Save</button>
             </div>
           </form>
           <p class="fineprint">Whatever the level, you're always notified immediately on threads assigned to you. Notification emails can be answered directly: replying sends your answer to the original sender as {collective.slug}@{cfg.emailDomain} and assigns the thread to you.</p>
@@ -1171,10 +1168,105 @@ app.post('/inbox/:addr/notifications', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
   const body = await c.req.parseBody()
-  const name = String(body.name || '').trim().slice(0, 60)
   const level = ['every', 'daily', 'weekly'].includes(String(body.level)) ? String(body.level) : t.member.notify_level
-  await run("UPDATE members SET name = COALESCE(NULLIF(?, ''), name), notify_level = ? WHERE id = ?", [name, level, t.member.id])
+  await run('UPDATE members SET notify_level = ? WHERE id = ?', [level, t.member.id])
   return c.redirect(`/inbox/${t.collective.slug}/notifications?m=` + encodeURIComponent('Saved.'))
+})
+
+// ---------- profile (avatar, name, sign out, leave) ----------
+
+app.get('/inbox/:addr/profile', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const { collective, member } = t
+  const base = `/inbox/${collective.slug}`
+  const adminCount = (await activeMembers(collective.id)).filter((m) => m.role === 'admin').length
+  const lastAdmin = member.role === 'admin' && adminCount <= 1
+  return c.html(
+    <Shell member={member} collective={collective} title="Your profile" active="profile" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
+      <div class="page">
+        <h1>Your profile</h1>
+        <section class="card">
+          <form method="post" action={`${base}/profile`} enctype="multipart/form-data" class="me-form">
+            <div class="profile-avatar-row">
+              <Avatar member={member} />
+              <label class="file-label">🖼 Change avatar<input type="file" name="avatar" accept="image/*" class="file-input" /></label>
+            </div>
+            <label class="lbl">Display name</label>
+            <input class="input" name="name" value={member.name} required />
+            <label class="lbl">Signed in as</label>
+            <p class="muted" style="margin:0">{member.email}</p>
+            <div class="btn-row">
+              <button class="btn small" type="submit" data-busy="Saving…">Save</button>
+            </div>
+          </form>
+        </section>
+        <section class="card">
+          <div class="btn-row profile-exit">
+            <form method="post" action="/logout">
+              <button class="btn small ghost" type="submit">Sign out</button>
+            </form>
+            <form method="post" action={`${base}/leave`}>
+              <button class="btn small ghost danger-btn" type="submit" disabled={lastAdmin}
+                data-confirm={`Leave ${collective.name}? You'll lose access to ${collective.slug}@${cfg.emailDomain} until someone invites you back.`}>
+                Leave this collective
+              </button>
+            </form>
+          </div>
+          {lastAdmin ? <p class="fineprint">You're the last admin — make another member admin before leaving.</p> : null}
+        </section>
+      </div>
+    </Shell>,
+  )
+})
+
+app.post('/inbox/:addr/profile', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const body = await c.req.parseBody({ all: true })
+  const name = String(body.name || '').trim().slice(0, 60)
+  const avatar = body.avatar
+  if (avatar instanceof File && avatar.size > 0) {
+    if (!avatar.type.startsWith('image/')) {
+      return c.redirect(`/inbox/${t.collective.slug}/profile?m=` + encodeURIComponent('Avatars must be an image.'))
+    }
+    if (avatar.size > 2 * 1024 * 1024) {
+      return c.redirect(`/inbox/${t.collective.slug}/profile?m=` + encodeURIComponent('Avatar too large — keep it under 2 MB.'))
+    }
+    const locator = await saveBlob(`avatars/${t.member.id}/${Date.now()}-${avatar.name.replace(/[^\w.-]+/g, '_')}`,
+      Buffer.from(await avatar.arrayBuffer()), avatar.type)
+    await run('UPDATE members SET avatar_path = ? WHERE id = ?', [locator, t.member.id])
+  }
+  await run("UPDATE members SET name = COALESCE(NULLIF(?, ''), name) WHERE id = ?", [name, t.member.id])
+  return c.redirect(`/inbox/${t.collective.slug}/profile?m=` + encodeURIComponent('Saved ✓'))
+})
+
+app.post('/inbox/:addr/leave', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const adminCount = (await activeMembers(t.collective.id)).filter((m) => m.role === 'admin').length
+  if (t.member.role === 'admin' && adminCount <= 1) {
+    return c.redirect(`/inbox/${t.collective.slug}/profile?m=` + encodeURIComponent("You're the last admin — promote someone first."))
+  }
+  await run('UPDATE members SET removed_at = ? WHERE id = ?', [now(), t.member.id])
+  return c.redirect('/?m=' + encodeURIComponent(`You left ${t.collective.name}.`))
+})
+
+// avatar images, visible to fellow members of any shared collective
+app.get('/avatar/:id', async (c) => {
+  const email = c.get('email')
+  if (!email) return c.notFound()
+  const target = await getMember(Number(c.req.param('id')))
+  if (!target?.avatar_path) return c.notFound()
+  if (!(await getMemberIn(target.collective_id, email)) && !isPlatformAdmin(email)) return c.notFound()
+  const content = await readBlob(target.avatar_path)
+  if (!content) return c.notFound()
+  const ext = target.avatar_path.split('.').pop()?.toLowerCase() || ''
+  const type = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp' }[ext] || 'image/png'
+  return c.body(new Uint8Array(content), 200, {
+    'Content-Type': type,
+    'Cache-Control': 'private, max-age=3600',
+  })
 })
 
 const PLAN_INFO: Record<string, { label: string; seats: number | null; price: string }> = {

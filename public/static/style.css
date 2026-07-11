@@ -170,10 +170,24 @@ small { color: var(--muted); }
   padding: 14px 10px 4px;
 }
 .side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 8px; padding-top: 16px; }
-.me { display: flex; align-items: center; gap: 8px; font-size: 13.5px; padding: 0 10px; }
+.me {
+  display: flex; align-items: center; gap: 8px; font-size: 13.5px; padding: 8px 10px;
+  text-decoration: none; border-radius: 8px;
+}
+.me:hover { background: var(--card); }
 .me-id { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
 .me-id small { font-family: var(--mono); font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
-.me form { margin-left: auto; }
+.me-chevron { margin-left: auto; color: var(--muted); font-size: 16px; }
+
+/* profile */
+.profile-avatar-row { display: flex; align-items: center; gap: 14px; }
+.profile-avatar-row .avatar {
+  width: 56px; height: 56px; min-width: 56px; max-width: 56px; min-height: 56px; max-height: 56px;
+  font-size: 18px;
+}
+.profile-exit { justify-content: space-between; width: 100%; }
+.danger-btn { color: var(--danger); border-color: var(--danger); }
+.danger-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .main { min-width: 0; }
 a.org { text-decoration: none; }
 
@@ -217,13 +231,15 @@ body.drawer-open { overflow: hidden; }
 .modal-form { display: grid; gap: 8px; }
 
 .avatar {
-  width: 26px; height: 26px; min-width: 26px; min-height: 26px;
-  aspect-ratio: 1 / 1; align-self: center;
+  width: 26px; height: 26px;
+  min-width: 26px; max-width: 26px; min-height: 26px; max-height: 26px;
+  align-self: center; padding: 0;
   border-radius: 50%; flex: none; box-sizing: border-box; line-height: 1;
   background: var(--fill); border: 1.5px solid var(--line);
   font-family: var(--mono); font-size: 10px; font-weight: 700; color: var(--muted);
   display: inline-flex; align-items: center; justify-content: center;
 }
+img.avatar-img { object-fit: cover; }
 .avatar.empty { border-style: dashed; color: var(--line); }
 
 .chip {
@@ -234,7 +250,10 @@ body.drawer-open { overflow: hidden; }
 }
 .chip.solid { background: var(--fill); color: var(--ink); }
 .chip.assignee { color: var(--ink); }
-.chip.assignee .avatar { width: 18px; height: 18px; font-size: 8px; margin-left: -4px; }
+.chip.assignee .avatar {
+  width: 18px; height: 18px; font-size: 8px; margin-left: -4px;
+  min-width: 18px; max-width: 18px; min-height: 18px; max-height: 18px;
+}
 .chip.unassigned { border-color: var(--warn); color: var(--warn); background: var(--warn-bg); font-weight: 700; }
 .chip.removable { cursor: pointer; font: inherit; font-family: var(--mono); font-size: 11px; }
 .chip .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
