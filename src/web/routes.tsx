@@ -62,14 +62,38 @@ app.use('*', async (c, next) => {
   await next()
 })
 
-/** Resolve the collective from :slug and the signed-in member within it. */
-async function tenant(c: Context<Env>): Promise<{ collective: Collective; member: Member } | null> {
+/** Resolve the collective from :slug and the signed-in member within it.
+ *  Returns a Response when access fails: login redirect (preserving the
+ *  destination) or an explicit "wrong account" page — never a silent bounce. */
+async function tenant(c: Context<Env>): Promise<{ collective: Collective; member: Member } | Response> {
   const email = c.get('email')
-  if (!email) return null
+  if (!email) return c.redirect('/login?next=' + encodeURIComponent(c.req.path))
   const collective = await getCollectiveBySlug(c.req.param('slug') || '')
-  if (!collective || collective.status !== 'active') return null
+  if (!collective || collective.status !== 'active') return c.notFound()
   const member = await getMemberIn(collective.id, email)
-  if (!member || member.removed_at) return null
+  if (!member || member.removed_at) {
+    return c.html(
+      <AuthCard title={collective.name}>
+        <h1>Wrong account for {collective.name}</h1>
+        <p class="muted">
+          You're signed in as <b>{email}</b>, which isn't a member of {collective.name}.
+          If you received an invite or onboarding email at another address, sign out and
+          sign in with <b>that</b> address.
+        </p>
+        <form method="post" action="/logout">
+          <button class="btn" type="submit">Sign out & use another email</button>
+        </form>
+        {isPlatformAdmin(email) ? (
+          <form method="post" action={`/c/${collective.slug}/join-admin`}>
+            <button class="btn ghost" type="submit">Add {email} as admin of this collective</button>
+          </form>
+        ) : (
+          <p class="fineprint">Not a member at all yet? Ask someone in the collective for an invite link.</p>
+        )}
+      </AuthCard>,
+      403,
+    )
+  }
   run('UPDATE members SET last_seen_at = ? WHERE id = ?', [now(), member.id]).catch(() => {})
   return { collective, member }
 }
@@ -138,13 +162,18 @@ app.post('/waitlist', async (c) => {
 
 // ---------- login ----------
 
-const CodeForm = (p: { email: string; error?: string }) => (
+/** Only ever redirect to relative in-app paths from user-supplied `next`. */
+const safeNext = (v: unknown): string | null =>
+  typeof v === 'string' && /^\/[^/\\]/.test(v) ? v : null
+
+const CodeForm = (p: { email: string; error?: string; next?: string | null }) => (
   <AuthCard title="Enter code">
     <h1>Check your inbox</h1>
     <p class="muted">We sent a 6-digit code to <b>{p.email}</b>. <a href="/login">Wrong address?</a></p>
     {p.error ? <p class="error">{p.error}</p> : null}
     <form method="post" action="/verify">
       <input type="hidden" name="email" value={p.email} />
+      {p.next ? <input type="hidden" name="next" value={p.next} /> : null}
       <input class="code-input" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength={6} placeholder="······" required />
       <button class="btn" type="submit">Sign in</button>
     </form>
@@ -153,12 +182,14 @@ const CodeForm = (p: { email: string; error?: string }) => (
 )
 
 app.get('/login', (c) => {
-  if (c.get('email')) return c.redirect('/')
+  const next = safeNext(c.req.query('next'))
+  if (c.get('email')) return c.redirect(next || '/')
   return c.html(
     <AuthCard title="Sign in" flash={c.req.query('m')}>
       <h1>Sign in</h1>
       <p class="muted">Enter your personal email address. We'll send you a 6-digit code — no password needed.</p>
       <form method="post" action="/login">
+        {next ? <input type="hidden" name="next" value={next} /> : null}
         <input class="input" type="email" name="email" placeholder="you@example.com" required autofocus />
         <button class="btn" type="submit">Send me a code</button>
       </form>
@@ -170,6 +201,7 @@ app.get('/login', (c) => {
 app.post('/login', async (c) => {
   const body = await c.req.parseBody()
   const email = String(body.email || '').toLowerCase().trim()
+  const next = safeNext(body.next)
   if ((await membershipsByEmail(email)).length === 0 && !isPlatformAdmin(email)) {
     return c.html(
       <AuthCard title="Sign in">
@@ -180,7 +212,7 @@ app.post('/login', async (c) => {
     )
   }
   await issueCode(email, 'login')
-  return c.html(<CodeForm email={email} />)
+  return c.html(<CodeForm email={email} next={next} />)
 })
 
 app.post('/verify', async (c) => {
@@ -188,9 +220,9 @@ app.post('/verify', async (c) => {
   const email = String(body.email || '').toLowerCase().trim()
   const code = String(body.code || '')
   const res = await checkCode(email, code)
-  if (!res.ok) return c.html(<CodeForm email={email} error={res.error} />)
+  if (!res.ok) return c.html(<CodeForm email={email} error={res.error} next={safeNext(body.next)} />)
 
-  let redirect = '/'
+  let redirect = safeNext(body.next) || '/'
   if (res.row.purpose === 'join' && res.row.invite_token) {
     const invite = await get<Invite>('SELECT * FROM invites WHERE token = ?', [res.row.invite_token])
     const collective = invite ? await getCollective(invite.collective_id) : undefined
@@ -430,7 +462,7 @@ function filterArgs(key: string, memberId: number): (string | number)[] {
 
 app.get('/c/:slug/inbox', async (c) => {
   const t = await tenant(c)
-  if (!t) return c.redirect('/login')
+  if (t instanceof Response) return t
   const { collective, member } = t
   const base = `/c/${collective.slug}`
   const f = FILTERS[c.req.query('f') || 'needs_reply'] ? (c.req.query('f') || 'needs_reply') : 'needs_reply'
@@ -548,7 +580,7 @@ async function threadOf(c: Context<Env>, t: { collective: Collective }): Promise
 
 app.get('/c/:slug/thread/:id', async (c) => {
   const t = await tenant(c)
-  if (!t) return c.redirect('/login')
+  if (t instanceof Response) return t
   const { collective, member } = t
   const base = `/c/${collective.slug}`
   const thread = await threadOf(c, t)
@@ -755,7 +787,7 @@ const MAX_UPLOAD = 15 * 1024 * 1024 // total, per reply
 
 app.post('/c/:slug/thread/:id/reply', async (c) => {
   const t = await tenant(c)
-  if (!t) return c.redirect('/login')
+  if (t instanceof Response) return t
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
   const base = `/c/${t.collective.slug}`
@@ -781,7 +813,7 @@ app.post('/c/:slug/thread/:id/reply', async (c) => {
 
 app.post('/c/:slug/thread/:id/note', async (c) => {
   const t = await tenant(c)
-  if (!t) return c.redirect('/login')
+  if (t instanceof Response) return t
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
   const body = await c.req.parseBody()
@@ -795,7 +827,7 @@ app.post('/c/:slug/thread/:id/note', async (c) => {
 
 app.post('/c/:slug/thread/:id/assign', async (c) => {
   const t = await tenant(c)
-  if (!t) return c.redirect('/login')
+  if (t instanceof Response) return t
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
   const body = await c.req.parseBody()
@@ -811,7 +843,7 @@ app.post('/c/:slug/thread/:id/assign', async (c) => {
 
 app.post('/c/:slug/thread/:id/status', async (c) => {
   const t = await tenant(c)
-  if (!t) return c.redirect('/login')
+  if (t instanceof Response) return t
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
   const body = await c.req.parseBody()
@@ -824,7 +856,7 @@ app.post('/c/:slug/thread/:id/status', async (c) => {
 
 app.post('/c/:slug/thread/:id/tags', async (c) => {
   const t = await tenant(c)
-  if (!t) return c.redirect('/login')
+  if (t instanceof Response) return t
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
   const body = await c.req.parseBody()
@@ -834,12 +866,28 @@ app.post('/c/:slug/thread/:id/tags', async (c) => {
 
 app.post('/c/:slug/thread/:id/tags/remove', async (c) => {
   const t = await tenant(c)
-  if (!t) return c.redirect('/login')
+  if (t instanceof Response) return t
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
   const body = await c.req.parseBody()
   await removeTag(thread.id, Number(body.tag_id), t.member.id)
   return c.redirect(`/c/${t.collective.slug}/thread/${thread.id}`)
+})
+
+// Platform admin can add themselves to any collective (from the "wrong account" page)
+app.post('/c/:slug/join-admin', async (c) => {
+  const email = c.get('email')
+  if (!isPlatformAdmin(email)) return c.notFound()
+  const collective = await getCollectiveBySlug(c.req.param('slug') || '')
+  if (!collective) return c.notFound()
+  const existing = await getMemberIn(collective.id, email!)
+  if (existing) {
+    await run("UPDATE members SET removed_at = NULL, role = 'admin' WHERE id = ?", [existing.id])
+  } else {
+    await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [collective.id, email!, email!.split('@')[0], 'admin', 'every', now()])
+  }
+  return c.redirect(`/c/${collective.slug}/inbox?m=` + encodeURIComponent(`Added ${email} to ${collective.name}.`))
 })
 
 // ---------- tenant: collective management ----------
@@ -850,7 +898,7 @@ const activeInvite = (collectiveId: number) =>
 
 app.get('/c/:slug/collective', async (c) => {
   const t = await tenant(c)
-  if (!t) return c.redirect('/login')
+  if (t instanceof Response) return t
   const { collective, member } = t
   const base = `/c/${collective.slug}`
   const isAdmin = member.role === 'admin'
@@ -970,7 +1018,8 @@ app.get('/c/:slug/collective', async (c) => {
 
 app.post('/c/:slug/collective/invite', async (c) => {
   const t = await tenant(c)
-  if (!t || t.member.role !== 'admin') return c.redirect('/login')
+  if (t instanceof Response) return t
+  if (t.member.role !== 'admin') return c.redirect(`/c/${t.collective.slug}/collective`)
   await run('UPDATE invites SET revoked_at = ? WHERE collective_id = ? AND revoked_at IS NULL', [now(), t.collective.id])
   await run('INSERT INTO invites (collective_id, token, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?)',
     [t.collective.id, randomToken(18), t.member.id, now(), now() + cfg.inviteHours * 3600])
@@ -979,14 +1028,16 @@ app.post('/c/:slug/collective/invite', async (c) => {
 
 app.post('/c/:slug/collective/invite/revoke', async (c) => {
   const t = await tenant(c)
-  if (!t || t.member.role !== 'admin') return c.redirect('/login')
+  if (t instanceof Response) return t
+  if (t.member.role !== 'admin') return c.redirect(`/c/${t.collective.slug}/collective`)
   await run('UPDATE invites SET revoked_at = ? WHERE collective_id = ? AND revoked_at IS NULL', [now(), t.collective.id])
   return c.redirect(`/c/${t.collective.slug}/collective?m=` + encodeURIComponent('Invite link revoked.'))
 })
 
 app.post('/c/:slug/collective/member/:id/remove', async (c) => {
   const t = await tenant(c)
-  if (!t || t.member.role !== 'admin') return c.redirect('/login')
+  if (t instanceof Response) return t
+  if (t.member.role !== 'admin') return c.redirect(`/c/${t.collective.slug}/collective`)
   const target = await getMember(Number(c.req.param('id')))
   if (!target || target.collective_id !== t.collective.id || target.id === t.member.id) return c.redirect(`/c/${t.collective.slug}/collective`)
   const adminCount = (await activeMembers(t.collective.id)).filter((m) => m.role === 'admin').length
@@ -997,7 +1048,8 @@ app.post('/c/:slug/collective/member/:id/remove', async (c) => {
 
 app.post('/c/:slug/collective/member/:id/disconnect', async (c) => {
   const t = await tenant(c)
-  if (!t || t.member.role !== 'admin') return c.redirect('/login')
+  if (t instanceof Response) return t
+  if (t.member.role !== 'admin') return c.redirect(`/c/${t.collective.slug}/collective`)
   const target = await getMember(Number(c.req.param('id')))
   if (!target || target.collective_id !== t.collective.id) return c.redirect(`/c/${t.collective.slug}/collective`)
   await destroyEmailSessions(target.email)
@@ -1006,7 +1058,8 @@ app.post('/c/:slug/collective/member/:id/disconnect', async (c) => {
 
 app.post('/c/:slug/collective/member/:id/role', async (c) => {
   const t = await tenant(c)
-  if (!t || t.member.role !== 'admin') return c.redirect('/login')
+  if (t instanceof Response) return t
+  if (t.member.role !== 'admin') return c.redirect(`/c/${t.collective.slug}/collective`)
   const target = await getMember(Number(c.req.param('id')))
   if (!target || target.collective_id !== t.collective.id || target.id === t.member.id) return c.redirect(`/c/${t.collective.slug}/collective`)
   const adminCount = (await activeMembers(t.collective.id)).filter((m) => m.role === 'admin').length
@@ -1017,7 +1070,7 @@ app.post('/c/:slug/collective/member/:id/role', async (c) => {
 
 app.post('/c/:slug/me', async (c) => {
   const t = await tenant(c)
-  if (!t) return c.redirect('/login')
+  if (t instanceof Response) return t
   const body = await c.req.parseBody()
   const name = String(body.name || '').trim().slice(0, 60)
   const level = ['every', 'daily', 'weekly'].includes(String(body.level)) ? String(body.level) : t.member.notify_level
