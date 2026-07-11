@@ -566,7 +566,7 @@ app.get('/inbox/:addr', async (c) => {
       </dialog>
       <div class="rows">
         {threads.length === 0 ? (
-          <div class="empty">
+          <div class="empty-state">
             {f === 'needs_reply'
               ? '🎉 Nothing needs a reply. The inbox is at zero.'
               : 'No threads here.'}

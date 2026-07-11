@@ -291,7 +291,7 @@ img.avatar-img { object-fit: cover; }
 .row .tags { display: flex; gap: 6px; }
 .row .age { font-family: var(--mono); font-size: 11px; color: var(--muted); text-align: right; }
 .row .age.hot { color: var(--danger); font-weight: 700; }
-.empty { padding: 60px 20px; text-align: center; color: var(--muted); }
+.empty-state { padding: 60px 20px; text-align: center; color: var(--muted); }
 
 /* ---------- thread ---------- */
 .thread-wrap { display: grid; grid-template-columns: 1fr 260px; min-height: 100vh; }
