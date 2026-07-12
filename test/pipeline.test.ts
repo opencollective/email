@@ -260,9 +260,9 @@ test('legacy /c/ URLs redirect to the new scheme', async () => {
 
 test('homepage shows EUR for EU visitors and USD otherwise', async () => {
   const eu = await (await app.request('/', { headers: { 'x-vercel-ip-country': 'BE' } })).text()
-  assert.match(eu, /€25/)
+  assert.match(eu, /€10/)
   const us = await (await app.request('/', { headers: { 'x-vercel-ip-country': 'US' } })).text()
-  assert.match(us, /\$25/)
+  assert.match(us, /\$10/)
 })
 
 test('wrong-account access shows the explicit 403 page, not a silent bounce', async () => {
