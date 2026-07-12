@@ -5,6 +5,7 @@ import {
   type Collective, type Member, type Message,
 } from './db.js'
 import { escapeHtml, now } from './util.js'
+import { assertCanSend } from './billing.js'
 
 export interface OutAttachment {
   filename: string
@@ -24,6 +25,7 @@ export async function sendCollectiveReply(
 ): Promise<Message> {
   const thread = await getThread(threadId)
   if (!thread || thread.collective_id !== collective.id) throw new Error('Thread not found')
+  await assertCanSend(collective)
   const lastIn = await lastInboundMessage(threadId)
   const to = thread.counterpart_email || lastIn?.from_email
   if (!to) throw new Error('This thread has no external sender to reply to.')

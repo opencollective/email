@@ -79,7 +79,7 @@ export async function notifyInbound(collective: Collective, thread: Thread, mess
   const members = await activeMembers(collective.id)
   const assigneeId = thread.assignee_member_id
   const recipients = members.filter(
-    (m) => (m.notify_level === 'every' || m.id === assigneeId) && m.email !== message.from_email?.toLowerCase(),
+    (m) => m.role !== 'reader' && (m.notify_level === 'every' || m.id === assigneeId) && m.email !== message.from_email?.toLowerCase(),
   )
   if (recipients.length === 0) return
 
@@ -199,7 +199,9 @@ async function sendDigest(collective: Collective, member: Member, threads: Threa
           ${assignee ? `assigned to ${escapeHtml(memberLabel(assignee))}` : '<b style="color:#b45309">unassigned</b>'}
         </p>
         <p style="margin:0 0 8px;font-size:13px;color:#4b5563">${escapeHtml(excerpt(lastMsg?.body_text || '', 160))}</p>
-        <a href="${assignUrl(t.id, member.id, member.id, true)}" style="font-size:12.5px;color:#1869f5;font-weight:600">Assign to me & reply →</a>
+        ${member.role === 'reader'
+          ? `<a href="${threadUrl(collective, t.id)}" style="font-size:12.5px;color:#1869f5;font-weight:600">Open thread →</a>`
+          : `<a href="${assignUrl(t.id, member.id, member.id, true)}" style="font-size:12.5px;color:#1869f5;font-weight:600">Assign to me & reply →</a>`}
       </div>`)
   }
 
@@ -250,6 +252,50 @@ export async function digestTick() {
       } catch (err) {
         console.error(`[digest] failed for ${m.email}:`, err)
       }
+    }
+  }
+}
+
+
+// ---------- trial lifecycle emails ----------
+
+import { billingState, trialDaysLeft } from './billing.js'
+
+async function sendTrialEmail(collective: Collective, admins: Member[], subject: string, message: string) {
+  const html = shell(collective.name, `
+    <p style="margin:0 0 8px;font-size:15px">${escapeHtml(message)}</p>
+    <p style="margin:0 0 14px;font-size:13px;color:#6b7280">Your community keeps reading for free — subscribing keeps replies flowing from ${escapeHtml(collective.slug)}@${escapeHtml(cfg.emailDomain)}.</p>
+    ${btn(`${cfg.baseUrl}/inbox/${collective.slug}/billing`, 'Open Billing')}`)
+  for (const a of admins) {
+    await sendAppEmail({ to: a.email, subject, html, text: `${message}\n\nBilling: ${cfg.baseUrl}/inbox/${collective.slug}/billing` })
+  }
+}
+
+/** Called hourly by the cron. Reminds admins at 15 and 5 days before the trial
+ *  ends, and once more when the inbox goes read-only. */
+export async function trialTick() {
+  for (const collective of await allCollectives()) {
+    if (collective.status !== 'active') continue
+    const state = billingState(collective)
+    if (state !== 'trial' && state !== 'grace') continue
+    const days = trialDaysLeft(collective)
+    const milestone = state === 'grace' ? 'grace' : days !== null && days <= 5 ? '5' : days !== null && days <= 15 ? '15' : null
+    if (!milestone) continue
+    const key = `trialmail:${collective.id}:${milestone}`
+    if (await kvGet(key)) continue
+    const admins = (await activeMembers(collective.id)).filter((m) => m.role === 'admin')
+    if (admins.length === 0) continue
+    try {
+      if (milestone === 'grace') {
+        await sendTrialEmail(collective, admins, `${collective.name}: trial ended — inbox is now read-only`,
+          `The free trial of ${collective.name} has ended. Incoming email still arrives and nothing is lost, but nobody can reply until you subscribe. After 30 days the address stops receiving.`)
+      } else {
+        await sendTrialEmail(collective, admins, `${collective.name}: ${days} days left in your free trial`,
+          `Your free trial of ${collective.name} ends in ${days} day${days === 1 ? '' : 's'}. Subscribe for €10/month (or €100/year) to keep replying as ${collective.slug}@${cfg.emailDomain}.`)
+      }
+      await kvSet(key, String(Math.floor(Date.now() / 1000)))
+    } catch (err) {
+      console.error(`[trial] reminder failed for ${collective.slug}:`, err)
     }
   }
 }

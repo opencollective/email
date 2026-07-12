@@ -17,6 +17,8 @@ const SCHEMA = [
     stripe_status TEXT,
     billing_cycle TEXT,
     billing_currency TEXT,
+    trial_ends_at INTEGER,
+    comped INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS members (
@@ -145,6 +147,8 @@ function init(): Promise<void> {
       'ALTER TABLE collectives ADD COLUMN stripe_status TEXT',
       'ALTER TABLE collectives ADD COLUMN billing_cycle TEXT',
       'ALTER TABLE collectives ADD COLUMN billing_currency TEXT',
+      'ALTER TABLE collectives ADD COLUMN trial_ends_at INTEGER',
+      'ALTER TABLE collectives ADD COLUMN comped INTEGER NOT NULL DEFAULT 0',
     ]
     ready = db.batch(SCHEMA, 'write')
       // additive migrations for pre-existing tables; ignore "duplicate column"
@@ -195,6 +199,8 @@ export interface Collective {
   stripe_status?: string | null
   billing_cycle?: string | null
   billing_currency?: string | null
+  trial_ends_at?: number | null
+  comped?: number | null
   created_at: number
 }
 
@@ -203,7 +209,7 @@ export interface Member {
   collective_id: number
   email: string
   name: string
-  role: 'admin' | 'member'
+  role: 'admin' | 'member' | 'reader'
   notify_level: 'every' | 'daily' | 'weekly'
   avatar_path: string | null
   created_at: number
@@ -297,8 +303,8 @@ export async function createCollective(slug: string, name: string, plan = 'colle
   if (!/^[a-z0-9][a-z0-9-]{1,39}$/.test(clean)) throw new Error('Address must be 2–40 chars: letters, numbers, dashes.')
   if (RESERVED_SLUGS.has(clean)) throw new Error(`"${clean}" is reserved.`)
   if (await getCollectiveBySlug(clean)) throw new Error(`${clean}@${cfg.emailDomain} is already taken.`)
-  const r = await run('INSERT INTO collectives (slug, name, status, plan, created_at) VALUES (?, ?, ?, ?, ?)',
-    [clean, name.trim() || clean, 'active', plan, now()])
+  const r = await run('INSERT INTO collectives (slug, name, status, plan, trial_ends_at, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [clean, name.trim() || clean, 'active', plan, now() + 60 * 86400, now()])
   return (await getCollective(r.lastId))!
 }
 

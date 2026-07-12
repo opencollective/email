@@ -507,3 +507,18 @@ img.avatar-img { object-fit: cover; }
 
   .flash { top: auto; bottom: 16px; width: calc(100vw - 32px); text-align: center; }
 }
+
+/* ---------- billing / roles ---------- */
+.billing-banner {
+  margin: 14px 20px 0; padding: 10px 16px; border-radius: 10px; font-size: 13.5px;
+  border: 1.5px solid var(--warn); background: var(--warn-bg); color: var(--warn);
+}
+.billing-banner a { color: inherit; font-weight: 700; }
+.billing-banner.danger { border-color: var(--danger); color: var(--danger); background: transparent; }
+.billing-banner.soft { border-color: var(--line); color: var(--muted); background: var(--fill); }
+.reader-note {
+  margin: 22px 24px 0; padding: 12px 16px; border-radius: 10px; font-size: 14px;
+  border: 1.5px dashed var(--line); color: var(--muted); background: var(--fill);
+}
+.role-form { display: inline-flex; gap: 6px; align-items: center; }
+.role-select { width: auto; padding: 3px 6px; font-size: 12.5px; border-radius: 6px; }

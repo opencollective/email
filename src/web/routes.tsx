@@ -13,10 +13,11 @@ import {
   checkCode, createSession, destroyEmailSessions, destroySession, emailFromSession, issueCode,
 } from '../auth.js'
 import { sendCollectiveReply } from '../outbound.js'
-import { digestTick, sendOnboarding } from '../notify.js'
+import { digestTick, sendOnboarding, trialTick } from '../notify.js'
 import { sendAppEmail } from '../appmail.js'
 import { readBlob, saveBlob } from '../storage.js'
 import { createCheckoutSession, createPortalSession, stripeEnabled } from '../stripe.js'
+import { billingState, canSend, planLimits, repliesThisMonth, trialDaysLeft, GRACE_DAYS } from '../billing.js'
 import { excerpt, fmtDateTime, now, randomToken, relTime, slugify, verifyToken, waitingFor } from '../util.js'
 import { AssigneeChip, AuthCard, Avatar, eventText, Shell, StatusChip, TimeAgo } from './ui.js'
 import { HomePage } from './home.js'
@@ -25,6 +26,11 @@ type Env = { Variables: { email: string | null } }
 export const app = new Hono<Env>()
 
 const SID = 'requests_sid'
+/** Readers can see everything but act on nothing. */
+const readerBlock = (c: Context<Env>, t: { collective: Collective; member: Member }) =>
+  t.member.role === 'reader'
+    ? c.redirect(`/inbox/${t.collective.slug}?m=` + encodeURIComponent('You have read access — ask an admin to make you a contributor.'))
+    : null
 const memberName = (m?: Member | null) => (m ? m.name || m.email.split('@')[0] : 'someone')
 const isPlatformAdmin = (email: string | null) => !!email && !!cfg.adminEmail && email === cfg.adminEmail
 
@@ -83,6 +89,7 @@ async function tenant(c: Context<Env>): Promise<{ collective: Collective; member
   // collective + membership resolved in a single round-trip
   const row = slug ? await get<any>(`
     SELECT c.id AS c_id, c.slug AS c_slug, c.name AS c_name, c.status AS c_status, c.plan AS c_plan, c.created_at AS c_created_at,
+           c.stripe_status AS c_stripe_status, c.trial_ends_at AS c_trial_ends_at, c.comped AS c_comped,
            m.id, m.collective_id, m.email, m.name, m.role, m.notify_level, m.avatar_path, m.created_at, m.last_seen_at, m.removed_at
     FROM collectives c LEFT JOIN members m ON m.collective_id = c.id AND m.email = ?
     WHERE c.slug = ?
@@ -90,6 +97,7 @@ async function tenant(c: Context<Env>): Promise<{ collective: Collective; member
   if (!row || row.c_status !== 'active') return c.notFound()
   const collective: Collective = {
     id: row.c_id, slug: row.c_slug, name: row.c_name, status: row.c_status, plan: row.c_plan, created_at: row.c_created_at,
+    stripe_status: row.c_stripe_status, trial_ends_at: row.c_trial_ends_at, comped: row.c_comped,
   }
   const member = (row.id != null ? (row as Member) : undefined) as Member | undefined
   if (!member || member.removed_at) {
@@ -128,6 +136,7 @@ app.get('/cron/digest', async (c) => {
   const auth = c.req.header('authorization') || ''
   if (cfg.cronSecret && auth !== `Bearer ${cfg.cronSecret}`) return c.json({ error: 'unauthorized' }, 401)
   await digestTick()
+  await trialTick()
   return c.json({ ok: true })
 })
 
@@ -254,7 +263,7 @@ app.post('/verify', async (c) => {
           [res.row.join_name || '', res.row.join_level || existing.notify_level, existing.id])
       } else {
         await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-          [collective.id, email, res.row.join_name || email.split('@')[0], 'member', res.row.join_level || 'every', now()])
+          [collective.id, email, res.row.join_name || email.split('@')[0], 'reader', res.row.join_level || 'daily', now()])
       }
       redirect = `/inbox/${collective.slug}?m=` + encodeURIComponent(`Welcome to ${collective.name}!`)
     }
@@ -751,6 +760,9 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
 
           <div class="typing" id="typing" data-url={`${base}/thread/${thread.id}/typing`} hidden></div>
 
+          {member.role === 'reader' ? (
+            <div class="reader-note">👀 You have read access. Ask an admin to make you a contributor to reply or comment.</div>
+          ) : (
           <div class="composer" id="composer">
             <div class="tabs">
               <button class="tab on" data-tab="reply" type="button">✉ Reply to {counterpartFirst}</button>
@@ -772,6 +784,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               </div>
             </form>
           </div>
+          )}
         </div>
 
         <aside class="thread-side">
@@ -785,12 +798,15 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             ) : (
               <div class="assign-state unassigned-box">
                 <b>⚠ Nobody has this yet</b>
+                {member.role !== 'reader' ? (
                 <form method="post" action={`${base}/thread/${thread.id}/assign`}>
                   <input type="hidden" name="member_id" value={String(member.id)} />
                   <button class="btn small" type="submit">🙋 Claim it</button>
                 </form>
+                ) : null}
               </div>
             )}
+            {member.role !== 'reader' ? (
             <form method="post" action={`${base}/thread/${thread.id}/assign`} class="assign-form">
               <select name="member_id">
                 <option value="">— Unassigned —</option>
@@ -802,6 +818,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               </select>
               <button class="btn small ghost" type="submit">{assignee ? 'Reassign' : 'Assign'}</button>
             </form>
+            ) : null}
           </div>
 
           <div class="side-block">
@@ -813,6 +830,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             {thread.status === 'needs_reply' ? <span class="kv"><span class="k">WAITING</span> <b>{waitingFor(thread.last_message_at)}</b></span> : null}
           </div>
 
+          {member.role !== 'reader' ? (<>
           <div class="side-block">
             <span class="label">Tags</span>
             <div class="tag-list">
@@ -851,6 +869,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               )}
             </div>
           </div>
+          </>) : null}
         </aside>
       </div>
     </Shell>,
@@ -862,6 +881,8 @@ const MAX_UPLOAD = 15 * 1024 * 1024 // total, per reply
 app.post('/inbox/:addr/thread/:id/reply', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
+  const blocked = readerBlock(c, t)
+  if (blocked) return blocked
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
   const base = `/inbox/${t.collective.slug}`
@@ -888,6 +909,8 @@ app.post('/inbox/:addr/thread/:id/reply', async (c) => {
 app.post('/inbox/:addr/thread/:id/note', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
+  const blocked = readerBlock(c, t)
+  if (blocked) return blocked
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
   const body = await c.req.parseBody()
@@ -937,6 +960,8 @@ app.get('/inbox/:addr/thread/:id/typing', async (c) => {
 app.post('/inbox/:addr/thread/:id/assign', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
+  const blocked = readerBlock(c, t)
+  if (blocked) return blocked
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
   const body = await c.req.parseBody()
@@ -953,6 +978,8 @@ app.post('/inbox/:addr/thread/:id/assign', async (c) => {
 app.post('/inbox/:addr/thread/:id/status', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
+  const blocked = readerBlock(c, t)
+  if (blocked) return blocked
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
   const body = await c.req.parseBody()
@@ -966,6 +993,8 @@ app.post('/inbox/:addr/thread/:id/status', async (c) => {
 app.post('/inbox/:addr/thread/:id/tags', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
+  const blocked = readerBlock(c, t)
+  if (blocked) return blocked
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
   const body = await c.req.parseBody()
@@ -976,6 +1005,8 @@ app.post('/inbox/:addr/thread/:id/tags', async (c) => {
 app.post('/inbox/:addr/thread/:id/tags/remove', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
+  const blocked = readerBlock(c, t)
+  if (blocked) return blocked
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
   const body = await c.req.parseBody()
@@ -1078,17 +1109,20 @@ app.get('/inbox/:addr/members', async (c) => {
                   {memberName(m)}{m.id === member.id ? ' (you)' : ''}
                   <small>{m.email}</small>
                 </span>
-                {m.role === 'admin' ? <span class="chip solid">admin</span> : <span class="chip">member</span>}
+                {m.role === 'admin' ? <span class="chip solid">admin</span> : m.role === 'reader' ? <span class="chip">reader</span> : <span class="chip">contributor</span>}
                 <span class="m-meta">
                   {LEVELS.find((l) => l.value === m.notify_level)?.label}
                   <small>{replies(m.id)} replies · seen {relTime(m.last_seen_at)}</small>
                 </span>
                 {isAdmin && m.id !== member.id ? (
                   <span class="m-actions">
-                    <form method="post" action={`${base}/members/${m.id}/role`} class="inline">
-                      <button class="linkish" type="submit" disabled={m.role === 'admin' && adminCount <= 1}>
-                        {m.role === 'admin' ? 'Remove admin' : 'Make admin'}
-                      </button>
+                    <form method="post" action={`${base}/members/${m.id}/role`} class="inline role-form">
+                      <select name="role" class="role-select">
+                        <option value="reader" selected={m.role === 'reader'}>Reader</option>
+                        <option value="member" selected={m.role === 'member'}>Contributor</option>
+                        <option value="admin" selected={m.role === 'admin'}>Admin</option>
+                      </select>
+                      <button class="linkish" type="submit">Set</button>
                     </form>
                     <form method="post" action={`${base}/members/${m.id}/disconnect`} class="inline">
                       <button class="linkish" type="submit" data-confirm={`Sign ${memberName(m)} out of all devices? They can sign back in with a code.`}>Disconnect</button>
@@ -1157,9 +1191,21 @@ app.post('/inbox/:addr/members/:id/role', async (c) => {
   if (t.member.role !== 'admin') return c.redirect(back)
   const target = await getMember(Number(c.req.param('id')))
   if (!target || target.collective_id !== t.collective.id || target.id === t.member.id) return c.redirect(back)
-  const adminCount = (await activeMembers(t.collective.id)).filter((m) => m.role === 'admin').length
+  const body = await c.req.parseBody()
+  const role = ['reader', 'member', 'admin'].includes(String(body.role)) ? String(body.role) : target.role
+  if (role === target.role) return c.redirect(back)
+  const members = await activeMembers(t.collective.id)
+  const adminCount = members.filter((m) => m.role === 'admin').length
   if (target.role === 'admin' && adminCount <= 1) return c.redirect(back + '?m=' + encodeURIComponent('Cannot demote the last admin.'))
-  await run('UPDATE members SET role = ? WHERE id = ?', [target.role === 'admin' ? 'member' : 'admin', target.id])
+  // contributor seats (contributor + admin) are the paid dimension; readers are free
+  if (target.role === 'reader' && role !== 'reader') {
+    const contributors = members.filter((m) => m.role !== 'reader').length
+    const limit = planLimits(t.collective.plan).contributors
+    if (contributors >= limit) {
+      return c.redirect(back + '?m=' + encodeURIComponent(`Contributor limit reached (${limit} on the ${t.collective.plan} plan). Make someone a reader or upgrade.`))
+    }
+  }
+  await run('UPDATE members SET role = ? WHERE id = ?', [role, target.id])
   return c.redirect(back)
 })
 
@@ -1300,9 +1346,9 @@ app.get('/avatar/:id', async (c) => {
 })
 
 const PLAN_INFO: Record<string, { label: string; seats: number | null; price: string }> = {
-  duo: { label: 'Duo', seats: 2, price: '$/€10 per month (or 100/year)' },
-  collective: { label: 'Collective', seats: 5, price: '$/€25 per month (or 250/year)' },
-  pro: { label: 'Pro', seats: null, price: '$/€100 per month (or 1,000/year)' },
+  collective: { label: 'Collective', seats: 10, price: '$/€10 per month (or 100/year — save 20)' },
+  pro: { label: 'Pro', seats: null, price: '$/€100 per month (or 1,000/year — save 200)' },
+  duo: { label: 'Duo (legacy)', seats: 2, price: '$/€10 per month' },
 }
 
 const SUB_ACTIVE = new Set(['active', 'trialing', 'past_due'])
@@ -1321,7 +1367,12 @@ app.get('/inbox/:addr/billing', async (c) => {
   const flash = c.req.query('success') ? 'Subscription active — thank you! 🎉'
     : c.req.query('canceled') ? 'Checkout canceled — nothing was charged.'
     : c.req.query('m')
-  const subscribed = SUB_ACTIVE.has(collective.stripe_status || '')
+  const state = billingState(collective)
+  const subscribed = state === 'subscribed'
+  const daysLeft = trialDaysLeft(collective)
+  const used = await repliesThisMonth(collective.id)
+  const limits = planLimits(collective.plan)
+  const contributors = (await activeMembers(collective.id)).filter((m) => m.role !== 'reader').length
 
   return c.html(
     <Shell member={member} collective={collective} title="Billing" active="billing" flash={flash} sidebar={<BackNav base={base} />}>
@@ -1330,18 +1381,23 @@ app.get('/inbox/:addr/billing', async (c) => {
         <section class="card">
           <h2>{plan.label} plan</h2>
           <p class="muted">{plan.price}</p>
-          <span class="kv"><span class="k">SEATS</span> {seats}{plan.seats ? ` of ${plan.seats}` : ' (no limit)'}</span>
+          <span class="kv"><span class="k">READERS</span> {seats - contributors} (always free, unlimited)</span>
+          <span class="kv"><span class="k">CONTRIB.</span> {contributors}{plan.seats ? ` of ${plan.seats}` : ' (no limit)'}</span>
+          <span class="kv"><span class="k">REPLIES</span> {used} of {limits.replies} this month</span>
           <span class="kv"><span class="k">ADDRESS</span> {collective.slug}@{cfg.emailDomain}</span>
-          {collective.stripe_status ? (
-            <span class="kv"><span class="k">STATUS</span> <span class={`chip ${subscribed ? 'status-answered' : 'unassigned'}`}>{collective.stripe_status}</span>
-              {collective.billing_cycle ? ` · ${collective.billing_cycle}` : ''}{collective.billing_currency ? ` · ${collective.billing_currency.toUpperCase()}` : ''}</span>
-          ) : null}
+          <span class="kv"><span class="k">STATUS</span> {
+            state === 'subscribed' ? <span class="chip status-answered">subscribed{collective.billing_cycle ? ` · ${collective.billing_cycle}` : ''}</span>
+            : state === 'comped' ? <span class="chip status-answered">free (courtesy of collective.email)</span>
+            : state === 'trial' ? <span class="chip solid">free trial · {daysLeft} days left</span>
+            : state === 'grace' ? <span class="chip unassigned">trial ended — read-only</span>
+            : <span class="chip unassigned">expired — address inactive</span>
+          }</span>
         </section>
 
         {!stripeEnabled() ? (
           <section class="card">
             <h2>Nothing to pay yet</h2>
-            <p class="muted">Billing isn't live — early collectives use collective.email <b>for free during the preview</b>. We'll email the admins well before anything is ever charged, and you'll choose monthly or yearly (2 months free) then.</p>
+            <p class="muted">Online payment isn't enabled in this environment yet. Your trial status above is accurate — we'll email the admins before anything changes.</p>
           </section>
         ) : subscribed ? (
           <section class="card">
@@ -1354,14 +1410,20 @@ app.get('/inbox/:addr/billing', async (c) => {
         ) : (
           <section class="card">
             <h2>Subscribe</h2>
-            <p class="muted">Pick a plan — you'll finish on Stripe's secure checkout page. Yearly = 2 months free.</p>
+            <p class="muted">{state === 'trial'
+              ? `Your free trial runs for another ${daysLeft} days — subscribe any time and nothing changes except the peace of mind.`
+              : state === 'grace'
+                ? 'Your trial has ended: mail still arrives, but replies are paused. Subscribe to pick up right where you left off.'
+                : state === 'expired'
+                  ? 'This address is inactive. Subscribe to reactivate it — threads and history are still here.'
+                  : 'Pick a plan — you finish on Stripe’s secure checkout page.'}</p>
             <form method="post" action={`${base}/billing/checkout`} class="me-form">
               <label class="lbl">Plan</label>
               <div class="level-cards">
-                {Object.entries(PLAN_INFO).map(([key, p]) => (
+                {Object.entries(PLAN_INFO).filter(([key]) => key !== 'duo').map(([key, p]) => (
                   <label class="level-card">
-                    <input type="radio" name="plan" value={key} checked={key === collective.plan} />
-                    <span><b>{p.label}</b><small>{p.price}{p.seats ? ` · up to ${p.seats} members` : ''}</small></span>
+                    <input type="radio" name="plan" value={key} checked={key === collective.plan || (collective.plan === 'duo' && key === 'collective')} />
+                    <span><b>{p.label}</b><small>{p.price}{p.seats ? ` · ${p.seats} contributors` : ' · your own domain · unlimited contributors'} · unlimited readers</small></span>
                   </label>
                 ))}
               </div>

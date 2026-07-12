@@ -1,10 +1,10 @@
 /* collective.email service worker: precache the shell, then network-first for
  * pages (so content is always fresh) with cache fallback for offline use. */
-const VERSION = 'v4'
+const VERSION = 'v5'
 const STATIC_CACHE = `static-${VERSION}`
 const PAGE_CACHE = `pages-${VERSION}`
 const PRECACHE = [
-  '/static/style.css?v=4',
+  '/static/style.css?v=5',
   '/static/icon-192.png',
   '/static/icon-512.png',
   '/manifest.webmanifest',

@@ -200,6 +200,7 @@ section h2 { font-size: clamp(25px, 3.6vw, 36px); letter-spacing: -0.8px; margin
 .wl-addr input { border: none; background: none; color: var(--ink); font: inherit; padding: 12px 0; width: 100%; }
 .wl-addr .domain { color: var(--blue); font-weight: 700; }
 .plan-picks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
+.plan-picks.two { grid-template-columns: repeat(2, 1fr); }
 .plan { position: relative; }
 .plan input { position: absolute; opacity: 0; }
 .plan span {
@@ -222,8 +223,31 @@ section h2 { font-size: clamp(25px, 3.6vw, 36px); letter-spacing: -0.8px; margin
 }
 .footer .spacer { flex: 1; }
 
+/* product tour screenshots */
+.shot { margin: 0 0 26px; max-width: 900px; }
+.shot img {
+  width: 100%; height: auto; display: block;
+  border: 1px solid var(--line); border-top: none;
+  border-radius: 0 0 14px 14px; box-shadow: var(--shadow);
+}
+.shot-bar {
+  display: flex; align-items: center; gap: 6px;
+  border: 1px solid var(--line); border-bottom: none; border-radius: 14px 14px 0 0;
+  background: var(--bg-soft); padding: 10px 14px;
+}
+.shot-bar i { width: 9px; height: 9px; border-radius: 50%; background: var(--line); }
+.shot-bar em {
+  font-style: normal; font-family: var(--mono); font-size: 11px; color: var(--muted);
+  margin-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.shot figcaption { font-size: 13.5px; color: var(--muted); margin-top: 10px; max-width: 70ch; }
+.shot figcaption b { color: var(--navy); }
+.shot-row { display: grid; grid-template-columns: 2fr 1fr; gap: 26px; align-items: start; max-width: 900px; }
+.shot.phone img { border: 1px solid var(--line); border-radius: 22px; }
+.plans.two { grid-template-columns: repeat(2, 1fr); max-width: 760px; }
+
 @media (max-width: 820px) {
-  .steps, .plans, .feats, .plan-picks { grid-template-columns: 1fr; }
+  .steps, .plans, .plans.two, .feats, .plan-picks, .shot-row { grid-template-columns: 1fr; }
   .plan-card.hot { order: -1; }
   .hero { padding-top: 44px; }
   .d-int { margin-left: 10px; padding-left: 10px; }
@@ -290,26 +314,27 @@ export const HomePage: FC<{ joined?: boolean; currency?: 'USD' | 'EUR' }> = ({ j
               </span>
               <a class="btn" id="claim-btn" href="#waitlist">Claim it →</a>
             </form>
-            <p class="claim-note">Works the minute you sign up — no DNS, no mail server, no IT person.</p>
+            <p class="claim-note">Free for 2 months, no credit card. No DNS, no mail server, no IT person.</p>
           </header>
 
           <section class="demo">
             <h2>One address outside. A whole collective inside.</h2>
-            <p class="sub">Marie writes to one clean address and gets one clear answer. Your collective sees the whole story — who's on it, what was said, and everything discussed along the way.</p>
-            <div class="thread" role="img" aria-label="Example conversation showing an incoming email, internal notes between members, and the reply sent by the collective">
-              <div class="d-msg">
-                <div class="d-head"><span class="d-ava">MV</span><b>Marie Vandenberghe</b><span class="addr2">→ lacooperative@collective.email · Tue 10:42</span></div>
-                <p class="d-body">Hi! Could we host our general assembly at your space on Sept 12? We'd be around 35 people.</p>
-              </div>
-              <div class="d-int">
-                <span class="d-label">⌁ Internal — Marie never sees this</span>
-                <div class="d-event">⚙ Automatically assigned to <b>Xavier</b> based on previous emails from this sender</div>
-                <div class="d-note"><b>Leen</b> — @xavier Sept 12 is free in the calendar. Member rate would be €120 👍</div>
-              </div>
-              <div class="d-msg out">
-                <div class="d-head"><span class="d-ava">LC</span><b>La Coopérative</b><span class="addr2">lacooperative@collective.email → marie@… · Tue 14:20</span><span class="d-chip">✎ sent by Xavier · members only</span></div>
-                <p class="d-body">Hi Marie! Great news — the space is free on Sept 12, and the member rate is €120. Shall I pencil you in?</p>
-              </div>
+            <p class="sub">Marie writes to one clean address and gets one clear answer. Your collective sees the whole story — who's on it, what was said, and everything discussed along the way. These are real screenshots:</p>
+            <figure class="shot">
+              <span class="shot-bar"><i></i><i></i><i></i><em>collective.email/inbox/lacooperative/thread</em></span>
+              <img src="/static/tour/tour-thread.webp" alt="A thread: Marie's email, an internal note between members that Marie never sees, and the reply sent as the collective with 'sent by Xavier · members only'." loading="lazy" width="1600" height="1058" />
+              <figcaption><b>The two layers.</b> The email conversation the sender sees — and the internal rail (notes, assignments, provenance) only your collective sees.</figcaption>
+            </figure>
+            <div class="shot-row">
+              <figure class="shot">
+                <span class="shot-bar"><i></i><i></i><i></i><em>collective.email/inbox/lacooperative</em></span>
+                <img src="/static/tour/tour-inbox.webp" alt="The shared inbox: threads sorted by waiting time with status, tags and assignee avatars." loading="lazy" width="1600" height="1000" />
+                <figcaption><b>Nothing falls through.</b> Longest-waiting on top, a name (or a loud “unassigned”) next to every thread.</figcaption>
+              </figure>
+              <figure class="shot phone">
+                <img src="/static/tour/tour-mobile.webp" alt="The same inbox on a phone, installable as an app." loading="lazy" width="780" height="1600" />
+                <figcaption><b>In your pocket.</b> Add it to your home screen — it works like an app, offline included.</figcaption>
+              </figure>
             </div>
             <p class="aside"><b>Answer without opening the app:</b> new requests land in each member's personal inbox. Reply to the notification and your answer goes out as the collective — the thread is assigned to you. If a teammate answered first, we stop your reply and tell you who got there.</p>
           </section>
@@ -346,47 +371,35 @@ export const HomePage: FC<{ joined?: boolean; currency?: 'USD' | 'EUR' }> = ({ j
 
           <section class="pricing" id="pricing">
             <h2>Simple pricing</h2>
-            <p class="sub">Pay monthly, or yearly with two months free. We're onboarding collectives gradually — join the waiting list and you'll get your invite when your spot opens. No payment until then.</p>
-            <div class="plans">
-              <div class="plan-card">
-                <h3>Duo</h3>
-                <p class="price">{s}10<small> / month</small></p>
-                <p class="yearly">or {s}100 / year — 2 months free</p>
-                <ul>
-                  <li><b>Up to 2 members</b></li>
-                  <li>yourcollective@collective.email</li>
-                  <li>Shared inbox, assignments, internal notes</li>
-                  <li>Notifications &amp; reply-by-email</li>
-                </ul>
-                <a class="btn ghost" href="#waitlist">Join the waiting list</a>
-              </div>
+            <p class="sub"><b>Every collective starts with 2 months free — no credit card.</b> Your whole community reads for free, forever; you pay only for the people who answer. If you let the trial lapse, mail keeps arriving read-only for 30 days, so nothing is ever lost.</p>
+            <div class="plans two">
               <div class="plan-card hot">
                 <span class="tag">Most collectives</span>
                 <h3>Collective</h3>
-                <p class="price">{s}25<small> / month</small></p>
-                <p class="yearly">or {s}250 / year — 2 months free</p>
+                <p class="price">{s}10<small> / month</small></p>
+                <p class="yearly">or {s}100 / year — save {s}20</p>
                 <ul>
-                  <li><b>Up to 5 members</b></li>
-                  <li>Everything in Duo</li>
-                  <li>Tags &amp; auto-assignment</li>
-                  <li>Daily &amp; weekly digests</li>
+                  <li><b>Unlimited readers</b> — your whole community follows along, free</li>
+                  <li><b>10 contributors</b> who reply, assign & discuss</li>
+                  <li>1,000 replies per month</li>
+                  <li>yourcollective@collective.email</li>
                 </ul>
-                <a class="btn" href="#waitlist">Join the waiting list</a>
+                <a class="btn" href="#waitlist">Start free — 2 months</a>
               </div>
               <div class="plan-card">
                 <h3>Pro</h3>
                 <p class="price">{s}100<small> / month</small></p>
-                <p class="yearly">or {s}1,000 / year — 2 months free</p>
+                <p class="yearly">or {s}1,000 / year — save {s}200</p>
                 <ul>
                   <li><b>Your own domain</b> — hello@yourcollective.org</li>
-                  <li>Everything in Collective</li>
-                  <li>More members</li>
+                  <li>Unlimited contributors & readers</li>
+                  <li>10,000 replies per month</li>
                   <li>Priority support</li>
                 </ul>
-                <a class="btn ghost" href="#waitlist">Join the waiting list</a>
+                <a class="btn ghost" href="#waitlist">Start free — 2 months</a>
               </div>
             </div>
-            <p class="foot">Prices are the same in USD and EUR — you're seeing {currency === 'EUR' ? 'euros' : 'dollars'} based on your location. Need more seats or something special? Join the waiting list and tell us — we're building this with the first collectives.</p>
+            <p class="foot">Prices are the same in USD and EUR — you're seeing {currency === 'EUR' ? 'euros' : 'dollars'} based on your location. Addresses of lapsed trials are released, so nobody can squat a name. Something special needed? Tell us on the waiting list — we're building this with the first collectives.</p>
           </section>
 
           <section class="waitlist" id="waitlist">
@@ -395,7 +408,7 @@ export const HomePage: FC<{ joined?: boolean; currency?: 'USD' | 'EUR' }> = ({ j
               {joined ? (
                 <p class="wl-ok">✓ You're on the list! We'll email you when your spot opens — no payment until then.</p>
               ) : null}
-              <p class="sub">Tell us who you are and we'll reserve your address. First come, first served.</p>
+              <p class="sub">Tell us who you are and we'll reserve your address — your 2 free months start when it's approved. First come, first served.</p>
               <form method="post" action="/waitlist">
                 <label class="lbl" for="wl-name">Your collective's address</label>
                 <span class="wl-addr">
@@ -405,10 +418,9 @@ export const HomePage: FC<{ joined?: boolean; currency?: 'USD' | 'EUR' }> = ({ j
                 <label class="lbl" for="wl-email">Your email</label>
                 <input class="field" id="wl-email" type="email" name="email" placeholder="you@example.com" required />
                 <label class="lbl">Plan you're interested in</label>
-                <div class="plan-picks">
-                  <label class="plan"><input type="radio" name="plan" value="duo" /><span><b>Duo</b><small>{s}10 · 2 people</small></span></label>
-                  <label class="plan"><input type="radio" name="plan" value="collective" checked /><span><b>Collective</b><small>{s}25 · 5 people</small></span></label>
-                  <label class="plan"><input type="radio" name="plan" value="pro" /><span><b>Pro</b><small>{s}100 · own domain</small></span></label>
+                <div class="plan-picks two">
+                  <label class="plan"><input type="radio" name="plan" value="collective" checked /><span><b>Collective</b><small>{s}10 · 10 contributors · unlimited readers</small></span></label>
+                  <label class="plan"><input type="radio" name="plan" value="pro" /><span><b>Pro</b><small>{s}100 · your own domain</small></span></label>
                 </div>
                 <button class="btn" type="submit">Put me on the list</button>
               </form>

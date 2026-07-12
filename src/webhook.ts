@@ -6,6 +6,7 @@ import { getCollectiveBySlug, run } from './db.js'
 import { parseReplyAddress } from './util.js'
 import { handleEmailReply, ingestInbound } from './ingest.js'
 import { verifyStripeSignature } from './stripe.js'
+import { billingState, canReceive } from './billing.js'
 
 /** Verify a svix-signed webhook (Resend uses svix).
  *  signature = base64(hmacSHA256(base64decode(secret_after_whsec), `${id}.${timestamp}.${body}`)) */
@@ -144,6 +145,7 @@ webhooks.post('/webhooks/resend', async (c) => {
     const slug = addr.split('@')[0].split('+')[0]
     const collective = await getCollectiveBySlug(slug)
     if (!collective || collective.status !== 'active' || seen.has(collective.id)) continue
+    if (!canReceive(billingState(collective))) continue // trial + grace over: address released
     seen.add(collective.id)
     await ingestInbound(collective, parsed, d.email_id)
     routed++

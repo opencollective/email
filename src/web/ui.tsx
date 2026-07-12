@@ -3,6 +3,7 @@ import type { Child, FC } from 'hono/jsx'
 import { cfg } from '../config.js'
 import type { Collective, Member, Thread } from '../db.js'
 import { initials, relTime } from '../util.js'
+import { billingState, trialDaysLeft } from '../billing.js'
 
 export const SCRIPT = `
 document.addEventListener('click', (e) => {
@@ -168,7 +169,7 @@ export const Page: FC<{ title?: string; flash?: string; children?: Child }> = (p
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=4" />
+      <link rel="stylesheet" href="/static/style.css?v=5" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script
@@ -290,7 +291,31 @@ export const Shell: FC<{
           </div>
         </div>
 
-        <main class="main">{props.children}</main>
+        <main class="main">
+          {(() => {
+            const state = billingState(props.collective)
+            if (state === 'grace') return (
+              <div class="billing-banner">
+                ⏸ The free trial has ended — the inbox is <b>read-only</b>. Mail still arrives; nothing is lost.
+                {isAdmin ? <a href={`${base}/billing`}> Subscribe to reply again →</a> : ' An admin can reactivate it from Billing.'}
+              </div>
+            )
+            if (state === 'expired') return (
+              <div class="billing-banner danger">
+                ✖ This address is inactive — it no longer receives email.
+                {isAdmin ? <a href={`${base}/billing`}> Subscribe to reactivate →</a> : ' An admin can reactivate it from Billing.'}
+              </div>
+            )
+            const days = state === 'trial' ? trialDaysLeft(props.collective) : null
+            if (isAdmin && days !== null && days <= 15) return (
+              <div class="billing-banner soft">
+                ⏳ {days} day{days === 1 ? '' : 's'} left in the free trial. <a href={`${base}/billing`}>Subscribe →</a>
+              </div>
+            )
+            return null
+          })()}
+          {props.children}
+        </main>
       </div>
     </Page>
   )

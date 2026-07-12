@@ -5,9 +5,9 @@ import type { Collective } from './db.js'
 export const stripeEnabled = () => !!cfg.stripeKey
 
 export const PLAN_PRICING: Record<string, { label: string; monthly: number; yearly: number }> = {
-  duo: { label: 'Duo', monthly: 1000, yearly: 10000 },
-  collective: { label: 'Collective', monthly: 2500, yearly: 25000 },
+  collective: { label: 'Collective', monthly: 1000, yearly: 10000 },
   pro: { label: 'Pro', monthly: 10000, yearly: 100000 },
+  duo: { label: 'Duo', monthly: 1000, yearly: 10000 }, // legacy
 }
 
 async function stripe(path: string, params?: Record<string, string>, method: 'GET' | 'POST' = 'POST'): Promise<any> {
@@ -28,7 +28,7 @@ async function stripe(path: string, params?: Record<string, string>, method: 'GE
 /** Find (by lookup_key) or create the Stripe price for a plan/cycle/currency.
  *  Products and prices are provisioned lazily — no dashboard setup needed. */
 async function ensurePrice(plan: string, cycle: 'monthly' | 'yearly', currency: 'eur' | 'usd'): Promise<string> {
-  const lookup = `ce_${plan}_${cycle}_${currency}`
+  const lookup = `ce2_${plan}_${cycle}_${currency}` // v2: repriced 2026-07
   const existing = await stripe('/prices', { 'lookup_keys[]': lookup, limit: '1' }, 'GET')
   if (existing.data?.[0]) return existing.data[0].id
 

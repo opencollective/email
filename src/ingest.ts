@@ -140,6 +140,11 @@ export async function handleEmailReply(
   if (!collective || collective.slug !== ref.slug) return
   // Never let vacation autoresponders or mail-loop artifacts reach the sender
   if (isAutoSubmitted(parsed)) return
+  if (member.role === 'reader') {
+    await sendReplyFailure(collective, member, thread,
+      'You have read access to this collective. Ask an admin to make you a contributor to reply.', plainText(parsed, true))
+    return
+  }
 
   // Dedupe: webhook deliveries can retry — never send the same reply twice
   if (parsed.messageId) {
