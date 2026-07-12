@@ -17,6 +17,9 @@ delete process.env.TURSO_AUTH_TOKEN
 delete process.env.LIBSQL_URL
 delete process.env.BLOB_READ_WRITE_TOKEN
 delete process.env.VERCEL
+delete process.env.STRIPE_SECRET_KEY
+delete process.env.STRIPE_WEBHOOK_SECRET
+delete process.env.CRON_SECRET
 
 // keep test output readable: silence the dev email dumps
 const origLog = console.log
