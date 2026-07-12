@@ -120,3 +120,62 @@ test('contributor seat limit blocks promotion beyond the plan', async () => {
   assert.match(decodeURIComponent(res.headers.get('location')!), /Contributor limit reached/)
   assert.equal((await get<any>('SELECT role FROM members WHERE id = ?', [reader.id]))!.role, 'reader')
 })
+
+// ---------- one-click email actions ----------
+
+test('one-click assign works on unassigned threads and lands at the thread bottom', async () => {
+  const { signToken } = await import('../src/util.js')
+  const col = await createCollective(`oc-${uniq()}`, 'OneClick')
+  const sid = await member(col.id, `oc-a-${uniq()}@t.test`, 'admin')
+  const me = (await get<any>('SELECT id FROM members WHERE collective_id = ?', [col.id]))!
+  const threadId = await seedThread(col.id)
+  const token = signToken({ a: 'assign', th: threadId, tg: me.id, by: me.id, r: 0 }, 3600)
+  const res = await app.request(`/a/${token}`, { headers: { cookie: `requests_sid=${sid}` } })
+  assert.equal(res.status, 302)
+  assert.match(res.headers.get('location')!, /act=assigned&pane=note#act/)
+  assert.equal((await get<any>('SELECT assignee_member_id FROM threads WHERE id = ?', [threadId]))!.assignee_member_id, me.id)
+})
+
+test('one-click assign never overrides an existing assignment (kept)', async () => {
+  const { signToken } = await import('../src/util.js')
+  const col = await createCollective(`kept-${uniq()}`, 'Kept')
+  const sid = await member(col.id, `kept-a-${uniq()}@t.test`, 'admin')
+  const first = (await get<any>('SELECT id FROM members WHERE collective_id = ?', [col.id]))!
+  await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [col.id, `kept-b-${uniq()}@t.test`, 'other', 'member', 'every', now()])
+  const other = (await get<any>("SELECT id FROM members WHERE collective_id = ? AND role = 'member'", [col.id]))!
+  const threadId = await seedThread(col.id)
+  await run('UPDATE threads SET assignee_member_id = ? WHERE id = ?', [other.id, threadId])
+  await run("INSERT INTO events (thread_id, actor_member_id, type, data_json, created_at) VALUES (?, ?, 'assigned', ?, ?)",
+    [threadId, other.id, JSON.stringify({ to: other.id, reason: 'claim' }), now() - 300])
+  const token = signToken({ a: 'assign', th: threadId, tg: first.id, by: first.id, r: 0 }, 3600)
+  const res = await app.request(`/a/${token}`, { headers: { cookie: `requests_sid=${sid}` } })
+  assert.match(res.headers.get('location')!, /act=kept/)
+  assert.equal((await get<any>('SELECT assignee_member_id FROM threads WHERE id = ?', [threadId]))!.assignee_member_id, other.id, 'assignment unchanged')
+  const page = await app.request(res.headers.get('location')!.replace('#act', ''), { headers: { cookie: `requests_sid=${sid}` } })
+  assert.match(await page.text(), /already assigned this to/)
+})
+
+test('one-click spam marks the thread as spam', async () => {
+  const { signToken } = await import('../src/util.js')
+  const col = await createCollective(`spam-${uniq()}`, 'Spam')
+  const sid = await member(col.id, `spam-a-${uniq()}@t.test`, 'admin')
+  const me = (await get<any>('SELECT id FROM members WHERE collective_id = ?', [col.id]))!
+  const threadId = await seedThread(col.id)
+  const token = signToken({ a: 'spam', th: threadId, by: me.id }, 3600)
+  const res = await app.request(`/a/${token}`, { headers: { cookie: `requests_sid=${sid}` } })
+  assert.match(res.headers.get('location')!, /act=spam/)
+  assert.equal((await get<any>('SELECT status FROM threads WHERE id = ?', [threadId]))!.status, 'spam')
+})
+
+test('signed-out one-click executes then routes through login with next', async () => {
+  const { signToken } = await import('../src/util.js')
+  const col = await createCollective(`ocl-${uniq()}`, 'OneClickLogin')
+  await member(col.id, `ocl-${uniq()}@t.test`, 'admin')
+  const me = (await get<any>('SELECT id FROM members WHERE collective_id = ?', [col.id]))!
+  const threadId = await seedThread(col.id)
+  const token = signToken({ a: 'assign', th: threadId, tg: me.id, by: me.id, r: 0 }, 3600)
+  const res = await app.request(`/a/${token}`)
+  assert.match(res.headers.get('location')!, /\/login\?next=/)
+  assert.equal((await get<any>('SELECT assignee_member_id FROM threads WHERE id = ?', [threadId]))!.assignee_member_id, me.id, 'action executed via token auth')
+})

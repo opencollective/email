@@ -93,15 +93,13 @@ export async function notifyInbound(collective: Collective, thread: Thread, mess
   const attText = atts.length ? `Attachments: ${atts.map((a) => a.filename).join(', ')}\n` : ''
 
   for (const m of recipients) {
-    const others = members.filter((o) => o.id !== m.id)
-    const assignOthers = others
-      .slice(0, 12)
-      .map((o) => `<a href="${assignUrl(thread.id, o.id, m.id)}" style="color:#0c2d66">assign to ${escapeHtml(memberLabel(o))}</a>`)
-      .join(' · ')
+    const others = members.filter((o) => o.id !== m.id && o.role !== 'reader')
 
     const assignLine = assignee
       ? `<p style="margin:0 0 14px;font-size:13px;color:#6b7280">Assigned to <b style="color:#141414">${escapeHtml(memberLabel(assignee))}</b>${assignee.id === m.id ? ' (you)' : ''}.</p>`
       : `<p style="margin:0 0 14px;font-size:13px;color:#b45309"><b>Nobody has this yet.</b></p>`
+    const spamUrl = `${cfg.baseUrl}/a/${signToken({ a: 'spam', th: thread.id, by: m.id }, 60 * 60 * 24 * 14)}`
+    const noteUrl = `${threadUrl(collective, thread.id)}?pane=note#composer`
 
     const html = shell(collective.name, `
       <p style="margin:0 0 4px;font-size:13px;color:#6b7280">New message to ${escapeHtml(collective.slug)}@${escapeHtml(cfg.emailDomain)}</p>
@@ -110,10 +108,12 @@ export async function notifyInbound(collective: Collective, thread: Thread, mess
       ${assignLine}
       <div style="border:1px solid #e6e8eb;border-radius:12px;padding:14px;font-size:14px;white-space:pre-wrap;margin-bottom:14px">${escapeHtml(bodyPreview)}</div>
       ${attHtml}
-      ${btn(assignUrl(thread.id, m.id, m.id, true), 'Assign to me & reply')}
+      <p style="margin:0 0 12px;font-size:14px;color:#141414"><b>Just reply to this email</b> to answer ${escapeHtml(message.from_email || 'the sender')} as ${escapeHtml(collective.slug)}@${escapeHtml(cfg.emailDomain)} — the thread is assigned to you. If a teammate answers first, we stop your reply and tell you.</p>
+      ${btn(assignUrl(thread.id, m.id, m.id, true), 'Assign to me — answer later')}
       ${btn(threadUrl(collective, thread.id), 'Open thread', false)}
-      <p style="margin:10px 0 0;font-size:13px;color:#6b7280">Or <b>just reply to this email</b> — your answer goes to ${escapeHtml(message.from_email || 'the sender')} as ${escapeHtml(collective.slug)}@${escapeHtml(cfg.emailDomain)} and the thread is assigned to you. If someone answers before you, we'll stop your reply and let you know.</p>
-      <p style="margin:10px 0 0;font-size:12px;color:#9aa1ab">${assignOthers}</p>`)
+      ${others.length ? `<p style="margin:14px 0 6px;font-size:12px;font-weight:700;letter-spacing:0.5px;color:#6b7280">OR ASSIGN IT TO (ONE CLICK):</p>
+      <p style="margin:0;line-height:2.1">${others.slice(0, 12).map((o) => `<a href="${assignUrl(thread.id, o.id, m.id)}" style="display:inline-block;border:1.5px solid #d3d6da;border-radius:100px;padding:4px 14px;margin:0 6px 6px 0;font-size:13px;color:#0c2d66;text-decoration:none;font-weight:600">${escapeHtml(memberLabel(o))}</a>`).join('')}</p>` : ''}
+      <p style="margin:14px 0 0;font-size:12px;color:#9aa1ab"><a href="${noteUrl}" style="color:#6b7280">Add a private note</a> · <a href="${spamUrl}" style="color:#6b7280">Mark as spam</a></p>`)
 
     const text = [
       `New message to ${collective.slug}@${cfg.emailDomain}`,

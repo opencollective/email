@@ -223,31 +223,27 @@ section h2 { font-size: clamp(25px, 3.6vw, 36px); letter-spacing: -0.8px; margin
 }
 .footer .spacer { flex: 1; }
 
-/* product tour screenshots */
-.shot { margin: 0 0 26px; max-width: 900px; }
-.shot img {
+/* product tour carousels (swipeable) */
+.carousel {
+  display: flex; gap: 18px; overflow-x: auto; padding: 6px 4px 14px;
+  scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch;
+  margin: 0 0 30px; max-width: 900px;
+}
+.carousel::-webkit-scrollbar { height: 6px; }
+.carousel::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+.slide { margin: 0; flex: 0 0 min(290px, 78vw); scroll-snap-align: center; }
+.slide img {
   width: 100%; height: auto; display: block;
-  border: 1px solid var(--line); border-top: none;
-  border-radius: 0 0 14px 14px; box-shadow: var(--shadow);
+  border: 1px solid var(--line); border-radius: 22px; box-shadow: var(--shadow);
+  background: var(--bg-soft);
 }
-.shot-bar {
-  display: flex; align-items: center; gap: 6px;
-  border: 1px solid var(--line); border-bottom: none; border-radius: 14px 14px 0 0;
-  background: var(--bg-soft); padding: 10px 14px;
-}
-.shot-bar i { width: 9px; height: 9px; border-radius: 50%; background: var(--line); }
-.shot-bar em {
-  font-style: normal; font-family: var(--mono); font-size: 11px; color: var(--muted);
-  margin-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.shot figcaption { font-size: 13.5px; color: var(--muted); margin-top: 10px; max-width: 70ch; }
-.shot figcaption b { color: var(--navy); }
-.shot-row { display: grid; grid-template-columns: 2fr 1fr; gap: 26px; align-items: start; max-width: 900px; }
-.shot.phone img { border: 1px solid var(--line); border-radius: 22px; }
+.slide figcaption { font-size: 13px; color: var(--muted); margin-top: 10px; }
+.slide figcaption b { color: var(--navy); }
+.demo-h3 { font-size: 20px; margin: 34px 0 8px; }
 .plans.two { grid-template-columns: repeat(2, 1fr); max-width: 760px; }
 
 @media (max-width: 820px) {
-  .steps, .plans, .plans.two, .feats, .plan-picks, .shot-row { grid-template-columns: 1fr; }
+  .steps, .plans, .plans.two, .feats, .plan-picks { grid-template-columns: 1fr; }
   .plan-card.hot { order: -1; }
   .hero { padding-top: 44px; }
   .d-int { margin-left: 10px; padding-left: 10px; }
@@ -314,26 +310,41 @@ export const HomePage: FC<{ joined?: boolean; currency?: 'USD' | 'EUR' }> = ({ j
               </span>
               <a class="btn" id="claim-btn" href="#waitlist">Claim it →</a>
             </form>
-            <p class="claim-note">Free for 2 months, no credit card. No DNS, no mail server, no IT person.</p>
+            <p class="claim-note">Free for 2 months, no credit card.</p>
           </header>
 
           <section class="demo">
             <h2>One address outside. A whole collective inside.</h2>
-            <p class="sub">Marie writes to one clean address and gets one clear answer. Your collective sees the whole story — who's on it, what was said, and everything discussed along the way. These are real screenshots:</p>
-            <figure class="shot">
-              <span class="shot-bar"><i></i><i></i><i></i><em>collective.email/inbox/lacooperative/thread</em></span>
-              <img src="/static/tour/tour-thread.webp" alt="A thread: Marie's email, an internal note between members that Marie never sees, and the reply sent as the collective with 'sent by Xavier · members only'." loading="lazy" width="1600" height="1058" />
-              <figcaption><b>The two layers.</b> The email conversation the sender sees — and the internal rail (notes, assignments, provenance) only your collective sees.</figcaption>
-            </figure>
-            <div class="shot-row">
-              <figure class="shot">
-                <span class="shot-bar"><i></i><i></i><i></i><em>collective.email/inbox/lacooperative</em></span>
-                <img src="/static/tour/tour-inbox.webp" alt="The shared inbox: threads sorted by waiting time with status, tags and assignee avatars." loading="lazy" width="1600" height="1000" />
-                <figcaption><b>Nothing falls through.</b> Longest-waiting on top, a name (or a loud “unassigned”) next to every thread.</figcaption>
+            <p class="sub">Marie writes to one clean address and gets one clear answer. Your collective sees the whole story — who's on it, what was said, and everything discussed along the way.</p>
+            <div class="carousel" aria-label="Screenshots of the app">
+              <figure class="slide">
+                <img src="/static/tour/app-inbox.webp" alt="The shared inbox on a phone: threads waiting for a reply on top with assignees, answered ones below with who replied." loading="lazy" width="780" height="1600" />
+                <figcaption><b>Nothing falls through.</b> Waiting threads on top with a name next to each — answered ones below, with who replied.</figcaption>
               </figure>
-              <figure class="shot phone">
-                <img src="/static/tour/tour-mobile.webp" alt="The same inbox on a phone, installable as an app." loading="lazy" width="780" height="1600" />
-                <figcaption><b>In your pocket.</b> Add it to your home screen — it works like an app, offline included.</figcaption>
+              <figure class="slide">
+                <img src="/static/tour/app-thread.webp" alt="A thread: the sender's email, and an internal note between members that the sender never sees." loading="lazy" width="780" height="1600" />
+                <figcaption><b>Two layers.</b> The email Marie sees — and the internal notes, assignments and provenance she never does.</figcaption>
+              </figure>
+              <figure class="slide">
+                <img src="/static/tour/app-compose.webp" alt="The composer: Reply to the sender or switch to a private internal note." loading="lazy" width="780" height="1600" />
+                <figcaption><b>Reply as the collective.</b> Or flip one tab to discuss privately before anyone hits send.</figcaption>
+              </figure>
+            </div>
+
+            <h3 class="demo-h3">Your inbox is the interface</h3>
+            <p class="sub">Every new request lands in each contributor's personal inbox — with everything one tap away.</p>
+            <div class="carousel" aria-label="Screenshots of the email notifications">
+              <figure class="slide">
+                <img src="/static/tour/mail-notify.webp" alt="The notification email: just reply to answer, assign to me, one-click assign to Leen or Sam, add a private note or mark as spam." loading="lazy" width="780" height="1548" />
+                <figcaption><b>Act from the email.</b> Reply to answer as the collective, take it yourself, or hand it to a teammate — one click.</figcaption>
+              </figure>
+              <figure class="slide">
+                <img src="/static/tour/mail-assigned.webp" alt="After one click: 'Assigned to Leen' at the bottom of the thread, with a change-assignment control and a private note box." loading="lazy" width="780" height="1600" />
+                <figcaption><b>One click, confirmed.</b> You land on the thread: assigned, with a private-note box ready and the history one scroll up.</figcaption>
+              </figure>
+              <figure class="slide">
+                <img src="/static/tour/mail-kept.webp" alt="Collision handling: 'Xavier already assigned this to Leen just now — nothing was changed.'" loading="lazy" width="780" height="1600" />
+                <figcaption><b>No stepping on toes.</b> If a teammate got there first, nothing changes — you're told who has it, and can still add a note.</figcaption>
               </figure>
             </div>
             <p class="aside"><b>Answer without opening the app:</b> new requests land in each member's personal inbox. Reply to the notification and your answer goes out as the collective — the thread is assigned to you. If a teammate answered first, we stop your reply and tell you who got there.</p>

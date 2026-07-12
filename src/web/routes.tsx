@@ -345,7 +345,7 @@ app.post('/join/:token', async (c) => {
 
 app.get('/a/:token', async (c) => {
   const payload = verifyToken(c.req.param('token'))
-  if (!payload || payload.a !== 'assign') {
+  if (!payload || !['assign', 'spam'].includes(payload.a)) {
     return c.html(
       <AuthCard title="Link expired">
         <h1>This link has expired</h1>
@@ -355,19 +355,31 @@ app.get('/a/:token', async (c) => {
     )
   }
   const thread = await getThread(Number(payload.th))
-  const target = await getMember(Number(payload.tg))
   const actor = await getMember(Number(payload.by))
   const collective = thread ? await getCollective(thread.collective_id) : undefined
-  if (!thread || !collective || !target || target.removed_at) return c.redirect('/')
-  await setAssignee(thread, target.id, actor?.id ?? null, 'one_click')
-  if (c.get('email')) return c.redirect(`/inbox/${collective.slug}/thread/${thread.id}${payload.r ? '#composer' : ''}`)
-  return c.html(
-    <AuthCard title="Assigned">
-      <h1>✓ Assigned to {memberName(target)}</h1>
-      <p class="muted">“{thread.subject}” is now {target.id === actor?.id ? 'yours' : `with ${memberName(target)}`}.</p>
-      <a class="btn" href={`/inbox/${collective.slug}/thread/${thread.id}`}>Sign in to open the thread</a>
-    </AuthCard>,
-  )
+  if (!thread || !collective) return c.redirect('/')
+
+  let act = ''
+  let pane = payload.r ? 'reply' : 'note'
+  if (payload.a === 'spam') {
+    await setStatus(thread.id, 'spam', actor?.id ?? null)
+    act = 'spam'
+  } else {
+    const target = await getMember(Number(payload.tg))
+    if (!target || target.removed_at) return c.redirect('/')
+    if (!thread.assignee_member_id || thread.assignee_member_id === target.id) {
+      await setAssignee(thread, target.id, actor?.id ?? null, 'one_click')
+      act = 'assigned'
+    } else {
+      // someone got there first — never override from an email link
+      act = 'kept'
+    }
+  }
+  // Land at the bottom of the thread: the outcome banner + composer are there,
+  // and the whole history is one scroll up.
+  const dest = `/inbox/${collective.slug}/thread/${thread.id}?act=${act}&pane=${pane}#act`
+  if (!c.get('email')) return c.redirect('/login?next=' + encodeURIComponent(dest))
+  return c.redirect(dest)
 })
 
 // ---------- attachments (proxied: locators are never exposed) ----------
@@ -757,6 +769,37 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               ),
             )}
           </div>
+
+          {(() => {
+            const act = c.req.query('act')
+            if (!act) return null
+            const lastAssign = [...allEvents].reverse().find((e) => e.type === 'assigned')
+            const data = lastAssign?.data_json ? JSON.parse(lastAssign.data_json) : {}
+            const byName = lastAssign?.actor_member_id ? memberName(members.get(lastAssign.actor_member_id)) : 'someone'
+            const toName = data.to ? memberName(members.get(data.to)) : 'someone'
+            return (
+              <div class="act-banner" id="act">
+                {act === 'assigned' ? <p><b>✓ Assigned to {assignee ? memberName(assignee) : toName}</b>{assignee?.id === member.id ? ' (you)' : ''}.</p>
+                  : act === 'kept' && lastAssign ? <p><b>⚠ {byName} already assigned this to {toName}</b> {relTime(lastAssign.created_at)} — nothing was changed.</p>
+                  : act === 'spam' ? <p><b>🚫 Marked as spam.</b> It won't count as needing a reply.</p>
+                  : null}
+                {member.role !== 'reader' ? (
+                  <form method="post" action={`${base}/thread/${thread.id}/assign`} class="assign-form">
+                    <select name="member_id">
+                      <option value="">— Unassigned —</option>
+                      {activeList.map((m) => (
+                        <option value={String(m.id)} selected={m.id === thread.assignee_member_id}>
+                          {memberName(m)}{m.id === member.id ? ' (you)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <button class="btn small ghost" type="submit">Change assignment</button>
+                  </form>
+                ) : null}
+                <p class="fineprint">Add a private note below — only members see it. Scroll up for the full history.</p>
+              </div>
+            )
+          })()}
 
           <div class="typing" id="typing" data-url={`${base}/thread/${thread.id}/typing`} hidden></div>
 

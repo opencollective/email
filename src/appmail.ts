@@ -1,3 +1,5 @@
+import fs from 'node:fs'
+import path from 'node:path'
 import { cfg } from './config.js'
 
 /** Send an app email (login codes, notifications, digests) via Resend.
@@ -11,6 +13,7 @@ export async function sendAppEmail(opts: {
 }): Promise<boolean> {
   if (!cfg.resendKey) {
     console.log(`\n[appmail:dev] To: ${opts.to}\n[appmail:dev] Subject: ${opts.subject}${opts.replyTo ? `\n[appmail:dev] Reply-To: ${opts.replyTo}` : ''}\n${opts.text}\n`)
+    try { fs.writeFileSync(path.join(cfg.dataDir, 'last-email.html'), opts.html) } catch { /* dev nicety only */ }
     return true
   }
   try {
