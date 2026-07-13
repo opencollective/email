@@ -34,6 +34,10 @@ jobs:
           node-version: 22
       # Vercel's remote build re-runs typecheck + tests (vercel.json buildCommand)
       - run: npx vercel deploy --prod --yes --token=${{ secrets.VERCEL_TOKEN }}
+      - name: Verify production health (real database connected)
+        run: |
+          sleep 10
+          curl -sf https://collective.email/health | tee /dev/stderr | grep -q '"db":"remote"'
 
   deploy-staging:
     needs: test
@@ -50,3 +54,7 @@ jobs:
           url=$(npx vercel deploy --yes --token=${{ secrets.VERCEL_TOKEN }})
           echo "deployed: $url"
           npx vercel alias set "$url" staging.collective.email --token=${{ secrets.VERCEL_TOKEN }} --scope team_I5omp4RvCylLViwaJ62brFZY
+      - name: Verify staging health (real database connected)
+        run: |
+          sleep 10
+          curl -sf https://staging.collective.email/health | tee /dev/stderr | grep -q '"db":"remote"'

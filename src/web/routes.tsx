@@ -14,6 +14,7 @@ import {
 } from '../auth.js'
 import { sendCollectiveReply } from '../outbound.js'
 import { digestTick, sendOnboarding, trialTick } from '../notify.js'
+import { backupTick } from '../backup.js'
 import { sendAppEmail } from '../appmail.js'
 import { readBlob, saveBlob } from '../storage.js'
 import { createCheckoutSession, createPortalSession, stripeEnabled } from '../stripe.js'
@@ -129,7 +130,11 @@ async function tenant(c: Context<Env>): Promise<{ collective: Collective; member
 
 // ---------- health, cron & home ----------
 
-app.get('/health', (c) => c.json({ ok: true }))
+app.get('/health', (c) => c.json({
+  ok: true,
+  // 'remote' = Turso; 'ephemeral' = file fallback (catastrophic on Vercel — CI fails the deploy)
+  db: cfg.dbUrl.startsWith('file:') ? 'ephemeral' : 'remote',
+}))
 
 // Vercel Cron (or any external scheduler) hits this hourly; digestTick decides who is due.
 app.get('/cron/digest', async (c) => {
@@ -137,6 +142,7 @@ app.get('/cron/digest', async (c) => {
   if (cfg.cronSecret && auth !== `Bearer ${cfg.cronSecret}`) return c.json({ error: 'unauthorized' }, 401)
   await digestTick()
   await trialTick()
+  await backupTick()
   return c.json({ ok: true })
 })
 
@@ -279,12 +285,14 @@ app.post('/verify', async (c) => {
   return c.redirect(redirect)
 })
 
-app.post('/logout', async (c) => {
+const doLogout = async (c: Context<Env>) => {
   const t = getCookie(c, SID)
   if (t) await destroySession(t)
   deleteCookie(c, SID, { path: '/' })
   return c.redirect('/login?m=' + encodeURIComponent('Signed out.'))
-})
+}
+app.post('/logout', doLogout)
+app.get('/logout', doLogout) // force sign-out by URL
 
 // ---------- join via invite ----------
 
