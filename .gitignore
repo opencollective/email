@@ -8,3 +8,4 @@ data/
 .vercel
 .env*
 .vercel
+*.tmp.mjs
