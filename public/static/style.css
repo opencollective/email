@@ -526,8 +526,8 @@ img.avatar-img { object-fit: cover; }
   border: 1.5px dashed var(--line); color: var(--muted); background: var(--fill);
 }
 .role-form { display: inline-flex; gap: 6px; align-items: center; }
-.invite-form { align-items: center; }
-.invite-form .role-select { padding: 6px 8px; }
+.invite-form { align-items: stretch; }
+.invite-form .role-select { padding: 6px 10px; font-size: 13.5px; }
 .role-select { width: auto; padding: 3px 6px; font-size: 12.5px; border-radius: 6px; }
 .act-banner {
   margin: 22px 24px 0; padding: 14px 16px; border-radius: 10px;

@@ -35,7 +35,13 @@ const SID = 'requests_sid'
  *  Readers see everything but act on nothing; commenters do everything except
  *  send external email; senders + admins are the paid contributor seats. */
 const canSendRole = (r: Member['role']) => r === 'member' || r === 'admin'
-const ROLE_LABELS: Record<Member['role'], string> = { reader: 'can read', commenter: 'can comment', member: 'can send', admin: 'admin' }
+const ROLE_LABELS: Record<Member['role'], string> = { reader: 'reader', commenter: 'commenter', member: 'sender', admin: 'admin' }
+const ROLE_HINTS: Record<Member['role'], string> = {
+  reader: 'Reads everything and gets the digests — takes no actions.',
+  commenter: 'Discusses internally: notes, assigning, tags — cannot email the outside world.',
+  member: 'Answers senders as the collective — uses a paid seat.',
+  admin: 'Everything a sender can, plus members, billing and settings.',
+}
 const readerBlock = (c: Context<Env>, t: { collective: Collective; member: Member }) =>
   t.member.role === 'reader'
     ? c.redirect(`/inbox/${t.collective.slug}?m=` + encodeURIComponent('You have read access — ask an admin to let you comment or send.'))
@@ -353,13 +359,12 @@ app.get('/join/:token', async (c) => {
       <h1>Join {collective.name}</h1>
       <p class="muted">
         {inviter ? `${memberName(inviter)} invited you to follow` : 'You were invited to follow'} email
-        sent to <b>{collective.slug}@{cfg.emailDomain}</b> — you'll join with <b>{ROLE_LABELS[(invite.role || 'reader') as Member['role']]}</b> access.
+        sent to <b>{collective.slug}@{cfg.emailDomain}</b>.
       </p>
+      <p class="muted">You'll join as a <b>{ROLE_LABELS[(invite.role || 'reader') as Member['role']]}</b> — {ROLE_HINTS[(invite.role || 'reader') as Member['role']].charAt(0).toLowerCase()}{ROLE_HINTS[(invite.role || 'reader') as Member['role']].slice(1)}</p>
       <form method="post" action={`/join/${token}`}>
         <label class="lbl">Your name</label>
         <input class="input" name="name" placeholder="First name (as teammates know you)" required />
-        <label class="lbl">Your personal email</label>
-        <input class="input" type="email" name="email" placeholder="you@example.com" required />
         <label class="lbl">How do you want to hear about new requests?</label>
         <div class="level-cards">
           {LEVELS.map((l, i) => (
@@ -369,9 +374,11 @@ app.get('/join/:token', async (c) => {
             </label>
           ))}
         </div>
+        <label class="lbl">Where should we send them?</label>
+        <input class="input" type="email" name="email" placeholder="you@example.com — your personal email" required />
         <button class="btn" type="submit">Send me a code</button>
       </form>
-      <p class="fineprint">We'll email you a 6-digit code to confirm this address. You can change the notification level any time.</p>
+      <p class="fineprint">Notifications go to that address, and we'll email it a 6-digit code now to confirm it's yours. You can change the notification level any time.</p>
     </AuthCard>,
   )
 })
@@ -386,6 +393,44 @@ app.post('/join/:token', async (c) => {
   const level = ['every', 'daily', 'weekly'].includes(String(body.level)) ? String(body.level) : 'every'
   await issueCode(email, 'join', { inviteToken: token, name, level })
   return c.html(<CodeForm email={email} />)
+})
+
+/** Live assignment badge for notification emails: the <img> URL is fetched
+ *  when the email is OPENED, so a member reading it an hour later sees the
+ *  current state (answered / assigned / unclaimed), not a stale snapshot.
+ *  Public by design (mail clients send no cookies) — guarded by the signed
+ *  token, no-store cached, and it exposes nothing but a first name. */
+app.get('/aimg/:token', async (c) => {
+  const payload = verifyToken(c.req.param('token'))
+  if (!payload || payload.a !== 'aimg') return c.notFound()
+  const thread = await getThread(Number(payload.th))
+  if (!thread) return c.notFound()
+  const esc = (s: string) => s.replace(/[<>&"']/g, (ch) => `&#${ch.charCodeAt(0)};`)
+
+  let icon = '⚠', color = '#b45309', bg = '#fdf5ec', who = '', line = 'Nobody has this yet — first to claim it gets it'
+  if (thread.last_direction === 'outbound') {
+    const lastOut = await get<Message>("SELECT * FROM messages WHERE thread_id = ? AND direction = 'outbound' ORDER BY id DESC LIMIT 1", [thread.id])
+    const by = lastOut?.sent_by_member_id ? await getMember(lastOut.sent_by_member_id) : null
+    icon = '✓'; color = '#1a7f4f'; bg = '#eef8f2'
+    who = by ? memberName(by) : ''
+    line = `Answered${by ? ` by ${who}` : ''}${lastOut?.sent_at ? ` · ${relTime(lastOut.sent_at)}` : ''}`
+  } else if (thread.assignee_member_id) {
+    const assignee = await getMember(thread.assignee_member_id)
+    const lastAssign = await get<{ created_at: number }>("SELECT created_at FROM events WHERE thread_id = ? AND type = 'assigned' ORDER BY id DESC LIMIT 1", [thread.id])
+    icon = '●'; color = '#0c2d66'; bg = '#eef3fc'
+    who = memberName(assignee)
+    line = `Assigned to ${who}${lastAssign ? ` · ${relTime(lastAssign.created_at)}` : ''}`
+  }
+  const initials = who ? who.slice(0, 2).toUpperCase() : icon
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="520" height="56" viewBox="0 0 520 56">
+  <rect x="1" y="1" width="518" height="54" rx="12" fill="${bg}" stroke="${color}" stroke-width="1.5"/>
+  <circle cx="30" cy="28" r="15" fill="${color}"/>
+  <text x="30" y="33" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="700" fill="#ffffff">${esc(initials)}</text>
+  <text x="56" y="33" font-family="system-ui, -apple-system, sans-serif" font-size="15" font-weight="600" fill="${color}">${esc(line)}</text>
+</svg>`
+  c.header('Content-Type', 'image/svg+xml; charset=utf-8')
+  c.header('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate')
+  return c.body(svg)
 })
 
 // ---------- one-click action links (from notification emails) ----------
@@ -1259,7 +1304,7 @@ app.get('/inbox/:addr/members', async (c) => {
     <Shell member={member} collective={collective} title="Members" active="members" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
       <div class="page">
         <h1>Members</h1>
-        <p class="muted">Everyone here can read and answer email sent to <b>{collective.slug}@{cfg.emailDomain}</b>.</p>
+        <p class="muted">Email sent to <b>{collective.slug}@{cfg.emailDomain}</b> lands here for the whole group. Readers follow along, commenters discuss internally, senders answer, admins run the place.</p>
 
         <section class="card">
           <h2>Invite someone</h2>
@@ -1278,13 +1323,16 @@ app.get('/inbox/:addr/members', async (c) => {
             <p class="muted">No active invite link.{isAdmin ? '' : ' Ask an admin to generate one.'}</p>
           )}
           {isAdmin ? (
-            <form method="post" action={`${base}/members/invite`} class="btn-row invite-form">
-              <select name="role" class="role-select" aria-label="Role for people joining with this link">
-                <option value="reader">Can read</option>
-                <option value="commenter">Can comment</option>
-                <option value="member">Can send</option>
-              </select>
-              <button class="btn small" type="submit">{invite ? '↻ New invite link' : '+ Create invite link'}</button>
+            <form method="post" action={`${base}/members/invite`}>
+              <div class="btn-row invite-form">
+                <select name="role" class="role-select" aria-label="Role for people joining with this link">
+                  <option value="reader" data-hint={ROLE_HINTS.reader}>Reader</option>
+                  <option value="commenter" data-hint={ROLE_HINTS.commenter}>Commenter</option>
+                  <option value="member" data-hint={ROLE_HINTS.member}>Sender</option>
+                </select>
+                <button class="btn small" type="submit">{invite ? '↻ New invite link' : '+ Create invite link'}</button>
+              </div>
+              <p class="fineprint role-hint">{ROLE_HINTS.reader}</p>
             </form>
           ) : null}
           {isAdmin && invite ? (
@@ -1312,11 +1360,11 @@ app.get('/inbox/:addr/members', async (c) => {
                 {isAdmin && m.id !== member.id ? (
                   <span class="m-actions">
                     <form method="post" action={`${base}/members/${m.id}/role`} class="inline role-form">
-                      <select name="role" class="role-select" aria-label={`Role of ${memberName(m)}`}>
-                        <option value="reader" selected={m.role === 'reader'}>Can read</option>
-                        <option value="commenter" selected={m.role === 'commenter'}>Can comment</option>
-                        <option value="member" selected={m.role === 'member'}>Can send</option>
-                        <option value="admin" selected={m.role === 'admin'}>Admin</option>
+                      <select name="role" class="role-select" aria-label={`Role of ${memberName(m)}`} title={ROLE_HINTS[m.role]}>
+                        <option value="reader" data-hint={ROLE_HINTS.reader} selected={m.role === 'reader'}>Reader</option>
+                        <option value="commenter" data-hint={ROLE_HINTS.commenter} selected={m.role === 'commenter'}>Commenter</option>
+                        <option value="member" data-hint={ROLE_HINTS.member} selected={m.role === 'member'}>Sender</option>
+                        <option value="admin" data-hint={ROLE_HINTS.admin} selected={m.role === 'admin'}>Admin</option>
                       </select>
                     </form>
                     <form method="post" action={`${base}/members/${m.id}/remove`} class="inline">
@@ -1389,7 +1437,7 @@ app.post('/inbox/:addr/members/:id/role', async (c) => {
     }
   }
   await run('UPDATE members SET role = ? WHERE id = ?', [role, target.id])
-  return c.redirect(back + '?m=' + encodeURIComponent(`${memberName(target)} is now “${ROLE_LABELS[role]}”.`))
+  return c.redirect(back + '?m=' + encodeURIComponent(`${memberName(target)} is now a ${ROLE_LABELS[role]} — ${ROLE_HINTS[role].charAt(0).toLowerCase()}${ROLE_HINTS[role].slice(1)}`))
 })
 
 app.get('/inbox/:addr/notifications', async (c) => {

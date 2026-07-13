@@ -73,7 +73,10 @@ document.querySelectorAll('.wl-addr input, .claim .addr input').forEach((a) => {
 // so a slow network never invites a double tap.
 document.addEventListener('change', (e) => {
   const rs = e.target.closest && e.target.closest('.role-select');
-  if (rs && rs.form && rs.form.classList.contains('role-form')) rs.form.requestSubmit();
+  if (!rs) return;
+  const hint = rs.form && rs.form.querySelector('.role-hint');
+  if (hint) hint.textContent = (rs.selectedOptions[0] && rs.selectedOptions[0].dataset.hint) || '';
+  if (rs.form && rs.form.classList.contains('role-form')) rs.form.requestSubmit();
 });
 
 document.addEventListener('submit', (e) => {
@@ -185,7 +188,7 @@ export const Page: FC<{ title?: string; flash?: string; children?: Child }> = (p
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=8" />
+      <link rel="stylesheet" href="/static/style.css?v=9" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script

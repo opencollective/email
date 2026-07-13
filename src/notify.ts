@@ -100,9 +100,10 @@ export async function notifyInbound(
   for (const m of recipients) {
     const others = members.filter((o) => o.id !== m.id && o.role !== 'reader')
 
-    const assignLine = assignee
-      ? `<p style="margin:0 0 14px;font-size:13px;color:#6b7280">Assigned to <b style="color:#141414">${escapeHtml(memberLabel(assignee))}</b>${assignee.id === m.id ? ' (you)' : ''}.</p>`
-      : `<p style="margin:0 0 14px;font-size:13px;color:#b45309"><b>Nobody has this yet.</b></p>`
+    // Live badge: rendered by the server when the email is opened, so it
+    // shows the CURRENT state (answered/assigned/unclaimed), never a stale one.
+    const badgeToken = signToken({ a: 'aimg', th: thread.id }, 60 * 60 * 24 * 90)
+    const assignLine = `<a href="${threadUrl(collective, thread.id)}" style="text-decoration:none"><img src="${cfg.baseUrl}/aimg/${badgeToken}" width="520" height="56" style="display:block;width:100%;max-width:520px;height:auto;border:0;margin:0 0 14px" alt="${assignee ? `Assigned to ${escapeHtml(memberLabel(assignee))} when this was sent` : 'Unassigned when this was sent'} — open the thread for the current status."></a>`
     const spamUrl = `${cfg.baseUrl}/a/${signToken({ a: 'spam', th: thread.id, by: m.id }, 60 * 60 * 24 * 14)}`
     const noteUrl = `${threadUrl(collective, thread.id)}?pane=note#composer`
 
