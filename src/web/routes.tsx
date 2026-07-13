@@ -16,7 +16,7 @@ import { sendCollectiveReply } from '../outbound.js'
 import { digestTick, sendOnboarding, trialTick } from '../notify.js'
 import { backupTick } from '../backup.js'
 import {
-  approveApplication, checkDiscountCode, discountCodeFor, fileApplication, releaseStalePending, validateClaimSlug,
+  approveApplication, checkDiscountCode, discountCodeFor, fileApplication, slugAvailability,
 } from '../claim.js'
 import { sendAppEmail } from '../appmail.js'
 import { readBlob, saveBlob } from '../storage.js'
@@ -267,10 +267,11 @@ app.post('/verify', async (c) => {
   let redirect = safeNext(body.next) || '/'
   if (res.row.purpose === 'claim' && res.row.claim_slug) {
     const slug = res.row.claim_slug
-    const invalid = validateClaimSlug(slug)
-    const free = await releaseStalePending(slug)
-    if (invalid || !free) {
-      return c.redirect('/claim?m=' + encodeURIComponent(invalid || `${slug}@${cfg.emailDomain} was just taken — try another.`))
+    // re-check availability at the moment of reservation (it may have been
+    // claimed, or appeared on opencollective.com, since the code was sent)
+    const unavailable = await slugAvailability(slug)
+    if (unavailable) {
+      return c.redirect('/claim?m=' + encodeURIComponent(unavailable))
     }
     const collective = await createCollective(slug, res.row.join_name ? `${res.row.join_name}'s collective` : slug, 'collective', { status: 'pending', trial: false })
     await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
@@ -1605,10 +1606,8 @@ app.post('/claim', async (c) => {
   const address = String(body.address || '').toLowerCase().trim()
   const name = String(body.name || '').trim().slice(0, 60)
   const email = String(body.email || '').toLowerCase().trim()
-  const invalid = validateClaimSlug(address)
-  if (invalid) return c.html(<ClaimForm address={address} error={invalid} />)
-  const free = await releaseStalePending(address)
-  if (!free) return c.html(<ClaimForm address={address} error={`${address}@${cfg.emailDomain} is already taken.`} />)
+  const unavailable = await slugAvailability(address)
+  if (unavailable) return c.html(<ClaimForm address={address} error={unavailable} />)
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return c.html(<ClaimForm address={address} error="That email address doesn't look right." />)
   await issueCode(email, 'claim', { name, claimSlug: address })
   return c.html(<CodeForm email={email} />)

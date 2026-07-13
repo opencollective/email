@@ -17,6 +17,26 @@ test('claim slug rules: min 6 chars, alphanumeric only', () => {
   assert.match(validateClaimSlug('hello!')!, /letters and numbers/)
   assert.equal(validateClaimSlug('mycollective'), null)
   assert.match(validateClaimSlug('applications')!, /reserved/)
+  for (const reserved of ['support', 'newsletter', 'contactus', 'donations', 'security', 'moderation']) {
+    assert.ok(validateClaimSlug(reserved), `${reserved} must be reserved`)
+  }
+})
+
+test('claiming a reserved role name is rejected with a clear message', async () => {
+  const res = await app.request('/claim', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'address=newsletter&name=X&email=x@y.test',
+  })
+  assert.match(await res.text(), /reserved/)
+})
+
+test('verify re-checks availability: slug taken after the code was sent', async () => {
+  const slug = `race${uniq()}x`
+  await createCollective(slug, 'Winner') // someone else got it first (active)
+  const res = await verifiedClaim(slug, `loser-${uniq()}@t.test`)
+  assert.equal(res.status, 302)
+  assert.match(decodeURIComponent(res.headers.get('location')!), /already taken/)
 })
 
 test('discount codes embed the slug and only unlock that slug', () => {

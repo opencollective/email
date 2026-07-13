@@ -20,6 +20,7 @@ delete process.env.VERCEL
 delete process.env.STRIPE_SECRET_KEY
 delete process.env.STRIPE_WEBHOOK_SECRET
 delete process.env.CRON_SECRET
+process.env.SKIP_OC_SLUG_CHECK = '1' // no network calls to opencollective.com in tests
 
 // keep test output readable: silence the dev email dumps
 const origLog = console.log
