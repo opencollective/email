@@ -381,7 +381,8 @@ app.get('/a/:token', async (c) => {
     )
   }
   if (payload.a === 'approve') {
-    const approved = await approveApplication(Number(payload.cid))
+    const months = Math.min(24, Math.max(1, Number(payload.m) || 2))
+    const approved = await approveApplication(Number(payload.cid), months)
     if (!approved) return c.redirect('/')
     if (approved.status === 'active') {
       const admin = await get<Member>("SELECT * FROM members WHERE collective_id = ? AND role = 'admin' ORDER BY id LIMIT 1", [approved.id])
@@ -392,7 +393,7 @@ app.get('/a/:token', async (c) => {
     return c.html(
       <AuthCard title="Approved">
         <h1>✓ {approved.slug}@{cfg.emailDomain} approved</h1>
-        <p class="muted">The collective is live with a 60-day free trial and the applicant just received their onboarding email.</p>
+        <p class="muted">The collective is live with a {String(Math.min(24, Math.max(1, Number(payload.m) || 2)))}-month free trial and the applicant just received their onboarding email.</p>
         <a class="btn" href="/">Open collective.email</a>
       </AuthCard>,
     )
@@ -488,11 +489,17 @@ app.get('/admin', async (c) => {
       <h2 class="admin-h">Discount code generator</h2>
       <form method="get" action="/admin" class="assign-form">
         <input class="input" name="dslug" placeholder="collective slug" value={c.req.query('dslug') || ''} />
+        <select class="input" name="dmonths" style="max-width:140px">
+          {['1', '2', '3', '6', '12'].map((m) => <option value={m} selected={(c.req.query('dmonths') || '2') === m}>{m} months</option>)}
+          <option value="forever" selected={c.req.query('dmonths') === 'forever'}>free forever</option>
+        </select>
         <button class="btn small ghost" type="submit">Generate</button>
       </form>
-      {c.req.query('dslug') ? (
-        <p class="fineprint">Code for <b>{slugify(c.req.query('dslug')!)}</b>: <code>{discountCodeFor(slugify(c.req.query('dslug')!))}</code> — free (comped) activation of exactly that address.</p>
-      ) : null}
+      {c.req.query('dslug') ? (() => {
+        const ds = slugify(c.req.query('dslug')!)
+        const dm = c.req.query('dmonths') === 'forever' ? undefined : Math.min(24, Math.max(1, Number(c.req.query('dmonths')) || 2))
+        return <p class="fineprint">Code for <b>{ds}</b>: <code>{discountCodeFor(ds, dm)}</code> — {dm ? `${dm}-month free trial` : 'free forever (comped)'} for exactly that address.</p>
+      })() : null}
 
       <h2 class="admin-h">Collectives ({collectives.length})</h2>
       <div class="admin-list">
@@ -1658,6 +1665,10 @@ app.get('/claim/:slug', async (c) => {
           <p class="muted">Tell us in a few sentences who your collective is and what you'll use the address for — a human reads every application.</p>
           <form method="post" action={`/claim/${slug}/apply`}>
             <textarea name="reason" rows={4} minlength={30} placeholder="We are a neighborhood composting initiative in Schaerbeek, about 25 volunteers…" required></textarea>
+            <label class="lbl">How many months of free trial do you need?</label>
+            <select class="input" name="months">
+              {[1, 2, 3, 6, 12].map((m) => <option value={String(m)} selected={m === 2}>{m} month{m > 1 ? 's' : ''}</option>)}
+            </select>
             <div class="btn-row">
               <button class="btn small ghost" type="submit" data-busy="Sending…">Send application</button>
             </div>
@@ -1696,12 +1707,18 @@ app.post('/claim/:slug/discount', async (c) => {
   const t = await pendingClaim(c)
   if (t instanceof Response) return t
   const body = await c.req.parseBody()
-  if (!checkDiscountCode(t.collective.slug, String(body.code || ''))) {
+  const redemption = checkDiscountCode(t.collective.slug, String(body.code || ''))
+  if (redemption === null) {
     return c.redirect(`/claim/${t.collective.slug}?m=` + encodeURIComponent('That code is not valid for this address.'))
   }
-  await run("UPDATE collectives SET status = 'active', comped = 1 WHERE id = ?", [t.collective.id])
+  if (redemption === 'forever') {
+    await run("UPDATE collectives SET status = 'active', comped = 1 WHERE id = ?", [t.collective.id])
+  } else {
+    await run("UPDATE collectives SET status = 'active', trial_ends_at = ? WHERE id = ?", [now() + redemption * 30 * 86400, t.collective.id])
+  }
   await sendOnboarding((await getCollective(t.collective.id))!, t.member.email).catch(() => {})
-  return c.redirect(`/inbox/${t.collective.slug}?m=` + encodeURIComponent(`Welcome! ${t.collective.slug}@${cfg.emailDomain} is live.`))
+  return c.redirect(`/inbox/${t.collective.slug}?m=` + encodeURIComponent(
+    redemption === 'forever' ? `Welcome! ${t.collective.slug}@${cfg.emailDomain} is live.` : `Welcome! ${t.collective.slug}@${cfg.emailDomain} is live — ${redemption} months free.`))
 })
 
 app.post('/claim/:slug/apply', async (c) => {
@@ -1709,9 +1726,10 @@ app.post('/claim/:slug/apply', async (c) => {
   if (t instanceof Response) return t
   const body = await c.req.parseBody()
   const reason = String(body.reason || '').trim()
+  const months = Math.min(12, Math.max(1, Number(body.months) || 2))
   if (reason.length < 30) return c.redirect(`/claim/${t.collective.slug}?m=` + encodeURIComponent('Tell us a bit more — a couple of sentences helps us say yes.'))
   try {
-    await fileApplication(t.collective, t.member.email, t.member.name, reason.slice(0, 4000))
+    await fileApplication(t.collective, t.member.email, t.member.name, reason.slice(0, 4000), months)
     return c.redirect(`/claim/${t.collective.slug}?m=` + encodeURIComponent('Application sent — we usually answer within a day. We will email you!'))
   } catch (err) {
     return c.redirect(`/claim/${t.collective.slug}?m=` + encodeURIComponent(err instanceof Error ? err.message : 'Could not send the application.'))

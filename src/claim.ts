@@ -57,11 +57,22 @@ export async function slugAvailability(slug: string): Promise<string | null> {
   return null
 }
 
-/** Discount codes are bound to the slug they unlock: `<slug>-XXXXXXXX`. */
-export const discountCodeFor = (slug: string) => `${slug}-${hmac(`discount:${slug}`, 8)}`
+/** Discount codes are bound to the slug they unlock.
+ *  `<slug>-<m>m-XXXXXXXX` grants a free trial of m months;
+ *  `<slug>-XXXXXXXX` (legacy) grants free-forever (comped). */
+export function discountCodeFor(slug: string, months?: number): string {
+  if (months && months > 0) return `${slug}-${months}m-${hmac(`discount:${slug}:${months}`, 8)}`
+  return `${slug}-${hmac(`discount:${slug}`, 8)}`
+}
 
-export const checkDiscountCode = (slug: string, code: string) =>
-  code.trim().toLowerCase() === discountCodeFor(slug)
+/** Returns the redemption: months of free trial, 'forever', or null (invalid). */
+export function checkDiscountCode(slug: string, code: string): number | 'forever' | null {
+  const clean = code.trim().toLowerCase()
+  const m = clean.match(new RegExp(`^${slug}-(\\d{1,2})m-[a-f0-9]{8}$`))
+  if (m && clean === discountCodeFor(slug, Number(m[1]))) return Number(m[1])
+  if (clean === discountCodeFor(slug)) return 'forever'
+  return null
+}
 
 /** A pending (unpaid, unapplied) reservation holds the slug for 48h. */
 export async function releaseStalePending(slug: string): Promise<boolean> {
@@ -80,30 +91,42 @@ export async function releaseStalePending(slug: string): Promise<boolean> {
  *  the members' notification carries a one-click Approve button. That button
  *  exists ONLY in the notification email — never in the thread body — so a
  *  reply to the applicant can never leak it. */
-export async function fileApplication(pending: Collective, applicantEmail: string, applicantName: string, reason: string) {
+export async function fileApplication(
+  pending: Collective,
+  applicantEmail: string,
+  applicantName: string,
+  reason: string,
+  requestedMonths = 2,
+) {
   const apps = await getCollectiveBySlug(APPLICATIONS_SLUG)
   if (!apps || apps.status !== 'active') throw new Error('Applications are closed right now — email hello@collective.email instead.')
   const raw = [
     `From: ${applicantName} <${applicantEmail}>`,
     `To: ${APPLICATIONS_SLUG}@${cfg.emailDomain}`,
-    `Subject: Free trial application: ${pending.slug}@${cfg.emailDomain}`,
+    `Subject: Free trial application: ${pending.slug}@${cfg.emailDomain} (${requestedMonths} months requested)`,
     `Message-ID: <application-${pending.id}-${now()}@${cfg.emailDomain}>`,
     'Content-Type: text/plain; charset=utf-8',
     '',
     `${reason.trim()}`,
     '',
-    `— ${applicantName} (${applicantEmail}), requesting ${pending.slug}@${cfg.emailDomain}`,
+    `— ${applicantName} (${applicantEmail}), requesting ${pending.slug}@${cfg.emailDomain} with a ${requestedMonths}-month free trial`,
   ].join('\r\n')
   const parsed = await simpleParser(raw)
-  const approveUrl = `${cfg.baseUrl}/a/${signToken({ a: 'approve', cid: pending.id }, 60 * 60 * 24 * 30)}`
-  await ingestInbound(apps, parsed, undefined, { label: `✓ Approve ${pending.slug} (one click)`, url: approveUrl })
+  // one approve button per duration: the standard offers + whatever was asked
+  const durations = [...new Set([2, 6, 12, requestedMonths])].sort((a, b) => a - b)
+  const extraActions = durations.map((m) => ({
+    label: `✓ Approve — ${m} months${m === requestedMonths ? ' (requested)' : ''}`,
+    url: `${cfg.baseUrl}/a/${signToken({ a: 'approve', cid: pending.id, m }, 60 * 60 * 24 * 30)}`,
+  }))
+  await ingestInbound(apps, parsed, undefined, extraActions)
   await run("UPDATE collectives SET status = 'applied' WHERE id = ?", [pending.id])
 }
 
-/** Approving an application: activate with the standard 60-day trial. */
-export async function approveApplication(collectiveId: number): Promise<Collective | null> {
+/** Approving an application: activate with a free trial of the given months. */
+export async function approveApplication(collectiveId: number, months = 2): Promise<Collective | null> {
+  const clamped = Math.min(24, Math.max(1, Math.round(months)))
   await run("UPDATE collectives SET status = 'active', trial_ends_at = ? WHERE id = ? AND status IN ('applied', 'pending')",
-    [now() + 60 * 86400, collectiveId])
+    [now() + clamped * 30 * 86400, collectiveId])
   const { getCollective } = await import('./db.js')
   return (await getCollective(collectiveId)) ?? null
 }

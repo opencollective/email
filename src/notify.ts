@@ -79,7 +79,7 @@ export async function notifyInbound(
   collective: Collective,
   thread: Thread,
   message: Message,
-  extraAction?: { label: string; url: string },
+  extraActions?: { label: string; url: string }[],
 ) {
   const members = await activeMembers(collective.id)
   const assigneeId = thread.assignee_member_id
@@ -114,7 +114,7 @@ export async function notifyInbound(
       <div style="border:1px solid #e6e8eb;border-radius:12px;padding:14px;font-size:14px;white-space:pre-wrap;margin-bottom:14px">${escapeHtml(bodyPreview)}</div>
       ${attHtml}
       <p style="margin:0 0 12px;font-size:14px;color:#141414"><b>Just reply to this email</b> to answer ${escapeHtml(message.from_email || 'the sender')} as ${escapeHtml(collective.slug)}@${escapeHtml(cfg.emailDomain)} — the thread is assigned to you. If a teammate answers first, we stop your reply and tell you.</p>
-      ${extraAction ? btn(extraAction.url, extraAction.label) : ''}
+      ${(extraActions || []).map((x) => btn(x.url, x.label)).join('')}
       ${btn(assignUrl(thread.id, m.id, m.id, true), 'Assign to me — answer later')}
       ${btn(threadUrl(collective, thread.id), 'Open thread', false)}
       ${others.length ? `<p style="margin:14px 0 6px;font-size:12px;font-weight:700;letter-spacing:0.5px;color:#6b7280">OR ASSIGN IT TO (ONE CLICK):</p>

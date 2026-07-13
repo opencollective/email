@@ -40,11 +40,16 @@ test('verify re-checks availability: slug taken after the code was sent', async 
 })
 
 test('discount codes embed the slug and only unlock that slug', () => {
-  const code = discountCodeFor('composters')
-  assert.match(code, /^composters-[a-f0-9]{8}$/)
-  assert.equal(checkDiscountCode('composters', code), true)
-  assert.equal(checkDiscountCode('composters', code.toUpperCase()), true)
-  assert.equal(checkDiscountCode('othergroup', code), false)
+  const forever = discountCodeFor('composters')
+  assert.match(forever, /^composters-[a-f0-9]{8}$/)
+  assert.equal(checkDiscountCode('composters', forever), 'forever')
+  assert.equal(checkDiscountCode('composters', forever.toUpperCase()), 'forever')
+  assert.equal(checkDiscountCode('othergroup', forever), null)
+  const trial6 = discountCodeFor('composters', 6)
+  assert.match(trial6, /^composters-6m-[a-f0-9]{8}$/)
+  assert.equal(checkDiscountCode('composters', trial6), 6)
+  assert.equal(checkDiscountCode('composters', trial6.replace('-6m-', '-9m-')), null, 'months are signed')
+  assert.equal(checkDiscountCode('othergroup', trial6), null)
 })
 
 async function verifiedClaim(slug: string, email: string) {
@@ -71,6 +76,23 @@ test('claim: verified code reserves a pending collective and redirects to activa
   const admin = await get<any>('SELECT * FROM members WHERE collective_id = ?', [col.id])
   assert.equal(admin.email, email)
   assert.equal(admin.role, 'admin')
+})
+
+test('months-bound discount code grants a trial of that length', async () => {
+  const slug = `farm${uniq()}xx`
+  const email = `f-${uniq()}@t.test`
+  await verifiedClaim(slug, email)
+  const sid = await createSession(email)
+  const res = await app.request(`/claim/${slug}/discount`, {
+    method: 'POST',
+    headers: { cookie: `requests_sid=${sid}`, 'content-type': 'application/x-www-form-urlencoded' },
+    body: `code=${discountCodeFor(slug, 3)}`,
+  })
+  assert.match(decodeURIComponent(res.headers.get('location')!), /3 months free/)
+  const col = (await get<any>('SELECT * FROM collectives WHERE slug = ?', [slug]))!
+  assert.equal(col.status, 'active')
+  assert.equal(col.comped, 0)
+  assert.ok(col.trial_ends_at > now() + 89 * 86400 && col.trial_ends_at < now() + 91 * 86400)
 })
 
 test('discount code activates the pending collective as comped', async () => {
@@ -110,7 +132,7 @@ test('application flow: thread lands in applications collective, approval starts
   const res = await app.request(`/claim/${slug}/apply`, {
     method: 'POST',
     headers: { cookie: `requests_sid=${sid}`, 'content-type': 'application/x-www-form-urlencoded' },
-    body: 'reason=' + encodeURIComponent('We are an amateur theatre group of 20 people rehearsing weekly and need a shared address for bookings.'),
+    body: 'months=6&reason=' + encodeURIComponent('We are an amateur theatre group of 20 people rehearsing weekly and need a shared address for bookings.'),
   })
   assert.match(decodeURIComponent(res.headers.get('location')!), /Application sent/)
   const col = (await get<any>('SELECT * FROM collectives WHERE slug = ?', [slug]))!
@@ -120,15 +142,17 @@ test('application flow: thread lands in applications collective, approval starts
   assert.equal(thread.counterpart_email, email, 'replying reaches the applicant')
   const msg = await get<any>('SELECT body_text FROM messages WHERE thread_id = ?', [thread.id])
   assert.ok(!msg.body_text.includes('/a/'), 'approve link is NOT in the thread body (cannot leak into replies)')
+  assert.match(msg.body_text, /6-month free trial/, 'requested months recorded in the application')
 
-  // one-click approve
-  const token = signToken({ a: 'approve', cid: col.id }, 3600)
+  // one-click approve for the requested 6 months
+  const token = signToken({ a: 'approve', cid: col.id, m: 6 }, 3600)
   const ares = await app.request(`/a/${token}`)
   assert.equal(ares.status, 200)
   assert.match(await ares.text(), /approved/)
   const after = (await get<any>('SELECT * FROM collectives WHERE slug = ?', [slug]))!
   assert.equal(after.status, 'active')
-  assert.ok(after.trial_ends_at > now() + 59 * 86400, 'trial starts at approval')
+  assert.ok(after.trial_ends_at > now() + 179 * 86400, '6-month trial starts at approval')
+  assert.ok(after.trial_ends_at < now() + 181 * 86400)
 })
 
 test('stale pending reservations are released after 48h', async () => {
