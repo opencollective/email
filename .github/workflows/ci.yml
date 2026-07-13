@@ -36,8 +36,13 @@ jobs:
       - run: npx vercel deploy --prod --yes --token=${{ secrets.VERCEL_TOKEN }}
       - name: Verify production health (real database connected)
         run: |
-          sleep 10
-          curl -sf https://collective.email/health | tee /dev/stderr | grep -q '"db":"remote"'
+          for i in $(seq 1 12); do
+            out=$(curl -sf https://collective.email/health || true)
+            echo "$out"
+            echo "$out" | grep -q '"db":"remote"' && exit 0
+            sleep 10
+          done
+          echo "deployed app is NOT on the remote database" && exit 1
 
   deploy-staging:
     needs: test
@@ -56,5 +61,10 @@ jobs:
           npx vercel alias set "$url" staging.collective.email --token=${{ secrets.VERCEL_TOKEN }} --scope team_I5omp4RvCylLViwaJ62brFZY
       - name: Verify staging health (real database connected)
         run: |
-          sleep 10
-          curl -sf https://staging.collective.email/health | tee /dev/stderr | grep -q '"db":"remote"'
+          for i in $(seq 1 12); do
+            out=$(curl -sf https://staging.collective.email/health || true)
+            echo "$out"
+            echo "$out" | grep -q '"db":"remote"' && exit 0
+            sleep 10
+          done
+          echo "deployed app is NOT on the remote database" && exit 1
