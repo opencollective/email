@@ -15,6 +15,9 @@ import {
 import { sendCollectiveReply } from '../outbound.js'
 import { digestTick, sendOnboarding, trialTick } from '../notify.js'
 import { backupTick } from '../backup.js'
+import {
+  approveApplication, checkDiscountCode, discountCodeFor, fileApplication, releaseStalePending, validateClaimSlug,
+} from '../claim.js'
 import { sendAppEmail } from '../appmail.js'
 import { readBlob, saveBlob } from '../storage.js'
 import { createCheckoutSession, createPortalSession, stripeEnabled } from '../stripe.js'
@@ -259,7 +262,18 @@ app.post('/verify', async (c) => {
   if (!res.ok) return c.html(<CodeForm email={email} error={res.error} next={safeNext(body.next)} />)
 
   let redirect = safeNext(body.next) || '/'
-  if (res.row.purpose === 'join' && res.row.invite_token) {
+  if (res.row.purpose === 'claim' && res.row.claim_slug) {
+    const slug = res.row.claim_slug
+    const invalid = validateClaimSlug(slug)
+    const free = await releaseStalePending(slug)
+    if (invalid || !free) {
+      return c.redirect('/claim?m=' + encodeURIComponent(invalid || `${slug}@${cfg.emailDomain} was just taken — try another.`))
+    }
+    const collective = await createCollective(slug, res.row.join_name ? `${res.row.join_name}'s collective` : slug, 'collective', { status: 'pending', trial: false })
+    await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [collective.id, email, res.row.join_name || email.split('@')[0], 'admin', 'every', now()])
+    redirect = `/claim/${slug}`
+  } else if (res.row.purpose === 'join' && res.row.invite_token) {
     const invite = await get<Invite>('SELECT * FROM invites WHERE token = ?', [res.row.invite_token])
     const collective = invite ? await getCollective(invite.collective_id) : undefined
     if (invite && collective && !invite.revoked_at && invite.expires_at >= now()) {
@@ -353,7 +367,7 @@ app.post('/join/:token', async (c) => {
 
 app.get('/a/:token', async (c) => {
   const payload = verifyToken(c.req.param('token'))
-  if (!payload || !['assign', 'spam'].includes(payload.a)) {
+  if (!payload || !['assign', 'spam', 'approve'].includes(payload.a)) {
     return c.html(
       <AuthCard title="Link expired">
         <h1>This link has expired</h1>
@@ -362,6 +376,24 @@ app.get('/a/:token', async (c) => {
       </AuthCard>,
     )
   }
+  if (payload.a === 'approve') {
+    const approved = await approveApplication(Number(payload.cid))
+    if (!approved) return c.redirect('/')
+    if (approved.status === 'active') {
+      const admin = await get<Member>("SELECT * FROM members WHERE collective_id = ? AND role = 'admin' ORDER BY id LIMIT 1", [approved.id])
+      if (admin && approved.trial_ends_at && approved.trial_ends_at > now()) {
+        await sendOnboarding(approved, admin.email).catch(() => {})
+      }
+    }
+    return c.html(
+      <AuthCard title="Approved">
+        <h1>✓ {approved.slug}@{cfg.emailDomain} approved</h1>
+        <p class="muted">The collective is live with a 60-day free trial and the applicant just received their onboarding email.</p>
+        <a class="btn" href="/">Open collective.email</a>
+      </AuthCard>,
+    )
+  }
+
   const thread = await getThread(Number(payload.th))
   const actor = await getMember(Number(payload.by))
   const collective = thread ? await getCollective(thread.collective_id) : undefined
@@ -448,6 +480,15 @@ app.get('/admin', async (c) => {
         </select>
         <button class="btn" type="submit">Create &amp; send onboarding email</button>
       </form>
+
+      <h2 class="admin-h">Discount code generator</h2>
+      <form method="get" action="/admin" class="assign-form">
+        <input class="input" name="dslug" placeholder="collective slug" value={c.req.query('dslug') || ''} />
+        <button class="btn small ghost" type="submit">Generate</button>
+      </form>
+      {c.req.query('dslug') ? (
+        <p class="fineprint">Code for <b>{slugify(c.req.query('dslug')!)}</b>: <code>{discountCodeFor(slugify(c.req.query('dslug')!))}</code> — free (comped) activation of exactly that address.</p>
+      ) : null}
 
       <h2 class="admin-h">Collectives ({collectives.length})</h2>
       <div class="admin-list">
@@ -1529,6 +1570,149 @@ app.post('/inbox/:addr/billing/portal', async (c) => {
     return c.redirect(url)
   } catch (err) {
     return c.redirect(`${base}/billing?m=` + encodeURIComponent(`Could not open the portal: ${err instanceof Error ? err.message : 'unknown error'}`))
+  }
+})
+
+// ---------- public claiming: verify email → pay / discount / apply ----------
+
+const ClaimForm = (p: { address?: string; error?: string }) => (
+  <AuthCard title="Claim your address" flash={p.error}>
+    <h1>Claim your address</h1>
+    <p class="muted">Pick your collective's email address, confirm your own email with a 6-digit code, and it's reserved for you.</p>
+    <form method="post" action="/claim">
+      <label class="lbl">Your collective's address</label>
+      <span class="wl-addr">
+        <input name="address" value={p.address || ''} placeholder="yourcollective" minlength={6} maxlength={40} pattern="[a-z0-9]{6,40}" autocomplete="off" spellcheck={false} required />
+        <span class="domain">@{cfg.emailDomain}</span>
+      </span>
+      <p class="fineprint">At least 6 characters — letters and numbers only.</p>
+      <label class="lbl">Your name</label>
+      <input class="input" name="name" placeholder="First name" required />
+      <label class="lbl">Your personal email</label>
+      <input class="input" type="email" name="email" placeholder="you@example.com" required />
+      <button class="btn" type="submit" data-busy="Sending code…">Send me a code</button>
+    </form>
+  </AuthCard>
+)
+
+app.get('/claim', (c) => c.html(<ClaimForm address={slugify(c.req.query('address') || '')} error={c.req.query('m')} />))
+
+app.post('/claim', async (c) => {
+  const body = await c.req.parseBody()
+  const address = String(body.address || '').toLowerCase().trim()
+  const name = String(body.name || '').trim().slice(0, 60)
+  const email = String(body.email || '').toLowerCase().trim()
+  const invalid = validateClaimSlug(address)
+  if (invalid) return c.html(<ClaimForm address={address} error={invalid} />)
+  const free = await releaseStalePending(address)
+  if (!free) return c.html(<ClaimForm address={address} error={`${address}@${cfg.emailDomain} is already taken.`} />)
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return c.html(<ClaimForm address={address} error="That email address doesn't look right." />)
+  await issueCode(email, 'claim', { name, claimSlug: address })
+  return c.html(<CodeForm email={email} />)
+})
+
+/** Activation page for a reserved (pending/applied) address. */
+app.get('/claim/:slug', async (c) => {
+  const email = c.get('email')
+  const slug = c.req.param('slug')
+  if (!email) return c.redirect('/login?next=' + encodeURIComponent(`/claim/${slug}`))
+  const collective = await getCollectiveBySlug(slug)
+  const member = collective ? await getMemberIn(collective.id, email) : undefined
+  if (!collective || !member) return c.notFound()
+  if (collective.status === 'active') return c.redirect(`/inbox/${slug}`)
+  const currency = visitorCurrency(c) === 'EUR' ? 'eur' : 'usd'
+  const s = currency === 'eur' ? '€' : '$'
+  return c.html(
+    <AuthCard title={`Activate ${slug}`} flash={c.req.query('m')}>
+      <h1>{slug}@{cfg.emailDomain} is reserved for you</h1>
+      <p class="muted">{collective.status === 'applied'
+        ? 'Your free-trial application is being reviewed — we normally answer within a day. You can also activate right away:'
+        : 'One last step — pick how to activate it. The reservation holds for 48 hours.'}</p>
+
+      <section class="claim-option">
+        <h2>Subscribe — {s}10/month</h2>
+        <p class="muted">Unlimited readers, 10 contributors, 1,000 replies a month. Cancel anytime.</p>
+        <form method="post" action={`/claim/${slug}/checkout`}>
+          <div class="btn-row">
+            <label class="level-card" style="flex:1"><input type="radio" name="cycle" value="monthly" checked /><span><b>{s}10 / month</b></span></label>
+            <label class="level-card" style="flex:1"><input type="radio" name="cycle" value="yearly" /><span><b>{s}100 / year</b><small>save {s}20</small></span></label>
+          </div>
+          <input type="hidden" name="currency" value={currency} />
+          <button class="btn" type="submit" data-busy="Redirecting to Stripe…">Pay & activate →</button>
+        </form>
+      </section>
+
+      <section class="claim-option">
+        <h2>Have a discount code?</h2>
+        <form method="post" action={`/claim/${slug}/discount`} class="assign-form">
+          <input class="input" name="code" placeholder={`${slug}-xxxxxxxx`} autocomplete="off" spellcheck={false} />
+          <button class="btn small ghost" type="submit" data-busy="Checking…">Redeem</button>
+        </form>
+      </section>
+
+      {collective.status !== 'applied' ? (
+        <section class="claim-option">
+          <h2>Apply for a free trial</h2>
+          <p class="muted">Tell us in a few sentences who your collective is and what you'll use the address for — a human reads every application.</p>
+          <form method="post" action={`/claim/${slug}/apply`}>
+            <textarea name="reason" rows={4} minlength={30} placeholder="We are a neighborhood composting initiative in Schaerbeek, about 25 volunteers…" required></textarea>
+            <div class="btn-row">
+              <button class="btn small ghost" type="submit" data-busy="Sending…">Send application</button>
+            </div>
+          </form>
+        </section>
+      ) : null}
+    </AuthCard>,
+  )
+})
+
+async function pendingClaim(c: Context<Env>): Promise<{ collective: Collective; member: Member } | Response> {
+  const email = c.get('email')
+  const slug = c.req.param('slug') || ''
+  if (!email) return c.redirect('/login?next=' + encodeURIComponent(`/claim/${slug}`))
+  const collective = await getCollectiveBySlug(slug)
+  const member = collective ? await getMemberIn(collective.id, email) : undefined
+  if (!collective || !member || !['pending', 'applied'].includes(collective.status)) return c.notFound()
+  return { collective, member }
+}
+
+app.post('/claim/:slug/checkout', async (c) => {
+  const t = await pendingClaim(c)
+  if (t instanceof Response) return t
+  const body = await c.req.parseBody()
+  const cycle = String(body.cycle) === 'yearly' ? 'yearly' as const : 'monthly' as const
+  const currency = String(body.currency) === 'usd' ? 'usd' as const : 'eur' as const
+  try {
+    const url = await createCheckoutSession(t.collective, t.member.email, 'collective', cycle, currency)
+    return c.redirect(url)
+  } catch (err) {
+    return c.redirect(`/claim/${t.collective.slug}?m=` + encodeURIComponent(`Checkout failed: ${err instanceof Error ? err.message : 'unknown error'}`))
+  }
+})
+
+app.post('/claim/:slug/discount', async (c) => {
+  const t = await pendingClaim(c)
+  if (t instanceof Response) return t
+  const body = await c.req.parseBody()
+  if (!checkDiscountCode(t.collective.slug, String(body.code || ''))) {
+    return c.redirect(`/claim/${t.collective.slug}?m=` + encodeURIComponent('That code is not valid for this address.'))
+  }
+  await run("UPDATE collectives SET status = 'active', comped = 1 WHERE id = ?", [t.collective.id])
+  await sendOnboarding((await getCollective(t.collective.id))!, t.member.email).catch(() => {})
+  return c.redirect(`/inbox/${t.collective.slug}?m=` + encodeURIComponent(`Welcome! ${t.collective.slug}@${cfg.emailDomain} is live.`))
+})
+
+app.post('/claim/:slug/apply', async (c) => {
+  const t = await pendingClaim(c)
+  if (t instanceof Response) return t
+  const body = await c.req.parseBody()
+  const reason = String(body.reason || '').trim()
+  if (reason.length < 30) return c.redirect(`/claim/${t.collective.slug}?m=` + encodeURIComponent('Tell us a bit more — a couple of sentences helps us say yes.'))
+  try {
+    await fileApplication(t.collective, t.member.email, t.member.name, reason.slice(0, 4000))
+    return c.redirect(`/claim/${t.collective.slug}?m=` + encodeURIComponent('Application sent — we usually answer within a day. We will email you!'))
+  } catch (err) {
+    return c.redirect(`/claim/${t.collective.slug}?m=` + encodeURIComponent(err instanceof Error ? err.message : 'Could not send the application.'))
   }
 })
 

@@ -50,6 +50,7 @@ const SCHEMA = [
     invite_token TEXT,
     join_name TEXT,
     join_level TEXT,
+    claim_slug TEXT,
     attempts INTEGER NOT NULL DEFAULT 0,
     expires_at INTEGER NOT NULL,
     created_at INTEGER NOT NULL
@@ -149,6 +150,7 @@ function init(): Promise<void> {
       'ALTER TABLE collectives ADD COLUMN billing_currency TEXT',
       'ALTER TABLE collectives ADD COLUMN trial_ends_at INTEGER',
       'ALTER TABLE collectives ADD COLUMN comped INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE login_codes ADD COLUMN claim_slug TEXT',
     ]
     ready = db.batch(SCHEMA, 'write')
       // additive migrations for pre-existing tables; ignore "duplicate column"
@@ -192,7 +194,7 @@ export interface Collective {
   id: number
   slug: string
   name: string
-  status: 'active' | 'suspended'
+  status: 'active' | 'suspended' | 'pending' | 'applied'
   plan: string
   stripe_customer_id?: string | null
   stripe_subscription_id?: string | null
@@ -298,13 +300,18 @@ const RESERVED_SLUGS = new Set([
   'abuse', 'postmaster', 'noreply', 'no-reply', 'root', 'team', 'billing', 'security', 'api',
 ])
 
-export async function createCollective(slug: string, name: string, plan = 'collective'): Promise<Collective> {
+export async function createCollective(
+  slug: string,
+  name: string,
+  plan = 'collective',
+  opts: { status?: Collective['status']; trial?: boolean } = {},
+): Promise<Collective> {
   const clean = slug.toLowerCase().trim()
   if (!/^[a-z0-9][a-z0-9-]{1,39}$/.test(clean)) throw new Error('Address must be 2–40 chars: letters, numbers, dashes.')
   if (RESERVED_SLUGS.has(clean)) throw new Error(`"${clean}" is reserved.`)
   if (await getCollectiveBySlug(clean)) throw new Error(`${clean}@${cfg.emailDomain} is already taken.`)
   const r = await run('INSERT INTO collectives (slug, name, status, plan, trial_ends_at, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-    [clean, name.trim() || clean, 'active', plan, now() + 60 * 86400, now()])
+    [clean, name.trim() || clean, opts.status ?? 'active', plan, opts.trial === false ? null : now() + 60 * 86400, now()])
   return (await getCollective(r.lastId))!
 }
 

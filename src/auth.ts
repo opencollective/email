@@ -10,8 +10,9 @@ export interface LoginCodeRow {
   id: number
   email: string
   code_hash: string
-  purpose: 'login' | 'join'
+  purpose: 'login' | 'join' | 'claim'
   invite_token: string | null
+  claim_slug: string | null
   join_name: string | null
   join_level: string | null
   attempts: number
@@ -22,8 +23,8 @@ export interface LoginCodeRow {
 /** Create a 6-digit code and email it. Returns false when rate-limited. */
 export async function issueCode(
   email: string,
-  purpose: 'login' | 'join',
-  join?: { inviteToken: string; name: string; level: string },
+  purpose: 'login' | 'join' | 'claim',
+  join?: { inviteToken?: string; name?: string; level?: string; claimSlug?: string },
 ): Promise<boolean> {
   const clean = email.toLowerCase().trim()
   const recent = await get<{ created_at: number }>('SELECT created_at FROM login_codes WHERE email = ? ORDER BY id DESC LIMIT 1', [clean])
@@ -32,9 +33,9 @@ export async function issueCode(
   const code = randomCode()
   await run('DELETE FROM login_codes WHERE email = ?', [clean])
   await run(`
-    INSERT INTO login_codes (email, code_hash, purpose, invite_token, join_name, join_level, expires_at, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `, [clean, sha256(code + cfg.secret), purpose, join?.inviteToken ?? null, join?.name ?? null, join?.level ?? null, now() + CODE_TTL, now()])
+    INSERT INTO login_codes (email, code_hash, purpose, invite_token, join_name, join_level, claim_slug, expires_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, [clean, sha256(code + cfg.secret), purpose, join?.inviteToken ?? null, join?.name ?? null, join?.level ?? null, join?.claimSlug ?? null, now() + CODE_TTL, now()])
   await sendLoginCode(clean, code)
   return true
 }

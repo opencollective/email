@@ -65,7 +65,12 @@ async function findThread(collective: Collective, parsed: ParsedMail, counterpar
 
 /** Ingest a parsed inbound email for a collective: thread it, store it,
  *  auto-assign, and notify members. Deduped by Message-ID. */
-export async function ingestInbound(collective: Collective, parsed: ParsedMail, resendEmailId?: string) {
+export async function ingestInbound(
+  collective: Collective,
+  parsed: ParsedMail,
+  resendEmailId?: string,
+  extraAction?: { label: string; url: string },
+) {
   const msgId = parsed.messageId || `<synthetic-${resendEmailId || now()}@${cfg.emailDomain}>`
   if (await get('SELECT id FROM messages WHERE rfc822_message_id = ?', [msgId])) return
 
@@ -121,7 +126,7 @@ export async function ingestInbound(collective: Collective, parsed: ParsedMail, 
   if (!isAutoSubmitted(parsed)) {
     const message = (await get<Message>('SELECT * FROM messages WHERE id = ?', [messageDbId]))!
     // awaited: on serverless, work after the response is returned may be killed
-    await notifyInbound(collective, (await getThread(thread.id))!, message).catch((err) => console.error('[notify] failed:', err))
+    await notifyInbound(collective, (await getThread(thread.id))!, message, extraAction).catch((err) => console.error('[notify] failed:', err))
   }
 
   console.log(`[ingest] ${collective.slug}: "${parsed.subject}" → thread ${thread.id}${isNewThread ? ' (new)' : ''}`)

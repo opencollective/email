@@ -255,15 +255,9 @@ section h2 { font-size: clamp(25px, 3.6vw, 36px); letter-spacing: -0.8px; margin
 `
 
 const SCRIPT = `
-const slug = (v) => v.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+const slug = (v) => v.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 40);
 const hero = document.getElementById('hero-name');
-const wl = document.getElementById('wl-name');
-if (hero) {
-  hero.addEventListener('input', () => { wl.value = slug(hero.value) || ''; });
-  hero.form && hero.form.addEventListener('submit', (e) => e.preventDefault());
-}
-document.getElementById('claim-btn').addEventListener('click', () => { wl.value = slug(hero.value); });
-if (wl) wl.addEventListener('blur', () => { wl.value = slug(wl.value); });
+if (hero) hero.addEventListener('blur', () => { hero.value = slug(hero.value); });
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 `
 
@@ -292,7 +286,7 @@ export const HomePage: FC<{ joined?: boolean; currency?: 'USD' | 'EUR' }> = ({ j
             <span class="spacer" />
             <a class="plain" href="#pricing">Pricing</a>
             <a class="plain" href="/login">Sign in</a>
-            <a class="btn ghost" href="#waitlist" style="padding:9px 18px">Join the waiting list</a>
+            <a class="btn ghost" href="/claim" style="padding:9px 18px">Claim your address</a>
           </nav>
 
           <header class="hero">
@@ -303,14 +297,14 @@ export const HomePage: FC<{ joined?: boolean; currency?: 'USD' | 'EUR' }> = ({ j
               and <b>talk about it internally</b> — right next to the email, invisible to the sender.
               No shared passwords, no forwarding spaghetti, no “did anyone answer this?”
             </p>
-            <form class="claim">
+            <form class="claim" method="get" action="/claim">
               <span class="addr">
-                <input id="hero-name" placeholder="yourcollective" aria-label="Your collective's name" maxlength={40} autocomplete="off" spellcheck={false} />
+                <input id="hero-name" name="address" placeholder="yourcollective" aria-label="Your collective's address" minlength={6} maxlength={40} pattern="[a-zA-Z0-9]{6,40}" autocomplete="off" spellcheck={false} required />
                 <span class="domain">@collective.email</span>
               </span>
-              <a class="btn" id="claim-btn" href="#waitlist">Claim it →</a>
+              <button class="btn" type="submit">Claim it →</button>
             </form>
-            <p class="claim-note">Free for 2 months, no credit card.</p>
+            <p class="claim-note">{'$'}/€10 a month — or apply for a free trial. At least 6 characters, letters and numbers.</p>
           </header>
 
           <section class="demo">
@@ -382,7 +376,7 @@ export const HomePage: FC<{ joined?: boolean; currency?: 'USD' | 'EUR' }> = ({ j
 
           <section class="pricing" id="pricing">
             <h2>Simple pricing</h2>
-            <p class="sub"><b>Every collective starts with 2 months free — no credit card.</b> Your whole community reads for free, forever; you pay only for the people who answer. If you let the trial lapse, mail keeps arriving read-only for 30 days, so nothing is ever lost.</p>
+            <p class="sub">Your whole community reads for free, forever — you pay only for the people who answer. Tight budget? <b>Apply for a free trial</b> when you claim your address: a human reads every application, usually within a day.</p>
             <div class="plans two">
               <div class="plan-card hot">
                 <span class="tag">Most collectives</span>
@@ -395,7 +389,7 @@ export const HomePage: FC<{ joined?: boolean; currency?: 'USD' | 'EUR' }> = ({ j
                   <li>1,000 replies per month</li>
                   <li>yourcollective@collective.email</li>
                 </ul>
-                <a class="btn" href="#waitlist">Start free — 2 months</a>
+                <a class="btn" href="/claim">Claim your address</a>
               </div>
               <div class="plan-card">
                 <h3>Pro</h3>
@@ -407,36 +401,13 @@ export const HomePage: FC<{ joined?: boolean; currency?: 'USD' | 'EUR' }> = ({ j
                   <li>10,000 replies per month</li>
                   <li>Priority support</li>
                 </ul>
-                <a class="btn ghost" href="#waitlist">Start free — 2 months</a>
+                <a class="btn ghost" href="/claim">Claim your address</a>
               </div>
             </div>
-            <p class="foot">Prices are the same in USD and EUR — you're seeing {currency === 'EUR' ? 'euros' : 'dollars'} based on your location. Addresses of lapsed trials are released, so nobody can squat a name. Something special needed? Tell us on the waiting list — we're building this with the first collectives.</p>
+            <p class="foot">Prices are the same in USD and EUR — you're seeing {currency === 'EUR' ? 'euros' : 'dollars'} based on your location. Addresses of lapsed trials are released, so nobody can squat a name. Something special needed? Email hello@collective.email — we're building this with the first collectives.</p>
           </section>
 
-          <section class="waitlist" id="waitlist">
-            <h2>Join the waiting list</h2>
-            <div class="wl-card">
-              {joined ? (
-                <p class="wl-ok">✓ You're on the list! We'll email you when your spot opens — no payment until then.</p>
-              ) : null}
-              <p class="sub">Tell us who you are and we'll reserve your address — your 2 free months start when it's approved. First come, first served.</p>
-              <form method="post" action="/waitlist">
-                <label class="lbl" for="wl-name">Your collective's address</label>
-                <span class="wl-addr">
-                  <input id="wl-name" name="collective_name" placeholder="yourcollective" maxlength={40} autocomplete="off" spellcheck={false} />
-                  <span class="domain">@collective.email</span>
-                </span>
-                <label class="lbl" for="wl-email">Your email</label>
-                <input class="field" id="wl-email" type="email" name="email" placeholder="you@example.com" required />
-                <label class="lbl">Plan you're interested in</label>
-                <div class="plan-picks two">
-                  <label class="plan"><input type="radio" name="plan" value="collective" checked /><span><b>Collective</b><small>{s}10 · 10 contributors · unlimited readers</small></span></label>
-                  <label class="plan"><input type="radio" name="plan" value="pro" /><span><b>Pro</b><small>{s}100 · your own domain</small></span></label>
-                </div>
-                <button class="btn" type="submit">Put me on the list</button>
-              </form>
-            </div>
-          </section>
+          
 
           <footer class="footer">
             <span class="wordmark">✉ collective<span class="at">.email</span></span>

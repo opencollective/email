@@ -530,3 +530,8 @@ img.avatar-img { object-fit: cover; }
 .act-banner p { margin: 0; }
 .act-banner .assign-form { max-width: 380px; }
 .act-banner .fineprint { margin: 0; }
+.claim-option {
+  border: 1.5px solid var(--line); border-radius: 12px; padding: 16px;
+  margin-top: 14px; display: flex; flex-direction: column; gap: 8px;
+}
+.claim-option h2 { margin: 0; }
