@@ -5,7 +5,7 @@ import type { Context } from 'hono'
 import { cfg } from '../config.js'
 import {
   activeMembers, addTag, all, allCollectives, attachmentsByMessage, batchAll, createCollective, get, getCollective,
-  getCollectiveBySlug, getMember, getMemberIn, getThread, kvSet, lastMessageByThread, memberMap,
+  getCollectiveBySlug, getMember, getMemberIn, getThread, kvGet, kvSet, lastMessageByThread, memberMap,
   membershipsByEmail, removeTag, run, setAssignee, setStatus, tagsByThread, threadMessages, threadTags,
   type Attachment, type Collective, type Invite, type Member, type Message, type Thread,
 } from '../db.js'
@@ -15,6 +15,7 @@ import {
 import { sendCollectiveReply } from '../outbound.js'
 import { digestTick, sendOnboarding, trialTick } from '../notify.js'
 import { backupTick } from '../backup.js'
+import { CONTRIBUTE_SLUG, creditBalance, creditsLedger, creditsTick, fileContribution, mintCredits, referralUrl } from '../credits.js'
 import {
   approveApplication, checkDiscountCode, discountCodeFor, fileApplication, slugAvailability,
 } from '../claim.js'
@@ -148,6 +149,7 @@ app.get('/cron/digest', async (c) => {
   if (cfg.cronSecret && auth !== `Bearer ${cfg.cronSecret}`) return c.json({ error: 'unauthorized' }, 401)
   await digestTick()
   await trialTick()
+  await creditsTick()
   await backupTick()
   return c.json({ ok: true })
 })
@@ -274,6 +276,12 @@ app.post('/verify', async (c) => {
       return c.redirect('/claim?m=' + encodeURIComponent(unavailable))
     }
     const collective = await createCollective(slug, res.row.join_name ? `${res.row.join_name}'s collective` : slug, 'collective', { status: 'pending', trial: false })
+    if (res.row.claim_ref) {
+      const referrer = await getCollectiveBySlug(res.row.claim_ref)
+      if (referrer && referrer.status === 'active' && referrer.id !== collective.id) {
+        await run('UPDATE collectives SET referred_by = ? WHERE id = ?', [referrer.id, collective.id])
+      }
+    }
     await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
       [collective.id, email, res.row.join_name || email.split('@')[0], 'admin', 'every', now()])
     redirect = `/claim/${slug}`
@@ -371,7 +379,7 @@ app.post('/join/:token', async (c) => {
 
 app.get('/a/:token', async (c) => {
   const payload = verifyToken(c.req.param('token'))
-  if (!payload || !['assign', 'spam', 'approve'].includes(payload.a)) {
+  if (!payload || !['assign', 'spam', 'approve', 'credits'].includes(payload.a)) {
     return c.html(
       <AuthCard title="Link expired">
         <h1>This link has expired</h1>
@@ -380,6 +388,36 @@ app.get('/a/:token', async (c) => {
       </AuthCard>,
     )
   }
+  if (payload.a === 'credits') {
+    const target = await getCollective(Number(payload.cid))
+    const n = Math.min(12, Math.max(1, Number(payload.n) || 1))
+    if (!target) return c.redirect('/')
+    // grant tokens are one-shot: a re-click can't double-mint
+    const onceKey = `granted:${payload.cid}:${payload.n}:${payload.t}`
+    if (await kvGet(onceKey)) {
+      return c.html(
+        <AuthCard title="Already granted">
+          <h1>Already granted</h1>
+          <p class="muted">This grant link was already used — {target.slug} received the credits the first time.</p>
+        </AuthCard>,
+      )
+    }
+    await kvSet(onceKey, String(now()))
+    await mintCredits(target.id, n, 'contribution', 'admin')
+    const admins = (await activeMembers(target.id)).filter((m) => m.role === 'admin')
+    const { sendCreditEmail } = await import('../notify.js')
+    await sendCreditEmail(target, admins,
+      `+${n} credit${n > 1 ? 's' : ''} for your contribution 🙌`,
+      `Thank you for contributing to collective.email! ${n} credit${n > 1 ? 's' : ''} (${n} month${n > 1 ? 's' : ''} of service) were added to ${target.slug}@${cfg.emailDomain}. Balance: ${await creditBalance(target.id)}.`).catch(() => {})
+    return c.html(
+      <AuthCard title="Credits granted">
+        <h1>✓ Granted {String(n)} credit{n > 1 ? 's' : ''} to {target.slug}</h1>
+        <p class="muted">Their admins were notified and the balance is now {String(await creditBalance(target.id))}.</p>
+        <a class="btn" href="/">Open collective.email</a>
+      </AuthCard>,
+    )
+  }
+
   if (payload.a === 'approve') {
     const months = Math.min(24, Math.max(1, Number(payload.m) || 2))
     const approved = await approveApplication(Number(payload.cid), months)
@@ -486,6 +524,16 @@ app.get('/admin', async (c) => {
         <button class="btn" type="submit">Create &amp; send onboarding email</button>
       </form>
 
+      <h2 class="admin-h">Issue credits</h2>
+      <form method="post" action="/admin/credits" class="me-form">
+        <div class="btn-row">
+          <input class="input" name="slug" placeholder="collective slug" required />
+          <input class="input" name="amount" type="number" min="-12" max="24" value="1" style="max-width:90px" required />
+        </div>
+        <input class="input" name="reason" placeholder="reason (shown in their ledger)" required />
+        <button class="btn small" type="submit" data-busy="Issuing…">Issue</button>
+      </form>
+
       <h2 class="admin-h">Discount code generator</h2>
       <form method="get" action="/admin" class="assign-form">
         <input class="input" name="dslug" placeholder="collective slug" value={c.req.query('dslug') || ''} />
@@ -525,6 +573,24 @@ app.get('/admin', async (c) => {
       </div>
     </AuthCard>,
   )
+})
+
+app.post('/admin/credits', async (c) => {
+  const email = c.get('email')
+  if (!isPlatformAdmin(email)) return c.notFound()
+  const body = await c.req.parseBody()
+  const target = await getCollectiveBySlug(slugify(String(body.slug || '')))
+  const amount = Math.min(24, Math.max(-12, Math.round(Number(body.amount) || 0)))
+  const reason = String(body.reason || '').trim().slice(0, 120)
+  if (!target || !amount || !reason) return c.redirect('/admin?m=' + encodeURIComponent('Need an existing slug, a non-zero amount, and a reason.'))
+  await mintCredits(target.id, amount, reason, 'admin')
+  if (amount > 0) {
+    const admins = (await activeMembers(target.id)).filter((m) => m.role === 'admin')
+    const { sendCreditEmail } = await import('../notify.js')
+    await sendCreditEmail(target, admins, `+${amount} credit${amount > 1 ? 's' : ''} for ${target.slug}@${cfg.emailDomain}`,
+      `${reason} — ${amount} credit${amount > 1 ? 's' : ''} added. Balance: ${await creditBalance(target.id)}.`).catch(() => {})
+  }
+  return c.redirect('/admin?m=' + encodeURIComponent(`${amount > 0 ? '+' : ''}${amount} credits → ${target.slug} (balance ${await creditBalance(target.id)})`))
 })
 
 app.post('/admin/collectives', async (c) => {
@@ -1497,6 +1563,30 @@ app.get('/inbox/:addr/billing', async (c) => {
           }</span>
         </section>
 
+        <section class="card">
+          <h2>Credits</h2>
+          <p class="muted"><b>{String(await creditBalance(collective.id))} credit{(await creditBalance(collective.id)) === 1 ? '' : 's'}</b> — 1 credit = 1 month of service, used automatically when a paid period or trial lapses.</p>
+          <span class="kv"><span class="k">EARN</span> <span>Refer another collective: <code class="invite-url" style="padding:2px 8px">{referralUrl(collective.slug)}</code> <button class="btn small ghost" type="button" data-copy={referralUrl(collective.slug)}>Copy</button></span></span>
+          <p class="fineprint">You earn 1 credit when a collective you referred has been active for a month and is really using its inbox.</p>
+          <details>
+            <summary class="fineprint" style="cursor:pointer">Contribute to earn credits (translations, workshops, spreading the word…)</summary>
+            <form method="post" action={`${base}/billing/contribute`} class="me-form" style="margin-top:10px">
+              <textarea name="text" rows={3} minlength={20} placeholder="What did you do (or want to do) for the collective.email community?" required></textarea>
+              <div class="btn-row"><button class="btn small ghost" type="submit" data-busy="Sending…">Submit contribution</button></div>
+            </form>
+          </details>
+          {(await creditsLedger(collective.id, 8)).length > 0 ? (
+            <div class="admin-list">
+              {(await creditsLedger(collective.id, 8)).map((l) => (
+                <div class="admin-row">
+                  <b>{l.delta > 0 ? `+${l.delta}` : String(l.delta)}</b>
+                  <small>{l.reason.replace(/_/g, ' ')}{l.ref ? ` · ${l.ref}` : ''} · {relTime(l.created_at)}</small>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </section>
+
         {!stripeEnabled() ? (
           <section class="card">
             <h2>Nothing to pay yet</h2>
@@ -1569,6 +1659,23 @@ app.post('/inbox/:addr/billing/checkout', async (c) => {
   }
 })
 
+app.post('/inbox/:addr/billing/contribute', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const base = `/inbox/${t.collective.slug}`
+  if (t.member.role !== 'admin') return c.redirect(base)
+  const body = await c.req.parseBody()
+  const text = String(body.text || '').trim()
+  if (text.length < 20) return c.redirect(`${base}/billing?m=` + encodeURIComponent('Tell us a bit more about the contribution.'))
+  try {
+    const collective = (await getCollective(t.collective.id))!
+    await fileContribution(collective, t.member, text.slice(0, 4000))
+    return c.redirect(`${base}/billing?m=` + encodeURIComponent('Contribution submitted — we usually answer within a day. Thank you! 🙌'))
+  } catch (err) {
+    return c.redirect(`${base}/billing?m=` + encodeURIComponent(err instanceof Error ? err.message : 'Could not submit.'))
+  }
+})
+
 app.post('/inbox/:addr/billing/portal', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
@@ -1586,11 +1693,12 @@ app.post('/inbox/:addr/billing/portal', async (c) => {
 
 // ---------- public claiming: verify email → pay / discount / apply ----------
 
-const ClaimForm = (p: { address?: string; error?: string }) => (
+const ClaimForm = (p: { address?: string; error?: string; refSlug?: string }) => (
   <AuthCard title="Claim your address" flash={p.error}>
     <h1>Claim your address</h1>
     <p class="muted">Pick your collective's email address, confirm your own email with a 6-digit code, and it's reserved for you.</p>
     <form method="post" action="/claim">
+      {p.refSlug ? <input type="hidden" name="ref" value={p.refSlug} /> : null}
       <label class="lbl">Your collective's address</label>
       <span class="wl-addr">
         <input name="address" value={p.address || ''} placeholder="yourcollective" minlength={6} maxlength={40} pattern="[a-z0-9]{6,40}" autocomplete="off" spellcheck={false} required />
@@ -1606,17 +1714,18 @@ const ClaimForm = (p: { address?: string; error?: string }) => (
   </AuthCard>
 )
 
-app.get('/claim', (c) => c.html(<ClaimForm address={slugify(c.req.query('address') || '')} error={c.req.query('m')} />))
+app.get('/claim', (c) => c.html(<ClaimForm address={slugify(c.req.query('address') || '')} refSlug={slugify(c.req.query('ref') || '') || undefined} error={c.req.query('m')} />))
 
 app.post('/claim', async (c) => {
   const body = await c.req.parseBody()
   const address = String(body.address || '').toLowerCase().trim()
   const name = String(body.name || '').trim().slice(0, 60)
   const email = String(body.email || '').toLowerCase().trim()
+  const refSlug = slugify(String(body.ref || ''))
   const unavailable = await slugAvailability(address)
-  if (unavailable) return c.html(<ClaimForm address={address} error={unavailable} />)
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return c.html(<ClaimForm address={address} error="That email address doesn't look right." />)
-  await issueCode(email, 'claim', { name, claimSlug: address })
+  if (unavailable) return c.html(<ClaimForm address={address} refSlug={refSlug || undefined} error={unavailable} />)
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return c.html(<ClaimForm address={address} refSlug={refSlug || undefined} error="That email address doesn't look right." />)
+  await issueCode(email, 'claim', { name, claimSlug: address, claimRef: refSlug || undefined })
   return c.html(<CodeForm email={email} />)
 })
 
@@ -1712,9 +1821,9 @@ app.post('/claim/:slug/discount', async (c) => {
     return c.redirect(`/claim/${t.collective.slug}?m=` + encodeURIComponent('That code is not valid for this address.'))
   }
   if (redemption === 'forever') {
-    await run("UPDATE collectives SET status = 'active', comped = 1 WHERE id = ?", [t.collective.id])
+    await run("UPDATE collectives SET status = 'active', comped = 1, activated_at = COALESCE(activated_at, ?) WHERE id = ?", [now(), t.collective.id])
   } else {
-    await run("UPDATE collectives SET status = 'active', trial_ends_at = ? WHERE id = ?", [now() + redemption * 30 * 86400, t.collective.id])
+    await run("UPDATE collectives SET status = 'active', trial_ends_at = ?, activated_at = COALESCE(activated_at, ?) WHERE id = ?", [now() + redemption * 30 * 86400, now(), t.collective.id])
   }
   await sendOnboarding((await getCollective(t.collective.id))!, t.member.email).catch(() => {})
   return c.redirect(`/inbox/${t.collective.slug}?m=` + encodeURIComponent(

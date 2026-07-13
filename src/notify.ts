@@ -263,6 +263,17 @@ export async function digestTick() {
 }
 
 
+// ---------- credit emails ----------
+
+export async function sendCreditEmail(collective: Collective, admins: Member[], subject: string, message: string) {
+  const html = shell(collective.name, `
+    <p style="margin:0 0 8px;font-size:15px">${escapeHtml(message)}</p>
+    ${btn(`${cfg.baseUrl}/inbox/${collective.slug}/billing`, 'See balance & ways to earn', false)}`)
+  for (const a of admins) {
+    await sendAppEmail({ to: a.email, subject, html, text: `${message}\n\n${cfg.baseUrl}/inbox/${collective.slug}/billing` })
+  }
+}
+
 // ---------- trial lifecycle emails ----------
 
 import { billingState, trialDaysLeft } from './billing.js'

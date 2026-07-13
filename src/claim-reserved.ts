@@ -3,7 +3,7 @@
  *  the length rule, but are listed anyway in case the rule ever changes.) */
 export const RESERVED_SLUGS_PUBLIC = new Set([
   // platform
-  'applications', 'notifications', 'collective', 'collectiveemail', 'official',
+  'applications', 'contribute', 'contributions', 'notifications', 'collective', 'collectiveemail', 'official',
   'system', 'staging', 'production', 'internal', 'platform',
   // common role addresses
   'hello', 'contact', 'contactus', 'support', 'helpdesk', 'info', 'inquiries',

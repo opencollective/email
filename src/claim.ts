@@ -125,8 +125,8 @@ export async function fileApplication(
 /** Approving an application: activate with a free trial of the given months. */
 export async function approveApplication(collectiveId: number, months = 2): Promise<Collective | null> {
   const clamped = Math.min(24, Math.max(1, Math.round(months)))
-  await run("UPDATE collectives SET status = 'active', trial_ends_at = ? WHERE id = ? AND status IN ('applied', 'pending')",
-    [now() + clamped * 30 * 86400, collectiveId])
+  await run("UPDATE collectives SET status = 'active', trial_ends_at = ?, activated_at = COALESCE(activated_at, ?) WHERE id = ? AND status IN ('applied', 'pending')",
+    [now() + clamped * 30 * 86400, now(), collectiveId])
   const { getCollective } = await import('./db.js')
   return (await getCollective(collectiveId)) ?? null
 }

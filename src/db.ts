@@ -19,6 +19,8 @@ const SCHEMA = [
     billing_currency TEXT,
     trial_ends_at INTEGER,
     comped INTEGER NOT NULL DEFAULT 0,
+    referred_by INTEGER,
+    activated_at INTEGER,
     created_at INTEGER NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS members (
@@ -126,6 +128,16 @@ const SCHEMA = [
     tag_id INTEGER NOT NULL,
     PRIMARY KEY (thread_id, tag_id)
   )`,
+  `CREATE TABLE IF NOT EXISTS credits_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    collective_id INTEGER NOT NULL,
+    delta INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    actor TEXT NOT NULL DEFAULT 'system',
+    ref TEXT,
+    created_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_credits_collective ON credits_ledger(collective_id)`,
   `CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)`,
   `CREATE TABLE IF NOT EXISTS waitlist (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -151,6 +163,9 @@ function init(): Promise<void> {
       'ALTER TABLE collectives ADD COLUMN trial_ends_at INTEGER',
       'ALTER TABLE collectives ADD COLUMN comped INTEGER NOT NULL DEFAULT 0',
       'ALTER TABLE login_codes ADD COLUMN claim_slug TEXT',
+      'ALTER TABLE login_codes ADD COLUMN claim_ref TEXT',
+      'ALTER TABLE collectives ADD COLUMN referred_by INTEGER',
+      'ALTER TABLE collectives ADD COLUMN activated_at INTEGER',
     ]
     ready = db.batch(SCHEMA, 'write')
       // additive migrations for pre-existing tables; ignore "duplicate column"
@@ -203,6 +218,8 @@ export interface Collective {
   billing_currency?: string | null
   trial_ends_at?: number | null
   comped?: number | null
+  referred_by?: number | null
+  activated_at?: number | null
   created_at: number
 }
 
@@ -310,8 +327,9 @@ export async function createCollective(
   if (!/^[a-z0-9][a-z0-9-]{1,39}$/.test(clean)) throw new Error('Address must be 2–40 chars: letters, numbers, dashes.')
   if (RESERVED_SLUGS.has(clean)) throw new Error(`"${clean}" is reserved.`)
   if (await getCollectiveBySlug(clean)) throw new Error(`${clean}@${cfg.emailDomain} is already taken.`)
-  const r = await run('INSERT INTO collectives (slug, name, status, plan, trial_ends_at, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-    [clean, name.trim() || clean, opts.status ?? 'active', plan, opts.trial === false ? null : now() + 60 * 86400, now()])
+  const status = opts.status ?? 'active'
+  const r = await run('INSERT INTO collectives (slug, name, status, plan, trial_ends_at, activated_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [clean, name.trim() || clean, status, plan, opts.trial === false ? null : now() + 60 * 86400, status === 'active' ? now() : null, now()])
   return (await getCollective(r.lastId))!
 }
 

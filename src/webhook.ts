@@ -176,7 +176,7 @@ webhooks.post('/webhooks/stripe', async (c) => {
       await run(`
         UPDATE collectives SET
           stripe_customer_id = ?, stripe_subscription_id = ?, stripe_status = 'active',
-          status = 'active',
+          status = 'active', activated_at = COALESCE(activated_at, unixepoch()),
           plan = COALESCE(?, plan), billing_cycle = ?, billing_currency = ?
         WHERE id = ?
       `, [
