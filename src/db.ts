@@ -163,6 +163,7 @@ function init(): Promise<void> {
       'ALTER TABLE collectives ADD COLUMN trial_ends_at INTEGER',
       'ALTER TABLE collectives ADD COLUMN comped INTEGER NOT NULL DEFAULT 0',
       'ALTER TABLE login_codes ADD COLUMN claim_slug TEXT',
+      "ALTER TABLE invites ADD COLUMN role TEXT DEFAULT 'reader'",
       'ALTER TABLE login_codes ADD COLUMN claim_ref TEXT',
       'ALTER TABLE collectives ADD COLUMN referred_by INTEGER',
       'ALTER TABLE collectives ADD COLUMN activated_at INTEGER',
@@ -228,7 +229,7 @@ export interface Member {
   collective_id: number
   email: string
   name: string
-  role: 'admin' | 'member' | 'reader'
+  role: 'admin' | 'member' | 'commenter' | 'reader'
   notify_level: 'every' | 'daily' | 'weekly'
   avatar_path: string | null
   created_at: number
@@ -272,6 +273,7 @@ export interface Invite {
   id: number
   collective_id: number
   token: string
+  role: 'member' | 'commenter' | 'reader' | null
   created_by: number | null
   created_at: number
   expires_at: number

@@ -91,15 +91,16 @@ h1, h2, h3 { color: var(--navy); margin: 0; }
 .hero p.lede b { color: var(--navy); font-weight: 650; }
 .claim { display: flex; flex-wrap: wrap; align-items: stretch; gap: 12px; max-width: 660px; }
 .claim .addr {
-  flex: 1; min-width: 260px; display: flex; align-items: center;
+  flex: 1; min-width: 260px; display: flex; flex-wrap: wrap; align-items: center;
   border: 1.5px solid var(--line); border-radius: 100px; background: var(--bg);
   font-family: var(--mono); font-size: clamp(15px, 2.4vw, 18px); box-shadow: var(--shadow);
   padding: 0 20px;
 }
-.claim input { border: none; background: none; color: var(--ink); font: inherit; padding: 15px 0; width: 100%; min-width: 40px; }
+.claim input { border: none; background: none; color: var(--ink); font: inherit; padding: 15px 0; width: 12ch; flex: 1 0 auto; max-width: 100%; }
 .claim input::placeholder { color: var(--muted); }
+.claim input:focus { outline: none; }
+.claim .addr:focus-within { border-color: var(--blue); }
 .claim .domain { color: var(--blue); font-weight: 700; white-space: nowrap; }
-.claim-note { font-size: 13.5px; color: var(--muted); margin-top: 14px; }
 
 /* sections */
 section h2 { font-size: clamp(25px, 3.6vw, 36px); letter-spacing: -0.8px; margin: 0 0 12px; text-wrap: balance; font-weight: 800; }
@@ -257,7 +258,11 @@ section h2 { font-size: clamp(25px, 3.6vw, 36px); letter-spacing: -0.8px; margin
 const SCRIPT = `
 const slug = (v) => v.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 40);
 const hero = document.getElementById('hero-name');
-if (hero) hero.addEventListener('blur', () => { hero.value = slug(hero.value); });
+if (hero) {
+  hero.addEventListener('blur', () => { hero.value = slug(hero.value); });
+  // grow with the slug so the full address stays visible (@domain wraps below)
+  hero.addEventListener('input', () => { hero.style.width = Math.max(12, hero.value.length + 1) + 'ch'; });
+}
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 `
 
@@ -304,7 +309,6 @@ export const HomePage: FC<{ joined?: boolean; currency?: 'USD' | 'EUR' }> = ({ j
               </span>
               <button class="btn" type="submit">Claim it →</button>
             </form>
-            <p class="claim-note">{'$'}/€10 a month — or apply for a free trial. At least 6 characters, letters and numbers.</p>
           </header>
 
           <section class="demo">

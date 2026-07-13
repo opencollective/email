@@ -145,9 +145,12 @@ export async function handleEmailReply(
   if (!collective || collective.slug !== ref.slug) return
   // Never let vacation autoresponders or mail-loop artifacts reach the sender
   if (isAutoSubmitted(parsed)) return
-  if (member.role === 'reader') {
+  if (member.role === 'reader' || member.role === 'commenter') {
     await sendReplyFailure(collective, member, thread,
-      'You have read access to this collective. Ask an admin to make you a contributor to reply.', plainText(parsed, true))
+      member.role === 'reader'
+        ? 'You have read access to this collective. Ask an admin to let you comment or send.'
+        : 'Your role can comment in the web inbox but not send email to the outside. Ask an admin for sending rights.',
+      plainText(parsed, true))
     return
   }
 

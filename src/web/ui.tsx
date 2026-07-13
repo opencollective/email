@@ -60,8 +60,22 @@ if (flashEl) {
   } catch {}
 }
 
+// Address inputs grow with the slug so the full address stays visible —
+// the @domain part wraps to its own line when the two no longer fit.
+const sizeAddr = (a) => { a.style.width = Math.max(8, (a.value || a.placeholder || '').length + 1) + 'ch'; };
+document.addEventListener('input', (e) => {
+  const a = e.target.closest && e.target.closest('.wl-addr input, .claim .addr input');
+  if (a) sizeAddr(a);
+});
+document.querySelectorAll('.wl-addr input, .claim .addr input').forEach((a) => { if (a.value) sizeAddr(a); });
+
 // Instant feedback on every submit: disable the button and show progress,
 // so a slow network never invites a double tap.
+document.addEventListener('change', (e) => {
+  const rs = e.target.closest && e.target.closest('.role-select');
+  if (rs && rs.form && rs.form.classList.contains('role-form')) rs.form.requestSubmit();
+});
+
 document.addEventListener('submit', (e) => {
   const btn = e.target.querySelector('button[type="submit"]');
   if (btn && !btn.disabled) {
@@ -171,7 +185,7 @@ export const Page: FC<{ title?: string; flash?: string; children?: Child }> = (p
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=7" />
+      <link rel="stylesheet" href="/static/style.css?v=8" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script

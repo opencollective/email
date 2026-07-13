@@ -31,10 +31,18 @@ type Env = { Variables: { email: string | null } }
 export const app = new Hono<Env>()
 
 const SID = 'requests_sid'
-/** Readers can see everything but act on nothing. */
+/** Roles: reader (can read) → commenter (can comment) → member (can send) → admin.
+ *  Readers see everything but act on nothing; commenters do everything except
+ *  send external email; senders + admins are the paid contributor seats. */
+const canSendRole = (r: Member['role']) => r === 'member' || r === 'admin'
+const ROLE_LABELS: Record<Member['role'], string> = { reader: 'can read', commenter: 'can comment', member: 'can send', admin: 'admin' }
 const readerBlock = (c: Context<Env>, t: { collective: Collective; member: Member }) =>
   t.member.role === 'reader'
-    ? c.redirect(`/inbox/${t.collective.slug}?m=` + encodeURIComponent('You have read access — ask an admin to make you a contributor.'))
+    ? c.redirect(`/inbox/${t.collective.slug}?m=` + encodeURIComponent('You have read access — ask an admin to let you comment or send.'))
+    : null
+const senderBlock = (c: Context<Env>, t: { collective: Collective; member: Member }) =>
+  !canSendRole(t.member.role)
+    ? c.redirect(`/inbox/${t.collective.slug}?m=` + encodeURIComponent('Your role can comment but not send email — ask an admin for sending rights.'))
     : null
 const memberName = (m?: Member | null) => (m ? m.name || m.email.split('@')[0] : 'someone')
 const isPlatformAdmin = (email: string | null) => !!email && !!cfg.adminEmail && email === cfg.adminEmail
@@ -294,8 +302,13 @@ app.post('/verify', async (c) => {
         await run("UPDATE members SET removed_at = NULL, name = COALESCE(NULLIF(?, ''), name), notify_level = ? WHERE id = ?",
           [res.row.join_name || '', res.row.join_level || existing.notify_level, existing.id])
       } else {
+        let role = ['reader', 'commenter', 'member'].includes(invite.role || '') ? invite.role! : 'reader'
+        if (role === 'member') {
+          const senders = (await activeMembers(collective.id)).filter((m) => canSendRole(m.role)).length
+          if (senders >= planLimits(collective.plan).contributors) role = 'commenter' // seats full — join with the closest free role
+        }
         await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-          [collective.id, email, res.row.join_name || email.split('@')[0], 'reader', res.row.join_level || 'daily', now()])
+          [collective.id, email, res.row.join_name || email.split('@')[0], role, res.row.join_level || 'daily', now()])
       }
       redirect = `/inbox/${collective.slug}?m=` + encodeURIComponent(`Welcome to ${collective.name}!`)
     }
@@ -339,8 +352,8 @@ app.get('/join/:token', async (c) => {
     <AuthCard title={`Join ${collective.name}`}>
       <h1>Join {collective.name}</h1>
       <p class="muted">
-        {inviter ? `${memberName(inviter)} invited you to help answer` : 'You were invited to help answer'} email
-        sent to <b>{collective.slug}@{cfg.emailDomain}</b>.
+        {inviter ? `${memberName(inviter)} invited you to follow` : 'You were invited to follow'} email
+        sent to <b>{collective.slug}@{cfg.emailDomain}</b> — you'll join with <b>{ROLE_LABELS[(invite.role || 'reader') as Member['role']]}</b> access.
       </p>
       <form method="post" action={`/join/${token}`}>
         <label class="lbl">Your name</label>
@@ -615,9 +628,9 @@ app.post('/admin/collectives', async (c) => {
 // ---------- tenant: inbox ----------
 
 const FILTERS: Record<string, { label: string; where: string }> = {
+  all: { label: 'Inbox', where: "t.status != 'spam'" },
   needs_reply: { label: 'Needs reply', where: "t.status = 'needs_reply'" },
   mine: { label: 'Mine', where: "t.assignee_member_id = ? AND t.status IN ('needs_reply','answered')" },
-  all: { label: 'All threads', where: "t.status != 'spam'" },
   answered: { label: 'Answered', where: "t.status = 'answered'" },
   closed: { label: 'Closed', where: "t.status = 'closed'" },
   spam: { label: 'Spam', where: "t.status = 'spam'" },
@@ -633,7 +646,7 @@ app.get('/inbox/:addr', async (c) => {
   if (t instanceof Response) return t
   const { collective, member } = t
   const base = `/inbox/${collective.slug}`
-  const f = FILTERS[c.req.query('f') || 'needs_reply'] ? (c.req.query('f') || 'needs_reply') : 'needs_reply'
+  const f = FILTERS[c.req.query('f') || 'all'] ? (c.req.query('f') || 'all') : 'all'
   const tag = c.req.query('tag') || ''
   const q = (c.req.query('q') || '').trim()
 
@@ -714,7 +727,11 @@ app.get('/inbox/:addr', async (c) => {
           <input type="hidden" name="sort" value={sort} />
           <input class="search" name="q" value={q} placeholder="Search threads, senders…" />
         </form>
-        <button class="icon-btn" type="button" data-dialog="#sort-modal" aria-label="Sorting options" title="Sorting">⇅</button>
+        <button class="icon-btn" type="button" data-dialog="#sort-modal" aria-label="Sorting options" title="Sorting">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M8 19V5M4 9l4-4 4 4M16 5v14M12 15l4 4 4-4" />
+          </svg>
+        </button>
       </div>
       <dialog id="sort-modal" class="modal">
         <h2>Sort threads</h2>
@@ -741,7 +758,9 @@ app.get('/inbox/:addr', async (c) => {
           <div class="empty-state">
             {f === 'needs_reply'
               ? '🎉 Nothing needs a reply. The inbox is at zero.'
-              : 'No threads here.'}
+              : f === 'all'
+                ? `No conversations yet — email ${collective.slug}@${cfg.emailDomain} to start one.`
+                : 'No threads here.'}
           </div>
         ) : threads.map((th) => {
           const lastMsg = lastMsgs.get(th.id)
@@ -930,13 +949,16 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
           <div class="typing" id="typing" data-url={`${base}/thread/${thread.id}/typing`} hidden></div>
 
           {member.role === 'reader' ? (
-            <div class="reader-note">👀 You have read access. Ask an admin to make you a contributor to reply or comment.</div>
+            <div class="reader-note">👀 You have read access. Ask an admin to let you comment or send.</div>
           ) : (
           <div class="composer" id="composer">
-            <div class="tabs">
-              <button class="tab on" data-tab="reply" type="button">✉ Reply to {counterpartFirst}</button>
-              <button class="tab" data-tab="note" type="button">⌁ Internal note</button>
-            </div>
+            {canSendRole(member.role) ? (
+              <div class="tabs">
+                <button class="tab on" data-tab="reply" type="button">✉ Reply to {counterpartFirst}</button>
+                <button class="tab" data-tab="note" type="button">⌁ Internal note</button>
+              </div>
+            ) : null}
+            {canSendRole(member.role) ? (
             <form method="post" action={`${base}/thread/${thread.id}/reply`} data-pane="reply" enctype="multipart/form-data">
               <div class="to">From <b>{collectiveAddr}</b> · To <b>{thread.counterpart_email || 'unknown'}</b></div>
               <textarea name="body" rows={5} placeholder={`Write to ${counterpartFirst}…`} data-draft="reply" required></textarea>
@@ -945,7 +967,8 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                 <button class="btn send-btn" type="submit" data-busy="Sending…">Send as {collective.slug}@ ➤</button>
               </div>
             </form>
-            <form method="post" action={`${base}/thread/${thread.id}/note`} data-pane="note" class="hidden">
+            ) : null}
+            <form method="post" action={`${base}/thread/${thread.id}/note`} data-pane="note" class={canSendRole(member.role) ? 'hidden' : ''}>
               <div class="to note-to">⌁ Only members of {collective.name} will see this</div>
               <textarea name="body" rows={4} placeholder="Add context, ask a teammate, leave a note…" data-draft="note" required></textarea>
               <div class="actions">
@@ -1050,7 +1073,7 @@ const MAX_UPLOAD = 15 * 1024 * 1024 // total, per reply
 app.post('/inbox/:addr/thread/:id/reply', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
-  const blocked = readerBlock(c, t)
+  const blocked = senderBlock(c, t)
   if (blocked) return blocked
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
@@ -1242,7 +1265,7 @@ app.get('/inbox/:addr/members', async (c) => {
           <h2>Invite someone</h2>
           {inviteUrl ? (
             <>
-              <p class="muted">Share this link anywhere in your community. Whoever opens it joins on their own — they pick their email and notification level, so they already know how to sign in next time.</p>
+              <p class="muted">Whoever opens this link joins as <b>{ROLE_LABELS[(invite!.role || 'reader') as Member['role']]}</b> — they pick their own email and notification level. Share it anywhere in your community.</p>
               <div class="invite-row">
                 <code class="invite-url">{inviteUrl}</code>
                 <button class="btn small" type="button" data-copy={inviteUrl}>Copy link</button>
@@ -1255,16 +1278,19 @@ app.get('/inbox/:addr/members', async (c) => {
             <p class="muted">No active invite link.{isAdmin ? '' : ' Ask an admin to generate one.'}</p>
           )}
           {isAdmin ? (
-            <div class="btn-row">
-              <form method="post" action={`${base}/members/invite`}>
-                <button class="btn small" type="submit">{invite ? '↻ Generate new link' : '+ Create invite link'}</button>
-              </form>
-              {invite ? (
-                <form method="post" action={`${base}/members/invite/revoke`}>
-                  <button class="btn small ghost" type="submit" data-confirm="Revoke the current invite link? Anyone holding it won't be able to join.">Revoke</button>
-                </form>
-              ) : null}
-            </div>
+            <form method="post" action={`${base}/members/invite`} class="btn-row invite-form">
+              <select name="role" class="role-select" aria-label="Role for people joining with this link">
+                <option value="reader">Can read</option>
+                <option value="commenter">Can comment</option>
+                <option value="member">Can send</option>
+              </select>
+              <button class="btn small" type="submit">{invite ? '↻ New invite link' : '+ Create invite link'}</button>
+            </form>
+          ) : null}
+          {isAdmin && invite ? (
+            <form method="post" action={`${base}/members/invite/revoke`} class="btn-row">
+              <button class="btn small ghost" type="submit" data-confirm="Revoke the current invite link? Anyone holding it won't be able to join.">Revoke current link</button>
+            </form>
           ) : null}
         </section>
 
@@ -1278,7 +1304,7 @@ app.get('/inbox/:addr/members', async (c) => {
                   {memberName(m)}{m.id === member.id ? ' (you)' : ''}
                   <small>{m.email}</small>
                 </span>
-                {m.role === 'admin' ? <span class="chip solid">admin</span> : m.role === 'reader' ? <span class="chip">reader</span> : <span class="chip">contributor</span>}
+                <span class={m.role === 'admin' ? 'chip solid' : 'chip'}>{ROLE_LABELS[m.role]}</span>
                 <span class="m-meta">
                   {LEVELS.find((l) => l.value === m.notify_level)?.label}
                   <small>{replies(m.id)} replies · seen {relTime(m.last_seen_at)}</small>
@@ -1286,15 +1312,12 @@ app.get('/inbox/:addr/members', async (c) => {
                 {isAdmin && m.id !== member.id ? (
                   <span class="m-actions">
                     <form method="post" action={`${base}/members/${m.id}/role`} class="inline role-form">
-                      <select name="role" class="role-select">
-                        <option value="reader" selected={m.role === 'reader'}>Reader</option>
-                        <option value="member" selected={m.role === 'member'}>Contributor</option>
+                      <select name="role" class="role-select" aria-label={`Role of ${memberName(m)}`}>
+                        <option value="reader" selected={m.role === 'reader'}>Can read</option>
+                        <option value="commenter" selected={m.role === 'commenter'}>Can comment</option>
+                        <option value="member" selected={m.role === 'member'}>Can send</option>
                         <option value="admin" selected={m.role === 'admin'}>Admin</option>
                       </select>
-                      <button class="linkish" type="submit">Set</button>
-                    </form>
-                    <form method="post" action={`${base}/members/${m.id}/disconnect`} class="inline">
-                      <button class="linkish" type="submit" data-confirm={`Sign ${memberName(m)} out of all devices? They can sign back in with a code.`}>Disconnect</button>
                     </form>
                     <form method="post" action={`${base}/members/${m.id}/remove`} class="inline">
                       <button class="linkish danger" type="submit" disabled={m.role === 'admin' && adminCount <= 1}
@@ -1315,9 +1338,11 @@ app.post('/inbox/:addr/members/invite', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
   if (t.member.role !== 'admin') return c.redirect(`/inbox/${t.collective.slug}/members`)
+  const inviteBody = await c.req.parseBody()
+  const inviteRole = ['reader', 'commenter', 'member'].includes(String(inviteBody.role)) ? String(inviteBody.role) : 'reader'
   await run('UPDATE invites SET revoked_at = ? WHERE collective_id = ? AND revoked_at IS NULL', [now(), t.collective.id])
-  await run('INSERT INTO invites (collective_id, token, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?)',
-    [t.collective.id, randomToken(18), t.member.id, now(), now() + cfg.inviteHours * 3600])
+  await run('INSERT INTO invites (collective_id, token, role, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [t.collective.id, randomToken(18), inviteRole, t.member.id, now(), now() + cfg.inviteHours * 3600])
   return c.redirect(`/inbox/${t.collective.slug}/members?m=` + encodeURIComponent('New invite link created — valid 24h.'))
 })
 
@@ -1342,17 +1367,6 @@ app.post('/inbox/:addr/members/:id/remove', async (c) => {
   return c.redirect(back + '?m=' + encodeURIComponent(`${memberName(target)} was removed from the collective.`))
 })
 
-app.post('/inbox/:addr/members/:id/disconnect', async (c) => {
-  const t = await tenant(c)
-  if (t instanceof Response) return t
-  const back = `/inbox/${t.collective.slug}/members`
-  if (t.member.role !== 'admin') return c.redirect(back)
-  const target = await getMember(Number(c.req.param('id')))
-  if (!target || target.collective_id !== t.collective.id) return c.redirect(back)
-  await destroyEmailSessions(target.email)
-  return c.redirect(back + '?m=' + encodeURIComponent(`${memberName(target)} was signed out of all devices.`))
-})
-
 app.post('/inbox/:addr/members/:id/role', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
@@ -1361,21 +1375,21 @@ app.post('/inbox/:addr/members/:id/role', async (c) => {
   const target = await getMember(Number(c.req.param('id')))
   if (!target || target.collective_id !== t.collective.id || target.id === t.member.id) return c.redirect(back)
   const body = await c.req.parseBody()
-  const role = ['reader', 'member', 'admin'].includes(String(body.role)) ? String(body.role) : target.role
+  const role = ['reader', 'commenter', 'member', 'admin'].includes(String(body.role)) ? (String(body.role) as Member['role']) : target.role
   if (role === target.role) return c.redirect(back)
   const members = await activeMembers(t.collective.id)
   const adminCount = members.filter((m) => m.role === 'admin').length
   if (target.role === 'admin' && adminCount <= 1) return c.redirect(back + '?m=' + encodeURIComponent('Cannot demote the last admin.'))
-  // contributor seats (contributor + admin) are the paid dimension; readers are free
-  if (target.role === 'reader' && role !== 'reader') {
-    const contributors = members.filter((m) => m.role !== 'reader').length
+  // sending seats (can send + admin) are the paid dimension; readers and commenters are free
+  if (!canSendRole(target.role) && canSendRole(role)) {
+    const senders = members.filter((m) => canSendRole(m.role)).length
     const limit = planLimits(t.collective.plan).contributors
-    if (contributors >= limit) {
-      return c.redirect(back + '?m=' + encodeURIComponent(`Contributor limit reached (${limit} on the ${t.collective.plan} plan). Make someone a reader or upgrade.`))
+    if (senders >= limit) {
+      return c.redirect(back + '?m=' + encodeURIComponent(`Sending-seat limit reached (${limit} on the ${t.collective.plan} plan). Change someone to “can comment” or upgrade.`))
     }
   }
   await run('UPDATE members SET role = ? WHERE id = ?', [role, target.id])
-  return c.redirect(back)
+  return c.redirect(back + '?m=' + encodeURIComponent(`${memberName(target)} is now “${ROLE_LABELS[role]}”.`))
 })
 
 app.get('/inbox/:addr/notifications', async (c) => {
@@ -1541,7 +1555,7 @@ app.get('/inbox/:addr/billing', async (c) => {
   const daysLeft = trialDaysLeft(collective)
   const used = await repliesThisMonth(collective.id)
   const limits = planLimits(collective.plan)
-  const contributors = (await activeMembers(collective.id)).filter((m) => m.role !== 'reader').length
+  const contributors = (await activeMembers(collective.id)).filter((m) => canSendRole(m.role)).length
 
   return c.html(
     <Shell member={member} collective={collective} title="Billing" active="billing" flash={flash} sidebar={<BackNav base={base} />}>
