@@ -137,6 +137,9 @@ app.get('/health', (c) => c.json({
   ok: true,
   // 'remote' = Turso; 'ephemeral' = file fallback (catastrophic on Vercel — CI fails the deploy)
   db: cfg.dbUrl.startsWith('file:') ? 'ephemeral' : 'remote',
+  // config fingerprints (no secret material): which Stripe mode, and are secrets present
+  stripe: cfg.stripeKey.startsWith('sk_live') ? 'live' : cfg.stripeKey.startsWith('sk_test') ? 'test' : 'none',
+  stripe_webhook: cfg.stripeWebhookSecret.startsWith('whsec_'),
 }))
 
 // Vercel Cron (or any external scheduler) hits this hourly; digestTick decides who is due.

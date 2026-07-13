@@ -3,6 +3,8 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 
 const env = (k: string, d = '') => process.env[k] ?? d
+/** Secrets pasted into dashboards often pick up stray whitespace/newlines. */
+const secretEnv = (k: string) => (process.env[k] ?? '').trim()
 
 const isVercel = !!process.env.VERCEL
 const dataDir = path.resolve(env('DATA_DIR', isVercel ? '/tmp/data' : './data'))
@@ -38,19 +40,19 @@ export const cfg = {
   dbAuthToken: env('LIBSQL_AUTH_TOKEN') || env('TURSO_AUTH_TOKEN') || undefined,
   /** Vercel Blob token: when set, attachments go to Blob storage instead of local disk. */
   blobToken: env('BLOB_READ_WRITE_TOKEN'),
-  cronSecret: env('CRON_SECRET'),
+  cronSecret: secretEnv('CRON_SECRET'),
   /** The domain all collective addresses live on: <slug>@collective.email */
   emailDomain,
   /** Platform admin: can access /admin and convert waitlist entries into collectives. */
   adminEmail: env('ADMIN_EMAIL').toLowerCase().trim(),
-  resendKey: env('RESEND_API_KEY'),
+  resendKey: secretEnv('RESEND_API_KEY'),
   /** Sender for app emails (login codes, notifications, digests). Must be on a Resend-verified domain. */
   resendFrom: env('RESEND_FROM', `collective.email <notifications@${emailDomain}>`),
   /** Signing secret of the Resend webhook endpoint (svix, `whsec_…`). Empty disables verification (dev only). */
-  resendWebhookSecret: env('RESEND_WEBHOOK_SECRET'),
+  resendWebhookSecret: secretEnv('RESEND_WEBHOOK_SECRET'),
   /** Stripe (test keys on staging): unset → billing shows the free-preview card. */
-  stripeKey: env('STRIPE_SECRET_KEY'),
-  stripeWebhookSecret: env('STRIPE_WEBHOOK_SECRET'),
+  stripeKey: secretEnv('STRIPE_SECRET_KEY'),
+  stripeWebhookSecret: secretEnv('STRIPE_WEBHOOK_SECRET'),
   digestHour: Number(env('DIGEST_HOUR', '8')), // local hour (TZ env) for daily/weekly digests
   signReplies: env('SIGN_REPLIES', 'true') !== 'false',
   sessionDays: 90, // "logged in for 3 months unless explicit logout"

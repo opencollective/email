@@ -1,12 +1,14 @@
 name: CI
 
+# Deploys are handled by Vercel's GitHub integration (main → production,
+# staging → staging.collective.email via the branch domain). Vercel's build
+# re-runs typecheck + tests (vercel.json buildCommand), so a red suite cannot
+# deploy. This workflow is the fast PR/push signal plus a post-deploy health
+# verification.
+
 on:
   push:
   pull_request:
-
-env:
-  VERCEL_ORG_ID: team_I5omp4RvCylLViwaJ62brFZY
-  VERCEL_PROJECT_ID: prj_EThcHLoeWVGut9XMsCzQMkAyoSTC
 
 jobs:
   test:
@@ -22,47 +24,17 @@ jobs:
       - run: npm test
       - run: npm run build
 
-  deploy-production:
+  verify-health:
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging')
     runs-on: ubuntu-latest
-    concurrency: deploy-production
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      # Vercel's remote build re-runs typecheck + tests (vercel.json buildCommand)
-      - run: npx vercel deploy --prod --yes --token=${{ secrets.VERCEL_TOKEN }}
-      - name: Verify production health (real database connected)
+      - name: Wait for the Vercel deploy, then verify the app is on the real database
         run: |
-          for i in $(seq 1 12); do
-            out=$(curl -sf https://collective.email/health || true)
-            echo "$out"
-            echo "$out" | grep -q '"db":"remote"' && exit 0
-            sleep 10
-          done
-          echo "deployed app is NOT on the remote database" && exit 1
-
-  deploy-staging:
-    needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
-    runs-on: ubuntu-latest
-    concurrency: deploy-staging
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Deploy preview and alias to staging.collective.email
-        run: |
-          url=$(npx vercel deploy --yes --token=${{ secrets.VERCEL_TOKEN }})
-          echo "deployed: $url"
-          npx vercel alias set "$url" staging.collective.email --token=${{ secrets.VERCEL_TOKEN }} --scope team_I5omp4RvCylLViwaJ62brFZY
-      - name: Verify staging health (real database connected)
-        run: |
-          for i in $(seq 1 12); do
-            out=$(curl -sf https://staging.collective.email/health || true)
+          host=$([ "${{ github.ref }}" = "refs/heads/main" ] && echo collective.email || echo staging.collective.email)
+          echo "verifying https://$host/health"
+          for i in $(seq 1 30); do
+            out=$(curl -sf "https://$host/health" || true)
             echo "$out"
             echo "$out" | grep -q '"db":"remote"' && exit 0
             sleep 10
