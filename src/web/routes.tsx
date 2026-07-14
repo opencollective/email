@@ -240,9 +240,9 @@ const CodeForm = (p: { email: string; error?: string; next?: string | null }) =>
   </AuthCard>
 )
 
-app.get('/faq', (c) => c.html(<FaqPage />))
-app.get('/docs', (c) => c.html(<DocsPage />))
-app.get('/about', (c) => c.html(<AboutPage />))
+app.get('/faq', (c) => c.html(<FaqPage currency={visitorCurrency(c)} />))
+app.get('/docs', (c) => c.html(<DocsPage currency={visitorCurrency(c)} />))
+app.get('/about', (c) => c.html(<AboutPage currency={visitorCurrency(c)} />))
 
 app.get('/login', (c) => {
   const next = safeNext(c.req.query('next'))
@@ -1543,10 +1543,10 @@ app.get('/avatar/:id', async (c) => {
   })
 })
 
-const PLAN_INFO: Record<string, { label: string; seats: number | null; price: string }> = {
-  collective: { label: 'Collective', seats: 10, price: '$/€10 per month (or 100/year — save 20)' },
-  pro: { label: 'Pro', seats: null, price: '$/€100 per month (or 1,000/year — save 200)' },
-  duo: { label: 'Duo (legacy)', seats: 2, price: '$/€10 per month' },
+const PLAN_INFO: Record<string, { label: string; seats: number | null; price: (s: string) => string }> = {
+  collective: { label: 'Collective', seats: 10, price: (s) => `${s}10 per month (or ${s}100/year — save ${s}20)` },
+  pro: { label: 'Pro', seats: null, price: (s) => `${s}100 per month (or ${s}1,000/year — save ${s}200)` },
+  duo: { label: 'Duo (legacy)', seats: 2, price: (s) => `${s}10 per month` },
 }
 
 const SUB_ACTIVE = new Set(['active', 'trialing', 'past_due'])
@@ -1562,6 +1562,7 @@ app.get('/inbox/:addr/billing', async (c) => {
   const seats = (await activeMembers(collective.id)).length
   const plan = PLAN_INFO[collective.plan] || PLAN_INFO.collective
   const currency = visitorCurrency(c) === 'EUR' ? 'eur' : 'usd'
+  const sym = currency === 'eur' ? '€' : '$'
   const flash = c.req.query('success') ? 'Subscription active — thank you! 🎉'
     : c.req.query('canceled') ? 'Checkout canceled — nothing was charged.'
     : c.req.query('m')
@@ -1578,7 +1579,7 @@ app.get('/inbox/:addr/billing', async (c) => {
         <h1>Billing</h1>
         <section class="card">
           <h2>{plan.label} plan</h2>
-          <p class="muted">{plan.price}</p>
+          <p class="muted">{plan.price(sym)}</p>
           <span class="kv"><span class="k">READERS</span> {seats - contributors} (always free, unlimited)</span>
           <span class="kv"><span class="k">CONTRIB.</span> {contributors}{plan.seats ? ` of ${plan.seats}` : ' (no limit)'}</span>
           <span class="kv"><span class="k">REPLIES</span> {used} of {limits.replies} this month</span>
@@ -1645,7 +1646,7 @@ app.get('/inbox/:addr/billing', async (c) => {
                 {Object.entries(PLAN_INFO).filter(([key]) => key !== 'duo').map(([key, p]) => (
                   <label class="level-card">
                     <input type="radio" name="plan" value={key} checked={key === collective.plan || (collective.plan === 'duo' && key === 'collective')} />
-                    <span><b>{p.label}</b><small>{p.price}{p.seats ? ` · ${p.seats} contributors` : ' · your own domain · unlimited contributors'} · unlimited readers</small></span>
+                    <span><b>{p.label}</b><small>{p.price(sym)}{p.seats ? ` · ${p.seats} contributors` : ' · your own domain · unlimited contributors'} · unlimited readers</small></span>
                   </label>
                 ))}
               </div>
@@ -1800,7 +1801,7 @@ app.get('/claim/:slug', async (c) => {
       {collective.status !== 'applied' ? (
         <section class="claim-option">
           <h2>Apply for a free trial</h2>
-          <p class="muted">There are no free months here — collectives pay {'$'}/€10 a month, <b>or contribute something instead</b>. Tell us what you'd like to contribute; a human reads every application.</p>
+          <p class="muted">There are no free months here — collectives pay {s}10 a month, <b>or contribute something instead</b>. Tell us what you'd like to contribute; a human reads every application.</p>
           <form method="post" action={`/claim/${slug}/apply`}>
             <textarea name="contribution" rows={4} minlength={30} placeholder="Onboard another collective, write a tutorial or a blog post, translate the interface, run a workshop, tell your network… what would you like to contribute?" required></textarea>
             <label class="lbl">How many months of free trial do you need?</label>

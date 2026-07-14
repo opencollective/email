@@ -9,7 +9,9 @@ const Q: FC<{ q: string; children?: unknown }> = (p) => (
   </details>
 )
 
-export const FaqPage: FC = () => (
+export const FaqPage: FC<{ currency?: 'USD' | 'EUR' }> = ({ currency = 'USD' }) => {
+  const s = currency === 'EUR' ? '€' : '$'
+  return (
   <MarketingPage
     title="FAQ — collective.email"
     og="faq"
@@ -43,7 +45,7 @@ export const FaqPage: FC = () => (
     </Q>
 
     <Q q="How much does it cost? Is there a free plan?">
-      <p>The Collective plan is $/€10 a month — up to 10 senders, 1,000 replies a month, unlimited readers and commenters. Pro is $/€100 a month with your own domain and room to grow. There is <b>no free plan</b> — but there are two other ways to pay: apply for a trial by offering a contribution (onboarding another collective, writing a tutorial, spreading the word…), or earn credits by referring collectives that actually use it. One credit is one month of service.</p>
+      <p>The Collective plan is {s}10 a month — up to 10 senders, 1,000 replies a month, unlimited readers and commenters. Pro is {s}100 a month with your own domain and room to grow. There is <b>no free plan</b> — but there are two other ways to pay: apply for a trial by offering a contribution (onboarding another collective, writing a tutorial, spreading the word…), or earn credits by referring collectives that actually use it. One credit is one month of service.</p>
     </Q>
 
     <Q q="What happens if we stop paying?">
@@ -69,9 +71,12 @@ export const FaqPage: FC = () => (
     <h2>Something else?</h2>
     <p>Email <a href="mailto:hello@collective.email">hello@collective.email</a> — it lands in our own shared inbox, obviously. Or read the <a href="/docs">documentation</a>.</p>
   </MarketingPage>
-)
+  )
+}
 
-export const DocsPage: FC = () => (
+export const DocsPage: FC<{ currency?: 'USD' | 'EUR' }> = ({ currency = 'USD' }) => {
+  const s = currency === 'EUR' ? '€' : '$'
+  return (
   <MarketingPage
     title="Documentation — collective.email"
     og="docs"
@@ -95,7 +100,7 @@ export const DocsPage: FC = () => (
       <h2>Getting started</h2>
       <ol>
         <li><b>Claim your address</b> at <a href="/claim">/claim</a> — at least 6 characters, letters and numbers. We email you a 6-digit code to confirm; the address is then reserved for you for 48 hours.</li>
-        <li><b>Activate it</b>: subscribe ($/€10 a month), redeem a discount code, or apply for a trial by telling us what you'll contribute instead.</li>
+        <li><b>Activate it</b>: subscribe ({s}10 a month), redeem a discount code, or apply for a trial by telling us what you'll contribute instead.</li>
         <li><b>Invite your collective</b> — share one link, no accounts to create for anyone.</li>
       </ol>
       <p>The address works immediately: put it on your website, flyers, anywhere.</p>
@@ -141,7 +146,7 @@ export const DocsPage: FC = () => (
 
     <section id="billing">
       <h2>Billing &amp; credits</h2>
-      <p>The <b>Collective</b> plan ($/€10 a month) includes 10 sender seats and 1,000 replies a month; readers and commenters are always free and unlimited. <b>Pro</b> ($/€100) adds your own domain and room for big teams.</p>
+      <p>The <b>Collective</b> plan ({s}10 a month) includes 10 sender seats and 1,000 replies a month; readers and commenters are always free and unlimited. <b>Pro</b> ({s}100) adds your own domain and room for big teams.</p>
       <p><b>Credits</b>: 1 credit = 1 month of service, and they're used automatically if a subscription or trial lapses (after which the inbox is read-only for a 30-day grace period). You earn credits by:</p>
       <ul>
         <li><b>Referring collectives</b> — share your referral link from the Billing page. You earn a credit once the collective you brought has been active for a month and is really using its inbox.</li>
@@ -169,9 +174,12 @@ export const DocsPage: FC = () => (
     <h2>Still stuck?</h2>
     <p>Check the <a href="/faq">FAQ</a> or email <a href="mailto:hello@collective.email">hello@collective.email</a>.</p>
   </MarketingPage>
-)
+  )
+}
 
-export const AboutPage: FC = () => (
+export const AboutPage: FC<{ currency?: 'USD' | 'EUR' }> = ({ currency = 'USD' }) => {
+  const s = currency === 'EUR' ? '€' : '$'
+  return (
   <MarketingPage
     title="About — collective.email"
     og="about"
@@ -192,10 +200,11 @@ export const AboutPage: FC = () => (
 
     <p>Two principles behind it:</p>
     <ul>
-      <li><b>No free plan, no ads.</b> Tools for communities should be sustained by the communities they serve. You pay $/€10 a month — or you contribute instead: onboard another collective, write a tutorial, translate, spread the word. Contribution is a currency here, literally: it earns credits, and a credit is a month of service.</li>
+      <li><b>No free plan, no ads.</b> Tools for communities should be sustained by the communities they serve. You pay {s}10 a month — or you contribute instead: onboard another collective, write a tutorial, translate, spread the word. Contribution is a currency here, literally: it earns credits, and a credit is a month of service.</li>
       <li><b>Built with its users.</b> This started as the shared inbox for the Commons Hub in Brussels and is shaped daily by the first collectives using it. If something's missing, <a href="mailto:hello@collective.email">tell us</a> — that address is, of course, a shared inbox.</li>
     </ul>
 
     <p class="about-sig">— Xavier Damman<br />(previously co-founder of <a href="https://opencollective.com" target="_blank" rel="noopener">Open Collective</a>, where collectives share their money the way they share their inbox here)</p>
   </MarketingPage>
-)
+  )
+}

@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import satori from 'satori'
 import { Resvg } from '@resvg/resvg-js'
 import { get, getMember, getThread, type Member, type Message, type Thread } from './db.js'
-import { relTime, verifyToken } from './util.js'
+import { verifyToken } from './util.js'
 import { INTER_REGULAR, INTER_SEMIBOLD } from './og-fonts.js'
 
 /** PNG rendering (satori → resvg, the same engine behind @vercel/og and
@@ -35,24 +35,18 @@ async function png(el: El, width: number, height: number): Promise<Buffer> {
 const memberName = (m?: Member | null) => (m ? m.name || m.email.split('@')[0] : '')
 
 /** Current human-readable state of a thread — separated from rendering so it's unit-testable. */
+/** No timestamps in the badge on purpose: email clients cache images on
+ *  their own schedule, so a relative time could be hours stale and lie. */
 export async function badgeState(thread: Thread): Promise<{ line: string; who: string; color: string; bg: string }> {
   if (thread.last_direction === 'outbound') {
     const lastOut = await get<Message>("SELECT * FROM messages WHERE thread_id = ? AND direction = 'outbound' ORDER BY id DESC LIMIT 1", [thread.id])
     const by = lastOut?.sent_by_member_id ? await getMember(lastOut.sent_by_member_id) : null
     const who = by ? memberName(by) : ''
-    return {
-      line: `✓ Answered${who ? ` by ${who}` : ''}${lastOut?.sent_at ? ` · ${relTime(lastOut.sent_at)}` : ''}`,
-      who, color: '#1a7f4f', bg: '#eef8f2',
-    }
+    return { line: `✓ Answered${who ? ` by ${who}` : ''}`, who, color: '#1a7f4f', bg: '#eef8f2' }
   }
   if (thread.assignee_member_id) {
-    const assignee = await getMember(thread.assignee_member_id)
-    const lastAssign = await get<{ created_at: number }>("SELECT created_at FROM events WHERE thread_id = ? AND type = 'assigned' ORDER BY id DESC LIMIT 1", [thread.id])
-    const who = memberName(assignee)
-    return {
-      line: `Assigned to ${who}${lastAssign ? ` · ${relTime(lastAssign.created_at)}` : ''}`,
-      who, color: '#0c2d66', bg: '#eef3fc',
-    }
+    const who = memberName(await getMember(thread.assignee_member_id))
+    return { line: `Assigned to ${who}`, who, color: '#0c2d66', bg: '#eef3fc' }
   }
   return { line: 'Nobody has this yet — first to claim it gets it', who: '', color: '#b45309', bg: '#fdf5ec' }
 }
