@@ -1620,6 +1620,12 @@ app.get('/inbox/:addr/billing', async (c) => {
           ) : null}
         </section>
 
+        <section class="card">
+          <h2>Your data</h2>
+          <p class="muted">Everything your collective ever received or wrote — download it any time. The archive unzips into a folder with a browsable offline inbox (<code style="font-size:12px">inbox.html</code>), the raw data as JSON, and every attachment.</p>
+          <a class="btn small ghost" href={`${base}/export`} download>⬇ Download archive (.zip)</a>
+        </section>
+
         {!stripeEnabled() ? (
           <section class="card">
             <h2>Nothing to pay yet</h2>
@@ -1690,6 +1696,19 @@ app.post('/inbox/:addr/billing/checkout', async (c) => {
   } catch (err) {
     return c.redirect(`${base}/billing?m=` + encodeURIComponent(`Checkout failed: ${err instanceof Error ? err.message : 'unknown error'}`))
   }
+})
+
+app.get('/inbox/:addr/export', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  if (t.member.role !== 'admin') return c.redirect(`/inbox/${t.collective.slug}/billing`)
+  const collective = (await getCollective(t.collective.id))!
+  const { buildArchive } = await import('../export.js')
+  const zip = await buildArchive(collective)
+  c.header('Content-Type', 'application/zip')
+  c.header('Content-Disposition', `attachment; filename="${collective.slug}-collective.email-archive.zip"`)
+  c.header('Cache-Control', 'no-store')
+  return c.body(zip.slice().buffer as ArrayBuffer)
 })
 
 app.post('/inbox/:addr/billing/contribute', async (c) => {

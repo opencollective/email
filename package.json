@@ -17,6 +17,7 @@
     "@libsql/client": "^0.14.0",
     "@resvg/resvg-js": "2.6.2",
     "@vercel/blob": "2.6.1",
+    "fflate": "0.8.3",
     "hono": "^4.6.16",
     "mailparser": "^3.7.2",
     "satori": "0.26.0"

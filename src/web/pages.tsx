@@ -61,7 +61,7 @@ export const FaqPage: FC<{ currency?: 'USD' | 'EUR' }> = ({ currency = 'USD' }) 
     </Q>
 
     <Q q="Where is our data, and can we leave?">
-      <p>Everything is hosted in the EU (Dublin), with nightly backups. Your conversations are yours: email <a href="mailto:hello@collective.email">hello@collective.email</a> and we'll hand you a full export. No lock-in games.</p>
+      <p>Everything is hosted in the EU (Dublin), with nightly backups. And your conversations are yours, one click deep: any admin can <b>download a full archive</b> from the Billing page. The zip expands into a folder with a browsable offline inbox — open <code>inbox.html</code> and read your whole history, internal notes and attachments included, no server needed — plus the raw data as JSON for importing anywhere else. No lock-in games.</p>
     </Q>
 
     <Q q="Can one person be part of several collectives?">
