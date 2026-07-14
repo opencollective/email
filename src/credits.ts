@@ -15,6 +15,10 @@ import { sendCreditEmail } from './notify.js'
 
 export const CONTRIBUTE_SLUG = 'contribute'
 
+/** Credits are denominated in Collective months (€/$10). A Pro month is ten. */
+export const proMonthCost = (c: Collective) => (c.plan === 'pro' ? 10 : 1)
+export const PRO_MONTH_CREDITS = 10
+
 export const creditBalance = async (collectiveId: number): Promise<number> =>
   (await get<{ b: number }>('SELECT COALESCE(SUM(delta), 0) AS b FROM credits_ledger WHERE collective_id = ?', [collectiveId]))!.b
 
@@ -42,16 +46,17 @@ export async function autoExtendTick() {
   `, [now()])
   for (const c of candidates) {
     if (billingState(c) !== 'grace') continue // subscribed or already expired
+    const cost = proMonthCost(c) // 1 credit = one Collective month; Pro months cost their value
     const balance = await creditBalance(c.id)
-    if (balance <= 0) continue
+    if (balance < cost) continue
     const newEnd = Math.max(c.trial_ends_at!, now()) + 30 * 86400
     await run('UPDATE collectives SET trial_ends_at = ? WHERE id = ?', [newEnd, c.id])
-    await mintCredits(c.id, -1, 'monthly_extension')
+    await mintCredits(c.id, -cost, 'monthly_extension')
     const admins = (await activeMembers(c.id)).filter((m) => m.role === 'admin')
     await sendCreditEmail(c, admins,
-      `1 credit used — ${c.slug}@${cfg.emailDomain} extended a month`,
-      `Your balance covered another month automatically (${balance - 1} credit${balance - 1 === 1 ? '' : 's'} left). Keep earning by referring other collectives or contributing.`).catch(() => {})
-    console.log(`[credits] extended ${c.slug} by 30d (balance now ${balance - 1})`)
+      `${cost} credit${cost > 1 ? 's' : ''} used — ${c.slug}@${cfg.emailDomain} extended a month`,
+      `Your balance covered another month automatically (${balance - cost} credit${balance - cost === 1 ? '' : 's'} left). Keep earning by referring other collectives or contributing.`).catch(() => {})
+    console.log(`[credits] extended ${c.slug} by 30d (-${cost}, balance now ${balance - cost})`)
   }
 }
 

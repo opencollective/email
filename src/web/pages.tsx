@@ -29,7 +29,7 @@ export const FaqPage: FC<{ currency?: 'USD' | 'EUR' }> = ({ currency = 'USD' }) 
     </Q>
 
     <Q q="Can we use our own domain, like hello@ourcollective.org?">
-      <p>Yes — that's the <b>Pro plan</b>. You point a few DNS records at us (an MX record so incoming mail reaches your inbox, plus verification records so replies are sent from your domain, with SPF and DKIM set up properly). We walk you through it over email — it's usually live within a day. Your existing website and other DNS records are untouched; only mail routing changes.</p>
+      <p>Yes — that's the <b>Pro plan</b>, and it's self-serve from the <b>Your domain</b> page. Two ways to receive: keep your current mailbox and simply <b>add a forward</b> (Gmail's confirmation email lands right in your shared inbox — one click), or point your domain's MX records at us for a full takeover. To <b>send</b> as your domain you add a few DNS records (DKIM + SPF) — being able to add them is the ownership proof — and the moment they verify, replies go out as hello@ourcollective.org. Until then, replies are sent from your @collective.email address with your domain in the display name. Pay for Pro like everything here: subscribe, redeem a code, spend credits, or apply by contributing.</p>
     </Q>
 
     <Q q="Who gets notified when an email arrives?">
@@ -157,13 +157,13 @@ export const DocsPage: FC<{ currency?: 'USD' | 'EUR' }> = ({ currency = 'USD' })
 
     <section id="domain">
       <h2>Your own domain (Pro)</h2>
-      <p>Want <code>hello@ourcollective.org</code> instead of a <code>@collective.email</code> address? On the Pro plan we set it up with you:</p>
+      <p>Want <code>hello@ourcollective.org</code> instead of a <code>@collective.email</code> address? On the Pro plan, open <b>Your domain</b> from the menu and:</p>
       <ol>
-        <li>You tell us the address you want at your domain.</li>
-        <li>We send you a handful of DNS records: an <b>MX record</b> so incoming mail reaches your shared inbox, and <b>verification records</b> (SPF, DKIM) so your replies are sent from your domain and land in inboxes, not spam folders.</li>
-        <li>You add them wherever your DNS lives (Cloudflare, Gandi, OVH…), we verify, and you're live — usually within a day.</li>
+        <li><b>Enter the address</b> you want at your domain.</li>
+        <li><b>Receiving</b> — pick one: keep your current mailbox and <b>add a forward</b> to your @collective.email address (Gmail sends a confirmation that appears right in your shared inbox; there's a “send a test” button to prove the loop works), or point your domain's <b>MX records</b> at us for a full takeover. Careful with MX: personal mailboxes at the same domain stop working, so use forwarding if anyone has one.</li>
+        <li><b>Sending</b> — add the DKIM and SPF records shown on the page wherever your DNS lives (Cloudflare, Gandi, OVH…). Adding them is the ownership proof. Hit “Check verification”; the moment it turns green, replies go out as your domain. Until then they're sent from your @collective.email address with your domain in the display name — honest and deliverable.</li>
       </ol>
-      <p>Your website and everything else on the domain are untouched; only mail routing changes. Email <a href="mailto:hello@collective.email">hello@collective.email</a> to start.</p>
+      <p>Your website and everything else on the domain are untouched. Pro can be paid like everything here: subscription, discount code, credits (a Pro month is 10 credits), or an application with a contribution.</p>
     </section>
 
     <section id="app">

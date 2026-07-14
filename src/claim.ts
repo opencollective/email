@@ -60,18 +60,55 @@ export async function slugAvailability(slug: string): Promise<string | null> {
 /** Discount codes are bound to the slug they unlock.
  *  `<slug>-<m>m-XXXXXXXX` grants a free trial of m months;
  *  `<slug>-XXXXXXXX` (legacy) grants free-forever (comped). */
-export function discountCodeFor(slug: string, months?: number): string {
-  if (months && months > 0) return `${slug}-${months}m-${hmac(`discount:${slug}:${months}`, 8)}`
-  return `${slug}-${hmac(`discount:${slug}`, 8)}`
+export function discountCodeFor(slug: string, months?: number, plan: 'collective' | 'pro' = 'collective'): string {
+  const p = plan === 'pro' ? 'pro-' : ''
+  if (months && months > 0) return `${slug}-${p}${months}m-${hmac(`discount:${plan}:${slug}:${months}`, 8)}`
+  return `${slug}-${p}${hmac(`discount:${plan}:${slug}`, 8)}`
 }
 
-/** Returns the redemption: months of free trial, 'forever', or null (invalid). */
-export function checkDiscountCode(slug: string, code: string): number | 'forever' | null {
+export interface Redemption { duration: number | 'forever'; plan: 'collective' | 'pro' }
+
+/** Returns what a code redeems to (months or forever, on which plan), or null. */
+export function checkDiscountCode(slug: string, code: string): Redemption | null {
   const clean = code.trim().toLowerCase()
-  const m = clean.match(new RegExp(`^${slug}-(\\d{1,2})m-[a-f0-9]{8}$`))
-  if (m && clean === discountCodeFor(slug, Number(m[1]))) return Number(m[1])
-  if (clean === discountCodeFor(slug)) return 'forever'
+  for (const plan of ['collective', 'pro'] as const) {
+    const p = plan === 'pro' ? 'pro-' : ''
+    const m = clean.match(new RegExp(`^${slug}-${p}(\\d{1,2})m-[a-f0-9]{8}$`))
+    if (m && clean === discountCodeFor(slug, Number(m[1]), plan)) return { duration: Number(m[1]), plan }
+    if (clean === discountCodeFor(slug, undefined, plan)) return { duration: 'forever', plan }
+  }
+  // legacy pre-plan codes (issued before 2026-07-14)
+  const legacyM = clean.match(new RegExp(`^${slug}-(\\d{1,2})m-[a-f0-9]{8}$`))
+  if (legacyM && clean === `${slug}-${legacyM[1]}m-${hmac(`discount:${slug}:${legacyM[1]}`, 8)}`) return { duration: Number(legacyM[1]), plan: 'collective' }
+  if (clean === `${slug}-${hmac(`discount:${slug}`, 8)}`) return { duration: 'forever', plan: 'collective' }
   return null
+}
+
+/** Pro-plan application from an ACTIVE collective: a thread in applications@
+ *  with one-click approve-pro buttons. Unlike fileApplication, the collective
+ *  keeps working normally while the application is considered. */
+export async function fileProApplication(collective: Collective, applicantEmail: string, applicantName: string, contribution: string, requestedMonths = 2) {
+  const apps = await getCollectiveBySlug(APPLICATIONS_SLUG)
+  if (!apps || apps.status !== 'active') throw new Error('Applications are closed right now — email hello@collective.email instead.')
+  const raw = [
+    `From: ${applicantName} <${applicantEmail}>`,
+    `To: ${APPLICATIONS_SLUG}@${cfg.emailDomain}`,
+    `Subject: Pro application: ${collective.slug}@${cfg.emailDomain} (${requestedMonths} months requested)`,
+    `Message-ID: <pro-application-${collective.id}-${now()}@${cfg.emailDomain}>`,
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    'Offers to contribute:',
+    `${contribution.trim()}`,
+    '',
+    `— ${applicantName} (${applicantEmail}), requesting the Pro plan (own domain) for ${collective.slug}@${cfg.emailDomain}, ${requestedMonths} months`,
+  ].join('\r\n')
+  const parsed = await simpleParser(raw)
+  const durations = [...new Set([2, 6, 12, requestedMonths])].sort((a, b) => a - b)
+  const extraActions = durations.map((m) => ({
+    label: `✓ Approve Pro — ${m} months${m === requestedMonths ? ' (requested)' : ''}`,
+    url: `${cfg.baseUrl}/a/${signToken({ a: 'approvepro', cid: collective.id, m }, 60 * 60 * 24 * 30)}`,
+  }))
+  await ingestInbound(apps, parsed, undefined, extraActions)
 }
 
 /** A pending (unpaid, unapplied) reservation holds the slug for 48h. */

@@ -241,6 +241,7 @@ const Menu: FC<{ base: string; active: string; isAdmin: boolean }> = ({ base, ac
     <a class={`nav-item ${active === 'inbox' ? 'active' : ''}`} href={base}>📥 Inbox</a>
     <a class={`nav-item ${active === 'members' ? 'active' : ''}`} href={`${base}/members`}>☺ Members</a>
     <a class={`nav-item ${active === 'notifications' ? 'active' : ''}`} href={`${base}/notifications`}>🔔 Notifications</a>
+    {isAdmin ? <a class={`nav-item ${active === 'domain' ? 'active' : ''}`} href={`${base}/domain`}>🌐 Your domain</a> : null}
     {isAdmin ? <a class={`nav-item ${active === 'billing' ? 'active' : ''}`} href={`${base}/billing`}>💳 Billing</a> : null}
   </nav>
 )

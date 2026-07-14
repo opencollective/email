@@ -165,6 +165,11 @@ function init(): Promise<void> {
       'ALTER TABLE login_codes ADD COLUMN claim_slug TEXT',
       "ALTER TABLE invites ADD COLUMN role TEXT DEFAULT 'reader'",
       'ALTER TABLE collectives ADD COLUMN contribution_offer TEXT',
+      'ALTER TABLE collectives ADD COLUMN custom_domain TEXT',
+      'ALTER TABLE collectives ADD COLUMN custom_local TEXT',
+      'ALTER TABLE collectives ADD COLUMN resend_domain_id TEXT',
+      'ALTER TABLE collectives ADD COLUMN domain_status TEXT',
+      'ALTER TABLE collectives ADD COLUMN receive_mode TEXT',
       'ALTER TABLE login_codes ADD COLUMN claim_ref TEXT',
       'ALTER TABLE collectives ADD COLUMN referred_by INTEGER',
       'ALTER TABLE collectives ADD COLUMN activated_at INTEGER',
@@ -224,6 +229,11 @@ export interface Collective {
   activated_at?: number | null
   created_at: number
   contribution_offer?: string | null
+  custom_domain?: string | null
+  custom_local?: string | null
+  resend_domain_id?: string | null
+  domain_status?: string | null
+  receive_mode?: string | null
 }
 
 export interface Member {
@@ -390,6 +400,9 @@ export function addEvent(threadId: number, actorMemberId: number | null, type: s
 }
 
 // ---------- threads ----------
+
+export const getCollectiveByCustomDomain = (domain: string) =>
+  get<Collective>("SELECT * FROM collectives WHERE custom_domain = ? AND status = 'active'", [domain.toLowerCase()])
 
 export const getThread = (id: number) =>
   get<Thread>('SELECT * FROM threads WHERE id = ?', [id])

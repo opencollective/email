@@ -15,18 +15,22 @@ import {
 import { sendCollectiveReply } from '../outbound.js'
 import { digestTick, sendOnboarding, trialTick } from '../notify.js'
 import { backupTick } from '../backup.js'
-import { CONTRIBUTE_SLUG, creditBalance, creditsLedger, creditsTick, fileContribution, mintCredits, referralUrl } from '../credits.js'
+import { CONTRIBUTE_SLUG, creditBalance, creditsLedger, creditsTick, fileContribution, mintCredits, referralUrl , PRO_MONTH_CREDITS } from '../credits.js'
 import {
-  approveApplication, checkDiscountCode, discountCodeFor, fileApplication, slugAvailability,
+  approveApplication, checkDiscountCode, discountCodeFor, fileApplication, fileProApplication, slugAvailability,
 } from '../claim.js'
 import { sendAppEmail } from '../appmail.js'
 import { readBlob, saveBlob } from '../storage.js'
 import { createCheckoutSession, createPortalSession, stripeEnabled } from '../stripe.js'
 import { billingState, canSend, planLimits, repliesThisMonth, trialDaysLeft, GRACE_DAYS } from '../billing.js'
-import { excerpt, fmtDateTime, now, randomToken, relTime, slugify, verifyToken, waitingFor } from '../util.js'
+import { escapeHtml, excerpt, fmtDateTime, now, randomToken, relTime, slugify, verifyToken, waitingFor } from '../util.js'
 import { AssigneeChip, AuthCard, Avatar, eventText, Shell, StatusChip, TimeAgo } from './ui.js'
 import { HomePage } from './home.js'
 import { AboutPage, DocsPage, FaqPage } from './pages.js'
+import {
+  createResendDomain, deleteResendDomain, enableDomainReceiving, getResendDomain,
+  validDomainName, validLocalPart, verifyResendDomain,
+} from '../domains.js'
 
 type Env = { Variables: { email: string | null } }
 export const app = new Hono<Env>()
@@ -407,7 +411,7 @@ app.post('/join/:token', async (c) => {
 
 app.get('/a/:token', async (c) => {
   const payload = verifyToken(c.req.param('token'))
-  if (!payload || !['assign', 'spam', 'approve', 'credits'].includes(payload.a)) {
+  if (!payload || !['assign', 'spam', 'approve', 'approvepro', 'credits'].includes(payload.a)) {
     return c.html(
       <AuthCard title="Link expired">
         <h1>This link has expired</h1>
@@ -441,6 +445,27 @@ app.get('/a/:token', async (c) => {
       <AuthCard title="Credits granted">
         <h1>✓ Granted {String(n)} credit{n > 1 ? 's' : ''} to {target.slug}</h1>
         <p class="muted">Their admins were notified and the balance is now {String(await creditBalance(target.id))}.</p>
+        <a class="btn" href="/">Open collective.email</a>
+      </AuthCard>,
+    )
+  }
+
+  if (payload.a === 'approvepro') {
+    const months = Math.min(24, Math.max(1, Number(payload.m) || 2))
+    const target = await getCollective(Number(payload.cid))
+    if (!target || target.status !== 'active') return c.redirect('/')
+    const onceKey = `approvepro:${target.id}:${payload.m}:${payload.t ?? ''}`
+    await run("UPDATE collectives SET plan = 'pro', trial_ends_at = ? WHERE id = ?",
+      [Math.max(target.trial_ends_at || 0, now()) + months * 30 * 86400, target.id])
+    void onceKey
+    const admins = (await activeMembers(target.id)).filter((m) => m.role === 'admin')
+    const { sendCreditEmail } = await import('../notify.js')
+    await sendCreditEmail(target, admins, `${target.slug}@${cfg.emailDomain} is now on Pro 🎉`,
+      `Your Pro application was approved for ${months} months — you can now connect your own domain from the Domain page. Enjoy!`).catch(() => {})
+    return c.html(
+      <AuthCard title="Pro approved">
+        <h1>✓ {target.slug}@{cfg.emailDomain} is now Pro</h1>
+        <p class="muted">{String(months)} months granted. The admins just got an email pointing them to the Domain page.</p>
         <a class="btn" href="/">Open collective.email</a>
       </AuthCard>,
     )
@@ -569,12 +594,17 @@ app.get('/admin', async (c) => {
           {['1', '2', '3', '6', '12'].map((m) => <option value={m} selected={(c.req.query('dmonths') || '2') === m}>{m} months</option>)}
           <option value="forever" selected={c.req.query('dmonths') === 'forever'}>free forever</option>
         </select>
+        <select class="input" name="dplan" style="max-width:130px">
+          <option value="collective" selected={c.req.query('dplan') !== 'pro'}>Collective</option>
+          <option value="pro" selected={c.req.query('dplan') === 'pro'}>Pro</option>
+        </select>
         <button class="btn small ghost" type="submit">Generate</button>
       </form>
       {c.req.query('dslug') ? (() => {
         const ds = slugify(c.req.query('dslug')!)
         const dm = c.req.query('dmonths') === 'forever' ? undefined : Math.min(24, Math.max(1, Number(c.req.query('dmonths')) || 2))
-        return <p class="fineprint">Code for <b>{ds}</b>: <code>{discountCodeFor(ds, dm)}</code> — {dm ? `${dm}-month free trial` : 'free forever (comped)'} for exactly that address.</p>
+        const dplan = c.req.query('dplan') === 'pro' ? 'pro' as const : 'collective' as const
+        return <p class="fineprint">Code for <b>{ds}</b> ({dplan}): <code>{discountCodeFor(ds, dm, dplan)}</code> — {dm ? `${dm}-month free trial` : 'free forever (comped)'} on the {dplan} plan, for exactly that address.</p>
       })() : null}
 
       <h2 class="admin-h">Collectives ({collectives.length})</h2>
@@ -1698,6 +1728,298 @@ app.post('/inbox/:addr/billing/checkout', async (c) => {
   }
 })
 
+// ---------- Pro: your own domain ----------
+
+const DomainUpsell = (p: { base: string; balance: number; currency: 'eur' | 'usd' }) => {
+  const s = p.currency === 'eur' ? '€' : '$'
+  return (
+    <div class="page">
+      <h1>Your own domain</h1>
+      <p class="muted">Receive and answer as <b>hello@yourcollective.org</b> — same shared inbox, your identity. This is the Pro plan ({s}100 a month). Like everything here: pay, use a code, spend credits, or contribute.</p>
+
+      <section class="card">
+        <h2>Subscribe to Pro</h2>
+        <form method="post" action={`${p.base}/billing/checkout`} class="btn-row">
+          <input type="hidden" name="plan" value="pro" />
+          <input type="hidden" name="currency" value={p.currency} />
+          <button class="btn small" name="cycle" value="monthly" type="submit" data-busy="Opening…">{s}100 / month</button>
+          <button class="btn small ghost" name="cycle" value="yearly" type="submit" data-busy="Opening…">{s}1,000 / year — 2 months free</button>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>Have a discount code?</h2>
+        <form method="post" action={`${p.base}/domain/discount`} class="assign-form">
+          <input class="input" name="code" placeholder="yourslug-pro-xxxxxxxx" autocomplete="off" spellcheck={false} />
+          <button class="btn small ghost" type="submit" data-busy="Checking…">Redeem</button>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>Use your credits</h2>
+        <p class="muted">Credits are worth one Collective month ({s}10) each, so a Pro month is <b>{String(PRO_MONTH_CREDITS)} credits</b>. You have <b>{String(p.balance)}</b>.</p>
+        {p.balance >= PRO_MONTH_CREDITS ? (
+          <form method="post" action={`${p.base}/domain/credits`}>
+            <button class="btn small" type="submit" data-busy="Redeeming…">Use {String(PRO_MONTH_CREDITS)} credits → 1 month of Pro</button>
+          </form>
+        ) : (
+          <p class="fineprint">Earn more by referring collectives or contributing (see Billing).</p>
+        )}
+      </section>
+
+      <section class="card">
+        <h2>Apply — pay by contributing</h2>
+        <p class="muted">There are no free months here either. Tell us what you'll contribute and how long you need; a human reads every application.</p>
+        <form method="post" action={`${p.base}/domain/apply`} class="me-form">
+          <textarea name="contribution" rows={3} minlength={30} placeholder="Onboard other collectives, write a tutorial, run a workshop, translate the interface… what would you like to contribute?" required></textarea>
+          <label class="lbl">How many months of Pro do you need?</label>
+          <select class="input" name="months">
+            {[1, 2, 3, 6, 12].map((m) => <option value={String(m)} selected={m === 2}>{m} month{m > 1 ? 's' : ''}</option>)}
+          </select>
+          <div class="btn-row"><button class="btn small ghost" type="submit" data-busy="Sending…">Send application</button></div>
+        </form>
+      </section>
+    </div>
+  )
+}
+
+app.get('/inbox/:addr/domain', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const { member } = t
+  const base = `/inbox/${t.collective.slug}`
+  if (member.role !== 'admin') return c.redirect(base)
+  const collective = (await getCollective(t.collective.id))!
+  const currency = visitorCurrency(c) === 'EUR' ? 'eur' as const : 'usd' as const
+
+  if (collective.plan !== 'pro') {
+    return c.html(
+      <Shell member={member} collective={collective} title="Your domain" active="domain" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
+        <DomainUpsell base={base} balance={await creditBalance(collective.id)} currency={currency} />
+      </Shell>,
+    )
+  }
+
+  const domain = collective.resend_domain_id ? await getResendDomain(collective.resend_domain_id) : null
+  const customAddr = collective.custom_domain ? `${collective.custom_local}@${collective.custom_domain}` : null
+  const verified = collective.domain_status === 'verified'
+  return c.html(
+    <Shell member={member} collective={collective} title="Your domain" active="domain" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
+      <div class="page">
+        <h1>Your own domain</h1>
+        {!customAddr ? (
+          <section class="card">
+            <h2>Which address should reach this inbox?</h2>
+            <p class="muted">Usually <b>hello@</b> your collective's domain. Everything sent there will land here, and once your domain is verified, replies go out from it too.</p>
+            <form method="post" action={`${base}/domain`} class="btn-row" style="flex-wrap:wrap">
+              <input class="input" name="local" placeholder="hello" style="max-width:130px" required />
+              <span style="align-self:center">@</span>
+              <input class="input" name="domain" placeholder="yourcollective.org" style="max-width:240px" required />
+              <button class="btn small" type="submit" data-busy="Setting up…">Set up</button>
+            </form>
+          </section>
+        ) : (<>
+          <p class="muted">Connecting <b>{customAddr}</b> to this inbox.</p>
+
+          <section class="card">
+            <h2>1 · Receiving {collective.receive_mode === 'mx' ? '' : '— forward your mail here'}</h2>
+            {collective.receive_mode === 'mx' ? (
+              <>
+                <p class="muted">Your domain's mail (MX) points at us — every address at <b>{collective.custom_domain}</b> lands in this inbox. The MX record is in the table below with the sending records.</p>
+                <p class="fineprint">⚠ MX takeover means personal mailboxes at this domain stop working. If anyone has one, switch to forwarding instead.</p>
+              </>
+            ) : (
+              <>
+                <p class="muted">Keep your current mailbox and add a forward from <b>{customAddr}</b> to <b>{collective.slug}@{cfg.emailDomain}</b>:</p>
+                <ul class="muted" style="padding-left:20px;font-size:14px">
+                  <li><b>Gmail / Google Workspace</b>: Settings → Forwarding → Add a forwarding address. Google then sends a confirmation — <b>it will appear right here in this inbox</b>; any admin clicks the link and you're done.</li>
+                  <li><b>Registrar alias</b> (Gandi, OVH, Namecheap…): create a forward/alias for {collective.custom_local}@ pointing to {collective.slug}@{cfg.emailDomain}.</li>
+                </ul>
+                <form method="post" action={`${base}/domain/test`} class="btn-row">
+                  <button class="btn small ghost" type="submit" data-busy="Sending…">Send a test email to {customAddr}</button>
+                </form>
+                <p class="fineprint">The test should appear in this inbox within a minute — that proves the forward works. Prefer a full takeover? <form method="post" action={`${base}/domain/mx`} class="inline"><button class="linkish" type="submit" data-confirm={`Point ALL mail for ${collective.custom_domain} here? Personal mailboxes at this domain will stop receiving. Use forwarding if anyone has one.`}>Switch to MX</button></form></p>
+              </>
+            )}
+          </section>
+
+          <section class="card">
+            <h2>2 · Sending — verify your domain {verified ? '✓' : ''}</h2>
+            {verified ? (
+              <p class="muted">✓ <b>{collective.custom_domain}</b> is verified — replies now go out as <b>{customAddr}</b>.</p>
+            ) : (
+              <>
+                <p class="muted">Add these DNS records where your domain lives. Being able to add them is the proof of ownership — the moment they're detected, replies switch from {collective.slug}@{cfg.emailDomain} to <b>{customAddr}</b>. Until then we send as <i>“{collective.name} · {customAddr}”</i>.</p>
+                {domain && domain.records.length > 0 ? (
+                  <div class="admin-list">
+                    {domain.records.map((rec) => (
+                      <div class="admin-row" style="align-items:center">
+                        <b style="min-width:46px">{rec.type}</b>
+                        <code style="font-size:11.5px">{rec.name}</code>
+                        <code style="font-size:11.5px;overflow-wrap:anywhere;flex:1">{rec.value}</code>
+                        <button class="btn small ghost" type="button" data-copy={rec.value}>Copy</button>
+                        <small>{rec.status === 'verified' ? '✓' : '…'}</small>
+                      </div>
+                    ))}
+                  </div>
+                ) : <p class="fineprint">Could not load the DNS records — try “Check verification”.</p>}
+                <form method="post" action={`${base}/domain/verify`} class="btn-row">
+                  <button class="btn small" type="submit" data-busy="Checking…">Check verification</button>
+                </form>
+              </>
+            )}
+          </section>
+
+          <section class="card">
+            <h2>Status</h2>
+            <span class="kv"><span class="k">RECEIVING</span> <span>{collective.receive_mode === 'mx' ? 'MX → this inbox' : 'forwarding (managed by you)'}</span></span>
+            <span class="kv"><span class="k">SENDING</span> <span>{verified ? `as ${customAddr} ✓` : `as ${collective.slug}@${cfg.emailDomain} (until DNS verifies)`}</span></span>
+            <form method="post" action={`${base}/domain/remove`} class="btn-row">
+              <button class="linkish danger" type="submit" data-confirm={`Disconnect ${customAddr}? Replies revert to ${collective.slug}@${cfg.emailDomain}; remember to remove your forward or MX records.`}>Disconnect this domain</button>
+            </form>
+          </section>
+        </>)}
+      </div>
+    </Shell>,
+  )
+})
+
+app.post('/inbox/:addr/domain', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const base = `/inbox/${t.collective.slug}`
+  if (t.member.role !== 'admin') return c.redirect(base)
+  const collective = (await getCollective(t.collective.id))!
+  if (collective.plan !== 'pro') return c.redirect(`${base}/domain`)
+  const body = await c.req.parseBody()
+  const local = String(body.local || '').toLowerCase().trim()
+  const domainName = String(body.domain || '').toLowerCase().trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '')
+  if (!validLocalPart(local) || !validDomainName(domainName)) {
+    return c.redirect(`${base}/domain?m=` + encodeURIComponent('That does not look like a valid address — check the local part and the domain.'))
+  }
+  try {
+    const created = await createResendDomain(domainName)
+    await run("UPDATE collectives SET custom_domain = ?, custom_local = ?, resend_domain_id = ?, domain_status = 'pending', receive_mode = 'forwarding' WHERE id = ?",
+      [domainName, local, created.id, collective.id])
+    return c.redirect(`${base}/domain?m=` + encodeURIComponent(`${local}@${domainName} is set up — add the forward and the DNS records.`))
+  } catch (err) {
+    return c.redirect(`${base}/domain?m=` + encodeURIComponent(err instanceof Error ? err.message : 'Could not create the domain.'))
+  }
+})
+
+app.post('/inbox/:addr/domain/verify', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const base = `/inbox/${t.collective.slug}`
+  if (t.member.role !== 'admin') return c.redirect(base)
+  const collective = (await getCollective(t.collective.id))!
+  if (!collective.resend_domain_id) return c.redirect(`${base}/domain`)
+  await verifyResendDomain(collective.resend_domain_id).catch(() => {})
+  const domain = await getResendDomain(collective.resend_domain_id)
+  if (domain?.status === 'verified') {
+    await run("UPDATE collectives SET domain_status = 'verified' WHERE id = ?", [collective.id])
+    return c.redirect(`${base}/domain?m=` + encodeURIComponent(`✓ ${collective.custom_domain} verified — replies now go out as ${collective.custom_local}@${collective.custom_domain}.`))
+  }
+  return c.redirect(`${base}/domain?m=` + encodeURIComponent('Not verified yet — DNS can take a few minutes to propagate. Try again shortly.'))
+})
+
+app.post('/inbox/:addr/domain/mx', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const base = `/inbox/${t.collective.slug}`
+  if (t.member.role !== 'admin') return c.redirect(base)
+  const collective = (await getCollective(t.collective.id))!
+  if (!collective.resend_domain_id) return c.redirect(`${base}/domain`)
+  try {
+    await enableDomainReceiving(collective.resend_domain_id)
+    await run("UPDATE collectives SET receive_mode = 'mx' WHERE id = ?", [collective.id])
+    return c.redirect(`${base}/domain?m=` + encodeURIComponent('MX receiving enabled — the MX record to add is now in the DNS table.'))
+  } catch (err) {
+    return c.redirect(`${base}/domain?m=` + encodeURIComponent(err instanceof Error ? err.message : 'Could not enable MX receiving.'))
+  }
+})
+
+app.post('/inbox/:addr/domain/test', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const base = `/inbox/${t.collective.slug}`
+  if (t.member.role !== 'admin') return c.redirect(base)
+  const collective = (await getCollective(t.collective.id))!
+  if (!collective.custom_domain) return c.redirect(`${base}/domain`)
+  const addr = `${collective.custom_local}@${collective.custom_domain}`
+  await sendAppEmail({
+    to: addr,
+    subject: `Forwarding test for ${addr} ✓`,
+    text: `If you can read this in the ${collective.slug}@${cfg.emailDomain} inbox, the forward from ${addr} works. — collective.email`,
+    html: `<p>If you can read this in the <b>${escapeHtml(collective.slug)}@${escapeHtml(cfg.emailDomain)}</b> inbox, the forward from <b>${escapeHtml(addr)}</b> works.</p><p>— collective.email</p>`,
+  })
+  return c.redirect(`${base}/domain?m=` + encodeURIComponent(`Test sent to ${addr} — it should appear in this inbox within a minute.`))
+})
+
+app.post('/inbox/:addr/domain/remove', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const base = `/inbox/${t.collective.slug}`
+  if (t.member.role !== 'admin') return c.redirect(base)
+  const collective = (await getCollective(t.collective.id))!
+  if (collective.resend_domain_id) await deleteResendDomain(collective.resend_domain_id).catch(() => {})
+  await run('UPDATE collectives SET custom_domain = NULL, custom_local = NULL, resend_domain_id = NULL, domain_status = NULL, receive_mode = NULL WHERE id = ?', [collective.id])
+  return c.redirect(`${base}/domain?m=` + encodeURIComponent('Domain disconnected.'))
+})
+
+app.post('/inbox/:addr/domain/discount', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const base = `/inbox/${t.collective.slug}`
+  if (t.member.role !== 'admin') return c.redirect(base)
+  const redemption = checkDiscountCode(t.collective.slug, String((await c.req.parseBody()).code || ''))
+  if (!redemption || redemption.plan !== 'pro') {
+    return c.redirect(`${base}/domain?m=` + encodeURIComponent('That code is not a Pro code for this address.'))
+  }
+  const collective = (await getCollective(t.collective.id))!
+  if (redemption.duration === 'forever') {
+    await run("UPDATE collectives SET plan = 'pro', comped = 1 WHERE id = ?", [collective.id])
+  } else {
+    await run("UPDATE collectives SET plan = 'pro', trial_ends_at = ? WHERE id = ?",
+      [Math.max(collective.trial_ends_at || 0, now()) + redemption.duration * 30 * 86400, collective.id])
+  }
+  return c.redirect(`${base}/domain?m=` + encodeURIComponent(redemption.duration === 'forever' ? 'Welcome to Pro — forever. Set up your domain below.' : `Welcome to Pro — ${redemption.duration} months. Set up your domain below.`))
+})
+
+app.post('/inbox/:addr/domain/credits', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const base = `/inbox/${t.collective.slug}`
+  if (t.member.role !== 'admin') return c.redirect(base)
+  const collective = (await getCollective(t.collective.id))!
+  const balance = await creditBalance(collective.id)
+  if (balance < PRO_MONTH_CREDITS) {
+    return c.redirect(`${base}/domain?m=` + encodeURIComponent(`A Pro month costs ${PRO_MONTH_CREDITS} credits — you have ${balance}.`))
+  }
+  await mintCredits(collective.id, -PRO_MONTH_CREDITS, 'pro_month', 'admin', `member:${t.member.id}`)
+  await run("UPDATE collectives SET plan = 'pro', trial_ends_at = ? WHERE id = ?",
+    [Math.max(collective.trial_ends_at || 0, now()) + 30 * 86400, collective.id])
+  return c.redirect(`${base}/domain?m=` + encodeURIComponent(`Welcome to Pro — 1 month (${balance - PRO_MONTH_CREDITS} credits left). Set up your domain below.`))
+})
+
+app.post('/inbox/:addr/domain/apply', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const base = `/inbox/${t.collective.slug}`
+  if (t.member.role !== 'admin') return c.redirect(base)
+  const body = await c.req.parseBody()
+  const contribution = String(body.contribution || '').trim()
+  const months = Math.min(12, Math.max(1, Number(body.months) || 2))
+  if (contribution.length < 30) return c.redirect(`${base}/domain?m=` + encodeURIComponent('Tell us a bit more about what you would contribute.'))
+  try {
+    const collective = (await getCollective(t.collective.id))!
+    await fileProApplication(collective, t.member.email, t.member.name || t.member.email, contribution.slice(0, 4000), months)
+    return c.redirect(`${base}/domain?m=` + encodeURIComponent('Application sent — we usually answer within a day.'))
+  } catch (err) {
+    return c.redirect(`${base}/domain?m=` + encodeURIComponent(err instanceof Error ? err.message : 'Could not send the application.'))
+  }
+})
+
 app.get('/inbox/:addr/export', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
@@ -1872,14 +2194,15 @@ app.post('/claim/:slug/discount', async (c) => {
   if (redemption === null) {
     return c.redirect(`/claim/${t.collective.slug}?m=` + encodeURIComponent('That code is not valid for this address.'))
   }
-  if (redemption === 'forever') {
-    await run("UPDATE collectives SET status = 'active', comped = 1, activated_at = COALESCE(activated_at, ?) WHERE id = ?", [now(), t.collective.id])
+  if (redemption.duration === 'forever') {
+    await run("UPDATE collectives SET status = 'active', comped = 1, plan = ?, activated_at = COALESCE(activated_at, ?) WHERE id = ?", [redemption.plan, now(), t.collective.id])
   } else {
-    await run("UPDATE collectives SET status = 'active', trial_ends_at = ?, activated_at = COALESCE(activated_at, ?) WHERE id = ?", [now() + redemption * 30 * 86400, now(), t.collective.id])
+    await run("UPDATE collectives SET status = 'active', trial_ends_at = ?, plan = ?, activated_at = COALESCE(activated_at, ?) WHERE id = ?", [now() + redemption.duration * 30 * 86400, redemption.plan, now(), t.collective.id])
   }
   await sendOnboarding((await getCollective(t.collective.id))!, t.member.email).catch(() => {})
+  const planNote = redemption.plan === 'pro' ? ' (Pro — set up your own domain from the menu)' : ''
   return c.redirect(`/inbox/${t.collective.slug}?m=` + encodeURIComponent(
-    redemption === 'forever' ? `Welcome! ${t.collective.slug}@${cfg.emailDomain} is live.` : `Welcome! ${t.collective.slug}@${cfg.emailDomain} is live — ${redemption} months free.`))
+    redemption.duration === 'forever' ? `Welcome! ${t.collective.slug}@${cfg.emailDomain} is live${planNote}.` : `Welcome! ${t.collective.slug}@${cfg.emailDomain} is live — ${redemption.duration} months free${planNote}.`))
 })
 
 app.post('/claim/:slug/apply', async (c) => {

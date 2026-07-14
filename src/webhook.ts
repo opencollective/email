@@ -2,7 +2,7 @@ import crypto from 'node:crypto'
 import { Hono } from 'hono'
 import { simpleParser, type ParsedMail } from 'mailparser'
 import { cfg } from './config.js'
-import { getCollectiveBySlug, run } from './db.js'
+import { getCollectiveByCustomDomain, getCollectiveBySlug, run } from './db.js'
 import { parseReplyAddress } from './util.js'
 import { handleEmailReply, ingestInbound } from './ingest.js'
 import { verifyStripeSignature } from './stripe.js'
@@ -125,9 +125,10 @@ webhooks.post('/webhooks/resend', async (c) => {
     ...(Array.isArray(parsed.to) ? parsed.to : parsed.to ? [parsed.to] : []),
     ...(Array.isArray(parsed.cc) ? parsed.cc : parsed.cc ? [parsed.cc] : []),
   ].flatMap((a) => a.value.map((v) => (v.address || '').toLowerCase()))
-  const candidates = [...new Set([
+  const allAddrs = [...new Set([
     ...(d.to || []), ...(d.cc || []), ...(d.received_for || []), ...parsedTo,
-  ].map((a) => a.toLowerCase().trim()).filter((a) => a.endsWith(`@${cfg.emailDomain}`)))]
+  ].map((a) => a.toLowerCase().trim()).filter(Boolean))]
+  const candidates = allAddrs.filter((a) => a.endsWith(`@${cfg.emailDomain}`))
 
   // 1. Member replying to a notification? (signed +r. address)
   for (const addr of candidates) {
@@ -146,6 +147,19 @@ webhooks.post('/webhooks/resend', async (c) => {
     const collective = await getCollectiveBySlug(slug)
     if (!collective || collective.status !== 'active' || seen.has(collective.id)) continue
     if (!canReceive(billingState(collective))) continue // trial + grace over: address released
+    seen.add(collective.id)
+    await ingestInbound(collective, parsed, d.email_id)
+    routed++
+  }
+
+  // 3. Pro custom domains on the MX path: catch-all per domain (once MX points
+  // at us, unrouted locals would otherwise black-hole)
+  for (const addr of allAddrs) {
+    const domain = addr.split('@')[1]
+    if (!domain || domain === cfg.emailDomain) continue
+    const collective = await getCollectiveByCustomDomain(domain)
+    if (!collective || collective.plan !== 'pro' || seen.has(collective.id)) continue
+    if (!canReceive(billingState(collective))) continue
     seen.add(collective.id)
     await ingestInbound(collective, parsed, d.email_id)
     routed++

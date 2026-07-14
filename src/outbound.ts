@@ -7,6 +7,20 @@ import {
 import { escapeHtml, now } from './util.js'
 import { assertCanSend } from './billing.js'
 
+/** Who a reply goes out as. Verified Pro domains send as the custom address;
+ *  a configured-but-unverified domain degrades to slug@ with the custom
+ *  address in the display name (honest, deliverable, no DMARC spoofing). */
+export function outboundFrom(collective: Collective): { fromAddress: string; fromHeader: string } {
+  const custom = collective.plan === 'pro' && collective.custom_domain && collective.custom_local
+  if (custom && collective.domain_status === 'verified') {
+    const addr = `${collective.custom_local}@${collective.custom_domain}`
+    return { fromAddress: addr, fromHeader: `${collective.name} <${addr}>` }
+  }
+  const addr = `${collective.slug}@${cfg.emailDomain}`
+  const name = custom ? `${collective.name} · ${collective.custom_local}@${collective.custom_domain}` : collective.name
+  return { fromAddress: addr, fromHeader: `${name} <${addr}>` }
+}
+
 export interface OutAttachment {
   filename: string
   contentType: string
@@ -34,7 +48,7 @@ export async function sendCollectiveReply(
   if (!body && attachments.length === 0) throw new Error('Reply is empty.')
   if (cfg.signReplies) body += `${body ? '\n\n' : ''}— ${member.name || member.email}, for ${collective.name}`
 
-  const fromAddress = `${collective.slug}@${cfg.emailDomain}`
+  const { fromAddress, fromHeader } = outboundFrom(collective)
   const subject = thread.subject.match(/^re:/i) ? thread.subject : `Re: ${thread.subject}`
   const messageId = `<req-${threadId}-${crypto.randomBytes(8).toString('hex')}@${cfg.emailDomain}>`
   const references = [
@@ -60,7 +74,7 @@ export async function sendCollectiveReply(
     if (lastIn?.rfc822_message_id) headers['In-Reply-To'] = lastIn.rfc822_message_id
     if (references.length) headers['References'] = references.join(' ')
     const payload = (inline: boolean) => JSON.stringify({
-      from: `${collective.name} <${fromAddress}>`,
+      from: fromHeader,
       to: [to],
       reply_to: [fromAddress],
       subject,
