@@ -3,9 +3,11 @@ import { serveStatic } from '@hono/node-server/serve-static'
 import { cfg } from './config.js'
 import { digestTick } from './notify.js'
 import { app } from './app.js'
+import { ogApp } from './og.js'
 
 // Local/Docker entry point. On Vercel, api/index.js serves the app instead
 // (static files come from public/, digests from the cron hitting /cron/digest).
+app.route('/', ogApp) // on Vercel these routes are served by api/og.js instead
 app.use('/static/*', serveStatic({ root: './public' }))
 app.use('/sw.js', serveStatic({ root: './public' }))
 app.use('/manifest.webmanifest', serveStatic({ root: './public' }))

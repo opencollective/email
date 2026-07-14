@@ -275,9 +275,9 @@ test('wrong-account access shows the explicit 403 page, not a silent bounce', as
 })
 
 test('live assignment badge reflects current state at fetch time', async () => {
-  const { app } = await import('../src/app.js')
+  const { ogApp, badgeState } = await import('../src/og.js')
   const { signToken, now } = await import('../src/util.js')
-  const { createCollective, run, get } = await import('../src/db.js')
+  const { createCollective, run, get, getThread } = await import('../src/db.js')
   const col = await createCollective(`badge${Date.now() % 100000}`, 'Badge Co')
   await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
     [col.id, 'bee@t.test', 'Bee', 'admin', 'every', now()])
@@ -286,19 +286,26 @@ test('live assignment badge reflects current state at fetch time', async () => {
     VALUES (?, 'B', 'needs_reply', 'x@y.test', ?, ?, 'inbound', ?, ?)`, [col.id, now(), now(), now(), now()])
   const token = signToken({ a: 'aimg', th: Number(t.lastId) }, 3600)
 
-  const unassigned = await app.request(`/aimg/${token}`)
-  assert.equal(unassigned.status, 200)
-  assert.equal(unassigned.headers.get('content-type'), 'image/svg+xml; charset=utf-8')
-  assert.match(await unassigned.text(), /Nobody has this yet/)
+  const res = await ogApp.request(`/aimg/${token}`)
+  assert.equal(res.status, 200)
+  assert.equal(res.headers.get('content-type'), 'image/png')
+  const bytes = Buffer.from(await res.arrayBuffer())
+  assert.equal(bytes.subarray(1, 4).toString('ascii'), 'PNG', 'real PNG bytes')
+
+  assert.match((await badgeState((await getThread(Number(t.lastId)))!)).line, /Nobody has this yet/)
 
   await run('UPDATE threads SET assignee_member_id = ? WHERE id = ?', [member.id, t.lastId])
   await run("INSERT INTO events (thread_id, actor_member_id, type, created_at) VALUES (?, ?, 'assigned', ?)", [t.lastId, member.id, now()])
-  assert.match(await (await app.request(`/aimg/${token}`)).text(), /Assigned to Bee/)
+  assert.match((await badgeState((await getThread(Number(t.lastId)))!)).line, /Assigned to Bee/)
 
   await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_email, to_json, body_text, sent_by_member_id, sent_at, created_at)
     VALUES (?, '<b1@x>', 'outbound', 'a@b.c', '[]', 'done', ?, ?, ?)`, [t.lastId, member.id, now(), now()])
   await run("UPDATE threads SET last_direction = 'outbound', status = 'answered' WHERE id = ?", [t.lastId])
-  assert.match(await (await app.request(`/aimg/${token}`)).text(), /Answered by Bee/)
+  assert.match((await badgeState((await getThread(Number(t.lastId)))!)).line, /Answered by Bee/)
 
-  assert.equal((await app.request('/aimg/garbage')).status, 404)
+  assert.equal((await ogApp.request('/aimg/garbage')).status, 404)
+  const og = await ogApp.request('/og/home.png')
+  assert.equal(og.status, 200)
+  assert.equal(og.headers.get('content-type'), 'image/png')
+  assert.equal((await ogApp.request('/og/nope.png')).status, 404)
 })

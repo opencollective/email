@@ -164,6 +164,7 @@ function init(): Promise<void> {
       'ALTER TABLE collectives ADD COLUMN comped INTEGER NOT NULL DEFAULT 0',
       'ALTER TABLE login_codes ADD COLUMN claim_slug TEXT',
       "ALTER TABLE invites ADD COLUMN role TEXT DEFAULT 'reader'",
+      'ALTER TABLE collectives ADD COLUMN contribution_offer TEXT',
       'ALTER TABLE login_codes ADD COLUMN claim_ref TEXT',
       'ALTER TABLE collectives ADD COLUMN referred_by INTEGER',
       'ALTER TABLE collectives ADD COLUMN activated_at INTEGER',
@@ -222,6 +223,7 @@ export interface Collective {
   referred_by?: number | null
   activated_at?: number | null
   created_at: number
+  contribution_offer?: string | null
 }
 
 export interface Member {

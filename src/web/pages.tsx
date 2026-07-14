@@ -12,6 +12,7 @@ const Q: FC<{ q: string; children?: unknown }> = (p) => (
 export const FaqPage: FC = () => (
   <MarketingPage
     title="FAQ — collective.email"
+    og="faq"
     description="Frequently asked questions about collective.email: how the shared inbox works, pricing, roles, your own domain, and what happens to your data."
   >
     <h1>Frequently asked questions</h1>
@@ -73,6 +74,7 @@ export const FaqPage: FC = () => (
 export const DocsPage: FC = () => (
   <MarketingPage
     title="Documentation — collective.email"
+    og="docs"
     description="Everything about running your collective's shared inbox: claiming an address, inviting members, roles, answering by email, notifications, billing, credits and custom domains."
   >
     <h1>Documentation</h1>
@@ -172,6 +174,7 @@ export const DocsPage: FC = () => (
 export const AboutPage: FC = () => (
   <MarketingPage
     title="About — collective.email"
+    og="about"
     description="Why collective.email exists: every collective needs an email address, and sharing a password never works. The backstory, by Xavier Damman."
   >
     <h1>Every collective hits the same wall.</h1>

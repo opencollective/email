@@ -132,7 +132,7 @@ test('application flow: thread lands in applications collective, approval starts
   const res = await app.request(`/claim/${slug}/apply`, {
     method: 'POST',
     headers: { cookie: `requests_sid=${sid}`, 'content-type': 'application/x-www-form-urlencoded' },
-    body: 'months=6&reason=' + encodeURIComponent('We are an amateur theatre group of 20 people rehearsing weekly and need a shared address for bookings.'),
+    body: 'months=6&contribution=' + encodeURIComponent('We will onboard two other theatre groups in Brussels and write a blog post about how we run our shared inbox.'),
   })
   assert.match(decodeURIComponent(res.headers.get('location')!), /Application sent/)
   const col = (await get<any>('SELECT * FROM collectives WHERE slug = ?', [slug]))!
@@ -142,7 +142,9 @@ test('application flow: thread lands in applications collective, approval starts
   assert.equal(thread.counterpart_email, email, 'replying reaches the applicant')
   const msg = await get<any>('SELECT body_text FROM messages WHERE thread_id = ?', [thread.id])
   assert.ok(!msg.body_text.includes('/a/'), 'approve link is NOT in the thread body (cannot leak into replies)')
+  assert.match(msg.body_text, /Offers to contribute/, 'the contribution offer is in the application thread')
   assert.match(msg.body_text, /6-month free trial/, 'requested months recorded in the application')
+  assert.match(col.contribution_offer, /onboard two other theatre groups/, 'offer stored for the onboarding echo')
 
   // one-click approve for the requested 6 months
   const token = signToken({ a: 'approve', cid: col.id, m: 6 }, 3600)

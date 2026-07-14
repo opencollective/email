@@ -95,7 +95,7 @@ export async function fileApplication(
   pending: Collective,
   applicantEmail: string,
   applicantName: string,
-  reason: string,
+  contribution: string,
   requestedMonths = 2,
 ) {
   const apps = await getCollectiveBySlug(APPLICATIONS_SLUG)
@@ -107,7 +107,8 @@ export async function fileApplication(
     `Message-ID: <application-${pending.id}-${now()}@${cfg.emailDomain}>`,
     'Content-Type: text/plain; charset=utf-8',
     '',
-    `${reason.trim()}`,
+    'Offers to contribute:',
+    `${contribution.trim()}`,
     '',
     `— ${applicantName} (${applicantEmail}), requesting ${pending.slug}@${cfg.emailDomain} with a ${requestedMonths}-month free trial`,
   ].join('\r\n')
@@ -119,7 +120,7 @@ export async function fileApplication(
     url: `${cfg.baseUrl}/a/${signToken({ a: 'approve', cid: pending.id, m }, 60 * 60 * 24 * 30)}`,
   }))
   await ingestInbound(apps, parsed, undefined, extraActions)
-  await run("UPDATE collectives SET status = 'applied' WHERE id = ?", [pending.id])
+  await run("UPDATE collectives SET status = 'applied', contribution_offer = ? WHERE id = ?", [contribution.trim().slice(0, 2000), pending.id])
 }
 
 /** Approving an application: activate with a free trial of the given months. */

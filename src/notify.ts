@@ -55,6 +55,7 @@ export async function sendOnboarding(collective: Collective, adminEmail: string)
     <p style="margin:0 0 14px;font-size:14px;color:#4b5563">Your collective's address is ready to receive email:</p>
     <p style="font-family:ui-monospace,Menlo,monospace;font-size:18px;font-weight:700;color:#1869f5;margin:0 0 18px">${escapeHtml(addr)}</p>
     <p style="margin:0 0 14px;font-size:14px;color:#4b5563">Sign in to open the inbox and share an invite link with your people (they each sign in with their own email — no shared passwords).</p>
+    ${collective.contribution_offer ? `<p style="margin:0 0 14px;font-size:14px;color:#4b5563">You offered to contribute: <i>“${escapeHtml(collective.contribution_offer)}”</i> — we'll take you up on that 🙂 When it's done (or to talk about it), just reply to this email.</p>` : ''}
     ${btn(inboxUrl(collective), 'Open your inbox')}`)
   await sendAppEmail({
     to: adminEmail,

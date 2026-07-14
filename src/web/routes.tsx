@@ -400,44 +400,6 @@ app.post('/join/:token', async (c) => {
   return c.html(<CodeForm email={email} />)
 })
 
-/** Live assignment badge for notification emails: the <img> URL is fetched
- *  when the email is OPENED, so a member reading it an hour later sees the
- *  current state (answered / assigned / unclaimed), not a stale snapshot.
- *  Public by design (mail clients send no cookies) — guarded by the signed
- *  token, no-store cached, and it exposes nothing but a first name. */
-app.get('/aimg/:token', async (c) => {
-  const payload = verifyToken(c.req.param('token'))
-  if (!payload || payload.a !== 'aimg') return c.notFound()
-  const thread = await getThread(Number(payload.th))
-  if (!thread) return c.notFound()
-  const esc = (s: string) => s.replace(/[<>&"']/g, (ch) => `&#${ch.charCodeAt(0)};`)
-
-  let icon = '⚠', color = '#b45309', bg = '#fdf5ec', who = '', line = 'Nobody has this yet — first to claim it gets it'
-  if (thread.last_direction === 'outbound') {
-    const lastOut = await get<Message>("SELECT * FROM messages WHERE thread_id = ? AND direction = 'outbound' ORDER BY id DESC LIMIT 1", [thread.id])
-    const by = lastOut?.sent_by_member_id ? await getMember(lastOut.sent_by_member_id) : null
-    icon = '✓'; color = '#1a7f4f'; bg = '#eef8f2'
-    who = by ? memberName(by) : ''
-    line = `Answered${by ? ` by ${who}` : ''}${lastOut?.sent_at ? ` · ${relTime(lastOut.sent_at)}` : ''}`
-  } else if (thread.assignee_member_id) {
-    const assignee = await getMember(thread.assignee_member_id)
-    const lastAssign = await get<{ created_at: number }>("SELECT created_at FROM events WHERE thread_id = ? AND type = 'assigned' ORDER BY id DESC LIMIT 1", [thread.id])
-    icon = '●'; color = '#0c2d66'; bg = '#eef3fc'
-    who = memberName(assignee)
-    line = `Assigned to ${who}${lastAssign ? ` · ${relTime(lastAssign.created_at)}` : ''}`
-  }
-  const initials = who ? who.slice(0, 2).toUpperCase() : icon
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="520" height="56" viewBox="0 0 520 56">
-  <rect x="1" y="1" width="518" height="54" rx="12" fill="${bg}" stroke="${color}" stroke-width="1.5"/>
-  <circle cx="30" cy="28" r="15" fill="${color}"/>
-  <text x="30" y="33" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="700" fill="#ffffff">${esc(initials)}</text>
-  <text x="56" y="33" font-family="system-ui, -apple-system, sans-serif" font-size="15" font-weight="600" fill="${color}">${esc(line)}</text>
-</svg>`
-  c.header('Content-Type', 'image/svg+xml; charset=utf-8')
-  c.header('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate')
-  return c.body(svg)
-})
-
 // ---------- one-click action links (from notification emails) ----------
 
 app.get('/a/:token', async (c) => {
@@ -1838,9 +1800,9 @@ app.get('/claim/:slug', async (c) => {
       {collective.status !== 'applied' ? (
         <section class="claim-option">
           <h2>Apply for a free trial</h2>
-          <p class="muted">Tell us in a few sentences who your collective is and what you'll use the address for — a human reads every application.</p>
+          <p class="muted">There are no free months here — collectives pay {'$'}/€10 a month, <b>or contribute something instead</b>. Tell us what you'd like to contribute; a human reads every application.</p>
           <form method="post" action={`/claim/${slug}/apply`}>
-            <textarea name="reason" rows={4} minlength={30} placeholder="We are a neighborhood composting initiative in Schaerbeek, about 25 volunteers…" required></textarea>
+            <textarea name="contribution" rows={4} minlength={30} placeholder="Onboard another collective, write a tutorial or a blog post, translate the interface, run a workshop, tell your network… what would you like to contribute?" required></textarea>
             <label class="lbl">How many months of free trial do you need?</label>
             <select class="input" name="months">
               {[1, 2, 3, 6, 12].map((m) => <option value={String(m)} selected={m === 2}>{m} month{m > 1 ? 's' : ''}</option>)}
@@ -1901,11 +1863,11 @@ app.post('/claim/:slug/apply', async (c) => {
   const t = await pendingClaim(c)
   if (t instanceof Response) return t
   const body = await c.req.parseBody()
-  const reason = String(body.reason || '').trim()
+  const contribution = String(body.contribution || '').trim()
   const months = Math.min(12, Math.max(1, Number(body.months) || 2))
-  if (reason.length < 30) return c.redirect(`/claim/${t.collective.slug}?m=` + encodeURIComponent('Tell us a bit more — a couple of sentences helps us say yes.'))
+  if (contribution.length < 30) return c.redirect(`/claim/${t.collective.slug}?m=` + encodeURIComponent('Tell us a bit more about what you would contribute — a couple of sentences helps us say yes.'))
   try {
-    await fileApplication(t.collective, t.member.email, t.member.name, reason.slice(0, 4000), months)
+    await fileApplication(t.collective, t.member.email, t.member.name, contribution.slice(0, 4000), months)
     return c.redirect(`/claim/${t.collective.slug}?m=` + encodeURIComponent('Application sent — we usually answer within a day. We will email you!'))
   } catch (err) {
     return c.redirect(`/claim/${t.collective.slug}?m=` + encodeURIComponent(err instanceof Error ? err.message : 'Could not send the application.'))

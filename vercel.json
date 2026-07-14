@@ -2,10 +2,35 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "npm run typecheck && npm test && npm run build",
   "framework": null,
-  "regions": ["dub1"],
-  "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }],
-  "crons": [{ "path": "/cron/digest", "schedule": "0 * * * *" }],
+  "regions": [
+    "dub1"
+  ],
+  "rewrites": [
+    {
+      "source": "/aimg/:token",
+      "destination": "/api/og"
+    },
+    {
+      "source": "/og/:file",
+      "destination": "/api/og"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/api/index"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/cron/digest",
+      "schedule": "0 * * * *"
+    }
+  ],
   "functions": {
-    "api/index.js": { "maxDuration": 60 }
+    "api/index.js": {
+      "maxDuration": 60
+    },
+    "api/og.js": {
+      "maxDuration": 30
+    }
   }
 }

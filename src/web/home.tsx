@@ -1,5 +1,6 @@
 /** @jsxImportSource hono/jsx */
 import type { FC } from 'hono/jsx'
+import { cfg } from '../config.js'
 
 // Design language borrowed from opencollective.com: white ground, deep navy
 // headings, Open Collective blue, pill buttons, generous whitespace, soft
@@ -322,7 +323,7 @@ const Foot: FC = () => (
 )
 
 /** Shell for the marketing/content pages — same head, nav and footer as the homepage. */
-export const MarketingPage: FC<{ title: string; description: string; children?: unknown }> = (p) => (
+export const MarketingPage: FC<{ title: string; description: string; og?: string; children?: unknown }> = (p) => (
   <html lang="en">
     <head>
       <meta charset="utf-8" />
@@ -331,6 +332,13 @@ export const MarketingPage: FC<{ title: string; description: string; children?: 
       <meta name="theme-color" content="#10141d" media="(prefers-color-scheme: dark)" />
       <title>{p.title}</title>
       <meta name="description" content={p.description} />
+      <meta property="og:type" content="website" />
+      <meta property="og:title" content={p.title} />
+      <meta property="og:description" content={p.description} />
+      <meta property="og:image" content={`${cfg.baseUrl}/og/${p.og || 'home'}.png`} />
+      <meta property="og:image:width" content="1200" />
+      <meta property="og:image:height" content="630" />
+      <meta name="twitter:card" content="summary_large_image" />
       <link rel="icon" href="/static/icon-192.png" type="image/png" />
       <link rel="manifest" href="/manifest.webmanifest" />
       <link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
@@ -359,6 +367,13 @@ export const HomePage: FC<{ joined?: boolean; currency?: 'USD' | 'EUR' }> = ({ j
         <meta name="theme-color" content="#10141d" media="(prefers-color-scheme: dark)" />
         <title>collective.email — an email address for your collective</title>
         <meta name="description" content="Share one inbox within your group, assign any conversation to any member, and have the internal conversation right next to the email. yourcollective@collective.email" />
+        <meta property="og:type" content="website" />
+        <meta property="og:title" content="collective.email — an email address for your collective" />
+        <meta property="og:description" content="Share one inbox within your group, assign any conversation to any member, and talk about it internally — no shared passwords." />
+        <meta property="og:image" content={`${cfg.baseUrl}/og/home.png`} />
+        <meta property="og:image:width" content="1200" />
+        <meta property="og:image:height" content="630" />
+        <meta name="twitter:card" content="summary_large_image" />
         <link rel="icon" href="/static/icon-192.png" type="image/png" />
         <link rel="manifest" href="/manifest.webmanifest" />
         <link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
