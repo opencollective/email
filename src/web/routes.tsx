@@ -240,6 +240,9 @@ const CodeForm = (p: { email: string; error?: string; next?: string | null }) =>
   </AuthCard>
 )
 
+// The bare homepage, reachable even when signed in (`/` redirects members
+// straight to their inbox).
+app.get('/homepage', (c) => c.html(<HomePage currency={visitorCurrency(c)} />))
 app.get('/faq', (c) => c.html(<FaqPage currency={visitorCurrency(c)} />))
 app.get('/docs', (c) => c.html(<DocsPage currency={visitorCurrency(c)} />))
 app.get('/about', (c) => c.html(<AboutPage currency={visitorCurrency(c)} />))

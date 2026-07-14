@@ -23,3 +23,11 @@ test('marketing pages render with their key content', async () => {
   const home = await app.request('/')
   assert.match(await home.text(), /href="\/about"/)
 })
+
+test('/homepage shows the homepage even with a session', async () => {
+  const { createSession } = await import('../src/auth.js')
+  const sid = await createSession('somebody@t.test')
+  const res = await app.request('/homepage', { headers: { cookie: `requests_sid=${sid}` } })
+  assert.equal(res.status, 200)
+  assert.match(await res.text(), /An email address for your collective/)
+})
