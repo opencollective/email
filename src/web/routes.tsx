@@ -26,6 +26,7 @@ import { billingState, canSend, planLimits, repliesThisMonth, trialDaysLeft, GRA
 import { excerpt, fmtDateTime, now, randomToken, relTime, slugify, verifyToken, waitingFor } from '../util.js'
 import { AssigneeChip, AuthCard, Avatar, eventText, Shell, StatusChip, TimeAgo } from './ui.js'
 import { HomePage } from './home.js'
+import { AboutPage, DocsPage, FaqPage } from './pages.js'
 
 type Env = { Variables: { email: string | null } }
 export const app = new Hono<Env>()
@@ -238,6 +239,10 @@ const CodeForm = (p: { email: string; error?: string; next?: string | null }) =>
     <p class="fineprint">Code expires in 10 minutes. You'll stay signed in on this device for 3 months, unless you sign out.</p>
   </AuthCard>
 )
+
+app.get('/faq', (c) => c.html(<FaqPage />))
+app.get('/docs', (c) => c.html(<DocsPage />))
+app.get('/about', (c) => c.html(<AboutPage />))
 
 app.get('/login', (c) => {
   const next = safeNext(c.req.query('next'))

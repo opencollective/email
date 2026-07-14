@@ -76,6 +76,7 @@ h1, h2, h3 { color: var(--navy); margin: 0; }
 .nav .spacer { flex: 1; }
 .nav a.plain { font-size: 14.5px; color: var(--body); text-decoration: none; }
 .nav a.plain:hover { color: var(--navy); }
+@media (max-width: 700px) { .nav a.more { display: none; } }
 
 /* hero */
 .hero { position: relative; padding: 72px 0 40px; }
@@ -216,6 +217,33 @@ section h2 { font-size: clamp(25px, 3.6vw, 36px); letter-spacing: -0.8px; margin
   padding: 14px 18px; font-weight: 600; margin-bottom: 18px; color: var(--navy);
 }
 
+/* content pages (docs / faq / about) */
+.mkt-page { padding: 34px 0 70px; max-width: 760px; }
+.mkt-page h1 { font-size: clamp(30px, 5vw, 44px); letter-spacing: -1.2px; line-height: 1.12; margin: 8px 0 14px; text-wrap: balance; }
+.mkt-page .lede { font-size: 18px; margin: 0 0 32px; max-width: 58ch; }
+.mkt-page h2 { font-size: 22px; letter-spacing: -0.4px; margin: 40px 0 10px; }
+.mkt-page h3 { font-size: 16.5px; margin: 22px 0 6px; }
+.mkt-page p { margin: 0 0 14px; max-width: 65ch; }
+.mkt-page ul, .mkt-page ol { margin: 0 0 14px; padding-left: 22px; max-width: 62ch; }
+.mkt-page li { margin-bottom: 6px; }
+.mkt-page b { color: var(--navy); font-weight: 650; }
+.mkt-page a { color: var(--blue); }
+.mkt-page code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-soft); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; white-space: nowrap; }
+.mkt-page section { scroll-margin-top: 20px; }
+.faq-item { border-bottom: 1px solid var(--line); }
+.faq-item summary { cursor: pointer; font-weight: 650; color: var(--navy); font-size: 17px; padding: 16px 0; list-style: none; display: flex; align-items: baseline; gap: 12px; }
+.faq-item summary::-webkit-details-marker { display: none; }
+.faq-item summary::after { content: '+'; margin-left: auto; color: var(--blue); font-size: 20px; flex: none; }
+.faq-item[open] summary::after { content: '–'; }
+.faq-item .a { padding: 0 0 18px; }
+.doc-toc { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 10px; }
+.doc-toc a { font-size: 13.5px; border: 1.5px solid var(--line); border-radius: 100px; padding: 5px 14px; text-decoration: none; color: var(--body); }
+.doc-toc a:hover { border-color: var(--blue); color: var(--navy); }
+.roles-table { width: 100%; border-collapse: collapse; font-size: 14.5px; margin: 0 0 14px; }
+.roles-table th, .roles-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.roles-table th { color: var(--navy); white-space: nowrap; }
+.about-sig { margin-top: 28px; color: var(--muted); }
+
 /* footer */
 .footer {
   margin-top: 88px; border-top: 1px solid var(--line);
@@ -266,6 +294,60 @@ if (hero) {
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 `
 
+const Nav: FC<{ home?: boolean }> = ({ home }) => (
+  <nav class="nav">
+    <a class="wordmark" href="/">✉ collective<span class="at">.email</span></a>
+    <span class="spacer" />
+    <a class="plain more" href={home ? '#pricing' : '/#pricing'}>Pricing</a>
+    <a class="plain more" href="/docs">Docs</a>
+    <a class="plain more" href="/faq">FAQ</a>
+    <a class="plain more" href="/about">About</a>
+    <a class="plain" href="/login">Sign in</a>
+    <a class="btn ghost" href="/claim" style="padding:9px 18px">Claim your address</a>
+  </nav>
+)
+
+const Foot: FC = () => (
+  <footer class="footer">
+    <span class="wordmark">✉ collective<span class="at">.email</span></span>
+    <span>An email address for your collective.</span>
+    <span class="spacer" />
+    <a href="/#pricing">Pricing</a>
+    <a href="/docs">Docs</a>
+    <a href="/faq">FAQ</a>
+    <a href="/about">About</a>
+    <a href="/login">Sign in</a>
+    <a href="mailto:hello@collective.email">hello@collective.email</a>
+  </footer>
+)
+
+/** Shell for the marketing/content pages — same head, nav and footer as the homepage. */
+export const MarketingPage: FC<{ title: string; description: string; children?: unknown }> = (p) => (
+  <html lang="en">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+      <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+      <meta name="theme-color" content="#10141d" media="(prefers-color-scheme: dark)" />
+      <title>{p.title}</title>
+      <meta name="description" content={p.description} />
+      <link rel="icon" href="/static/icon-192.png" type="image/png" />
+      <link rel="manifest" href="/manifest.webmanifest" />
+      <link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
+      <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+      <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" />
+      <style dangerouslySetInnerHTML={{ __html: CSS }} />
+    </head>
+    <body>
+      <div class="wrap">
+        <Nav />
+        <main class="mkt-page">{p.children}</main>
+        <Foot />
+      </div>
+    </body>
+  </html>
+)
+
 export const HomePage: FC<{ joined?: boolean; currency?: 'USD' | 'EUR' }> = ({ joined, currency = 'USD' }) => {
   const s = currency === 'EUR' ? '€' : '$'
   return (
@@ -286,13 +368,7 @@ export const HomePage: FC<{ joined?: boolean; currency?: 'USD' | 'EUR' }> = ({ j
       </head>
       <body>
         <div class="wrap">
-          <nav class="nav">
-            <a class="wordmark" href="/">✉ collective<span class="at">.email</span></a>
-            <span class="spacer" />
-            <a class="plain" href="#pricing">Pricing</a>
-            <a class="plain" href="/login">Sign in</a>
-            <a class="btn ghost" href="/claim" style="padding:9px 18px">Claim your address</a>
-          </nav>
+          <Nav home />
 
           <header class="hero">
             <span class="blob b1" /><span class="blob b2" /><span class="blob b3" />
@@ -413,14 +489,7 @@ export const HomePage: FC<{ joined?: boolean; currency?: 'USD' | 'EUR' }> = ({ j
 
           
 
-          <footer class="footer">
-            <span class="wordmark">✉ collective<span class="at">.email</span></span>
-            <span>An email address for your collective.</span>
-            <span class="spacer" />
-            <a href="#pricing">Pricing</a>
-            <a href="/login">Sign in</a>
-            <a href="mailto:hello@collective.email">hello@collective.email</a>
-          </footer>
+          <Foot />
         </div>
         <script dangerouslySetInnerHTML={{ __html: SCRIPT }} />
       </body>
