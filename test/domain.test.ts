@@ -145,3 +145,24 @@ test('a domain already connected to another collective is refused with a clear m
   assert.ok(!msg.includes('{'), 'no raw JSON in user-facing errors')
   assert.equal((await get<any>('SELECT custom_domain FROM collectives WHERE id = ?', [b.id]))!.custom_domain, null)
 })
+
+test('thread page + reply route reflect the verified custom domain (tenant projection carries it)', async () => {
+  const col = await createCollective(`send${uniq()}`, 'Send Co')
+  const sid = await adminSid(col.id)
+  await run("UPDATE collectives SET plan = 'pro', custom_domain = 'ourgroup.org', custom_local = 'hello', domain_status = 'verified' WHERE id = ?", [col.id])
+  const th = await run(`INSERT INTO threads (collective_id, subject, status, counterpart_email, first_message_at, last_message_at, last_direction, created_at, updated_at)
+    VALUES (?, 'Q', 'needs_reply', 'ann@x.test', ?, ?, 'inbound', ?, ?)`, [col.id, now(), now(), now(), now()])
+  await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_email, to_json, body_text, sent_at, created_at)
+    VALUES (?, ?, 'inbound', 'ann@x.test', '[]', 'hi', ?, ?)`, [th.lastId, `<sc-${uniq()}@x>`, now(), now()])
+
+  const page = await app.request(`/inbox/${col.slug}/thread/${th.lastId}`, { headers: { cookie: `requests_sid=${sid}` } })
+  const html = await page.text()
+  assert.match(html, /Send as hello@ourgroup\.org/, 'composer sends as the verified custom domain')
+  assert.ok(!/Send as send\d+@/.test(html), 'not the collective.email address once verified')
+
+  // and unverified degrades back to the platform address
+  await run("UPDATE collectives SET domain_status = 'pending' WHERE id = ?", [col.id])
+  const page2 = await app.request(`/inbox/${col.slug}/thread/${th.lastId}`, { headers: { cookie: `requests_sid=${sid}` } })
+  const html2 = await page2.text()
+  assert.match(html2, new RegExp(`Send as ${col.slug}@`), 'unverified falls back to the platform address')
+})

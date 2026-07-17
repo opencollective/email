@@ -12,7 +12,7 @@ import {
 import {
   checkCode, createSession, destroyEmailSessions, destroySession, emailFromSession, issueCode,
 } from '../auth.js'
-import { sendCollectiveReply } from '../outbound.js'
+import { outboundFrom, sendCollectiveReply } from '../outbound.js'
 import { digestTick, sendOnboarding, trialTick } from '../notify.js'
 import { backupTick } from '../backup.js'
 import { CONTRIBUTE_SLUG, creditBalance, creditsLedger, creditsTick, fileContribution, mintCredits, referralUrl , PRO_MONTH_CREDITS } from '../credits.js'
@@ -114,6 +114,7 @@ async function tenant(c: Context<Env>): Promise<{ collective: Collective; member
   const row = slug ? await get<any>(`
     SELECT c.id AS c_id, c.slug AS c_slug, c.name AS c_name, c.status AS c_status, c.plan AS c_plan, c.created_at AS c_created_at,
            c.stripe_status AS c_stripe_status, c.trial_ends_at AS c_trial_ends_at, c.comped AS c_comped,
+           c.custom_domain AS c_custom_domain, c.custom_local AS c_custom_local, c.domain_status AS c_domain_status,
            m.id, m.collective_id, m.email, m.name, m.role, m.notify_level, m.avatar_path, m.created_at, m.last_seen_at, m.removed_at
     FROM collectives c LEFT JOIN members m ON m.collective_id = c.id AND m.email = ?
     WHERE c.slug = ?
@@ -122,6 +123,7 @@ async function tenant(c: Context<Env>): Promise<{ collective: Collective; member
   const collective: Collective = {
     id: row.c_id, slug: row.c_slug, name: row.c_name, status: row.c_status, plan: row.c_plan, created_at: row.c_created_at,
     stripe_status: row.c_stripe_status, trial_ends_at: row.c_trial_ends_at, comped: row.c_comped,
+    custom_domain: row.c_custom_domain, custom_local: row.c_custom_local, domain_status: row.c_domain_status,
   }
   const member = (row.id != null ? (row as Member) : undefined) as Member | undefined
   if (!member || member.removed_at) {
@@ -877,7 +879,8 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   const activeList = [...members.values()].filter((m) => !m.removed_at).sort((a, b) => memberName(a).localeCompare(memberName(b)))
   const assignee = thread.assignee_member_id ? members.get(thread.assignee_member_id) : null
   const counterpartFirst = (thread.counterpart_name || thread.counterpart_email || 'the sender').split(' ')[0]
-  const collectiveAddr = `${collective.slug}@${cfg.emailDomain}`
+  // reflects the actual From: verified custom domain, else slug@collective.email
+  const collectiveAddr = outboundFrom(collective).fromAddress
 
   const items: TimelineItem[] = [
     ...msgs.map((m): TimelineItem => ({ kind: 'msg', ts: m.sent_at || m.created_at, msg: m })),
@@ -1009,7 +1012,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               <textarea name="body" rows={5} placeholder={`Write to ${counterpartFirst}…`} data-draft="reply" required></textarea>
               <div class="actions">
                 <label class="file-label">📎 Attach<input type="file" name="files" multiple class="file-input" /></label>
-                <button class="btn send-btn" type="submit" data-busy="Sending…">Send as {collective.slug}@ ➤</button>
+                <button class="btn send-btn" type="submit" data-busy="Sending…">Send as {collectiveAddr} ➤</button>
               </div>
             </form>
             ) : null}
