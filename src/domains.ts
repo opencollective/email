@@ -31,20 +31,49 @@ const STUB: ResendDomain = {
   ],
 }
 
+export class ResendApiError extends Error {
+  constructor(message: string, public status: number) { super(message) }
+}
+
 async function resend(path: string, method: 'GET' | 'POST' | 'PATCH' | 'DELETE', body?: unknown): Promise<any> {
   const res = await fetch(`https://api.resend.com${path}`, {
     method,
     headers: { Authorization: `Bearer ${cfg.resendKey}`, 'Content-Type': 'application/json' },
     ...(body ? { body: JSON.stringify(body) } : {}),
   })
-  if (!res.ok) throw new Error(`Resend ${method} ${path} failed (${res.status}): ${await res.text()}`)
+  if (!res.ok) {
+    // Surface the provider's human-readable message, never raw JSON
+    let message = `Our email provider returned an error (${res.status}). Please try again.`
+    try {
+      const parsed = await res.json()
+      if (parsed?.message) message = String(parsed.message)
+    } catch { /* non-JSON error body */ }
+    throw new ResendApiError(message, res.status)
+  }
   return res.status === 204 ? null : res.json()
+}
+
+/** A domain that already exists in our Resend account (e.g. set up manually
+ *  before self-serve existed) can simply be adopted. */
+async function findResendDomainByName(name: string): Promise<ResendDomain | null> {
+  const list = await resend('/domains', 'GET')
+  const hit = (list?.data || []).find((d: { name?: string }) => d.name === name)
+  return hit ? getResendDomain(hit.id) : null
 }
 
 export async function createResendDomain(name: string): Promise<ResendDomain> {
   if (!cfg.resendKey) return { ...STUB, name }
-  const d = await resend('/domains', 'POST', { name, region: 'eu-west-1' })
-  return { id: d.id, name: d.name, status: d.status, records: d.records || [] }
+  try {
+    const d = await resend('/domains', 'POST', { name, region: 'eu-west-1' })
+    return { id: d.id, name: d.name, status: d.status, records: d.records || [] }
+  } catch (err) {
+    if (err instanceof ResendApiError && /registered already/i.test(err.message)) {
+      const existing = await findResendDomainByName(name)
+      if (existing) return existing
+      throw new Error(`${name} is already registered with our email provider under a different account — email hello@collective.email and we'll untangle it together.`)
+    }
+    throw err
+  }
 }
 
 export async function getResendDomain(id: string): Promise<ResendDomain | null> {

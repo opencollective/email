@@ -131,3 +131,17 @@ test('pro application files a thread with approve-pro buttons; one click upgrade
   assert.equal(after.plan, 'pro')
   assert.ok(after.trial_ends_at > now() + 179 * 86400)
 })
+
+test('a domain already connected to another collective is refused with a clear message', async () => {
+  const a = await createCollective(`dup-a${uniq()}`, 'A Co')
+  const b = await createCollective(`dup-b${uniq()}`, 'B Co')
+  await run("UPDATE collectives SET plan = 'pro' WHERE id IN (?, ?)", [a.id, b.id])
+  const sidA = await adminSid(a.id)
+  const sidB = await adminSid(b.id)
+  await post(`/inbox/${a.slug}/domain`, sidA, 'local=hello&domain=shared-domain.org')
+  const res = await post(`/inbox/${b.slug}/domain`, sidB, 'local=hello&domain=shared-domain.org')
+  const msg = decodeURIComponent(res.headers.get('location')!)
+  assert.match(msg, /already connected to another collective/)
+  assert.ok(!msg.includes('{'), 'no raw JSON in user-facing errors')
+  assert.equal((await get<any>('SELECT custom_domain FROM collectives WHERE id = ?', [b.id]))!.custom_domain, null)
+})

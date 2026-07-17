@@ -1897,6 +1897,10 @@ app.post('/inbox/:addr/domain', async (c) => {
   if (!validLocalPart(local) || !validDomainName(domainName)) {
     return c.redirect(`${base}/domain?m=` + encodeURIComponent('That does not look like a valid address — check the local part and the domain.'))
   }
+  const taken = await get<Collective>('SELECT * FROM collectives WHERE custom_domain = ? AND id != ?', [domainName, collective.id])
+  if (taken) {
+    return c.redirect(`${base}/domain?m=` + encodeURIComponent(`${domainName} is already connected to another collective on collective.email. If that's yours and shouldn't be, email hello@collective.email.`))
+  }
   try {
     const created = await createResendDomain(domainName)
     await run("UPDATE collectives SET custom_domain = ?, custom_local = ?, resend_domain_id = ?, domain_status = 'pending', receive_mode = 'forwarding' WHERE id = ?",
