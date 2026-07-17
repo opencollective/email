@@ -31,7 +31,7 @@ document.addEventListener('click', (e) => {
 });
 const wantedPane = new URLSearchParams(location.search).get('pane');
 if (wantedPane === 'note') document.querySelector('[data-tab="note"]')?.click();
-const code = document.querySelector('input[name=code]');
+const code = document.querySelector('input.code-input');
 if (code) { code.focus(); code.addEventListener('input', () => { if (code.value.trim().length === 6) code.form.submit(); }); }
 document.querySelectorAll('.file-input').forEach((inp) => {
   inp.addEventListener('change', () => {
@@ -188,7 +188,7 @@ export const Page: FC<{ title?: string; flash?: string; children?: Child }> = (p
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=9" />
+      <link rel="stylesheet" href="/static/style.css?v=10" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script

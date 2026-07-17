@@ -143,11 +143,11 @@ small { color: var(--muted); }
 @media (max-width: 480px) { .wl-addr { font-size: 13px; } }
 
 /* ---------- app shell ---------- */
-.app { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }
+.app { display: grid; grid-template-columns: fit-content(340px) 1fr; min-height: 100vh; }
 .side {
   border-right: 1.5px solid var(--line-soft); background: var(--fill);
   padding: 18px 14px; display: flex; flex-direction: column; gap: 4px;
-  position: sticky; top: 0; height: 100vh; overflow-y: auto;
+  position: sticky; top: 0; height: 100vh; overflow-y: auto; min-width: 240px;
 }
 .org { display: flex; align-items: center; gap: 10px; padding: 2px 8px 16px; }
 .org .mark {
@@ -156,7 +156,7 @@ small { color: var(--muted); }
   display: flex; align-items: center; justify-content: center; flex: none;
 }
 .org-name { font-size: 14px; font-weight: 700; display: block; }
-.org small { display: block; font-family: var(--mono); font-size: 10px; overflow-wrap: anywhere; }
+.org small { display: block; font-family: var(--mono); font-size: 10px; white-space: nowrap; }
 .nav { display: flex; flex-direction: column; gap: 3px; }
 .nav-item {
   display: flex; align-items: center; gap: 8px; border-radius: 7px;
