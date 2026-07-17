@@ -77,8 +77,11 @@ export async function ingestInbound(
   const from = addrList(parsed.from)[0] || { address: '', name: '' }
   const tos = addrList(parsed.to)
   const ccs = addrList(parsed.cc)
-  // Loop guard: never ingest mail sent from our own domain (our notifications, our replies)
-  if (from.address.endsWith(`@${cfg.emailDomain}`)) return
+  // Loop guard: never ingest mail sent from our own domain (our notifications,
+  // our replies) — EXCEPT the forwarding test, whose whole point is to come
+  // back around and prove the custom-domain forward works.
+  const isForwardTest = /^Forwarding test for /.test(parsed.subject || '')
+  if (from.address.endsWith(`@${cfg.emailDomain}`) && !isForwardTest) return
 
   const sentAt = parsed.date ? Math.floor(parsed.date.getTime() / 1000) : now()
   let thread = await findThread(collective, parsed, from.address)
@@ -115,7 +118,7 @@ export async function ingestInbound(
   if (sentAt >= (thread.last_message_at ?? 0)) {
     await run("UPDATE threads SET last_message_at = ?, last_direction = 'inbound', updated_at = ? WHERE id = ?", [sentAt, now(), thread.id])
   }
-  if (thread.status !== 'spam') await setStatus(thread.id, 'needs_reply', null, true)
+  if (thread.status !== 'spam') await setStatus(thread.id, isForwardTest ? 'answered' : 'needs_reply', null, true)
 
   // Auto-assign new threads based on who handled this sender before
   if (isNewThread && from.address) {
@@ -123,7 +126,7 @@ export async function ingestInbound(
     if (suggested) await setAssignee((await getThread(thread.id))!, suggested, null, 'auto_sender')
   }
 
-  if (!isAutoSubmitted(parsed)) {
+  if (!isAutoSubmitted(parsed) && !isForwardTest) {
     const message = (await get<Message>('SELECT * FROM messages WHERE id = ?', [messageDbId]))!
     // awaited: on serverless, work after the response is returned may be killed
     await notifyInbound(collective, (await getThread(thread.id))!, message, extraActions).catch((err) => console.error('[notify] failed:', err))

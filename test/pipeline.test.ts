@@ -309,3 +309,27 @@ test('live assignment badge reflects current state at fetch time', async () => {
   assert.equal(og.headers.get('content-type'), 'image/png')
   assert.equal((await ogApp.request('/og/nope.png')).status, 404)
 })
+
+test('the forwarding test email round-trips into the inbox; other own-domain mail stays looped out', async () => {
+  const { ingestInbound } = await import('../src/ingest.js')
+  const { simpleParser } = await import('mailparser')
+  const { createCollective, all: allRows } = await import('../src/db.js')
+  const { cfg } = await import('../src/config.js')
+  const col = await createCollective(`fwd${Date.now() % 100000}`, 'Fwd Co')
+
+  const mk = (subject: string) => simpleParser([
+    `From: collective.email <notifications@${cfg.emailDomain}>`,
+    `To: hello@fwd.test`,
+    `Subject: ${subject}`,
+    `Message-ID: <fw-${subject.length}-${Date.now()}@x>`,
+    '', 'body',
+  ].join('\r\n'))
+
+  await ingestInbound(col, await mk('Forwarding test for hello@fwd.test ✓'))
+  const threads = await allRows<any>('SELECT * FROM threads WHERE collective_id = ?', [col.id])
+  assert.equal(threads.length, 1, 'the forwarding test lands as a thread')
+  assert.equal(threads[0].status, 'answered', 'and does not scream needs-reply')
+
+  await ingestInbound(col, await mk('Weekly digest'))
+  assert.equal((await allRows<any>('SELECT * FROM threads WHERE collective_id = ?', [col.id])).length, 1, 'other own-domain mail is still dropped (loop guard)')
+})
