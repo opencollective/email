@@ -1345,20 +1345,17 @@ app.get('/inbox/:addr/members', async (c) => {
         <section class="card">
           <h2>Members ({members.length})</h2>
           <div class="member-table">
-            {members.map((m) => (
+            {members.map((m) => {
+              const editable = isAdmin && m.id !== member.id
+              return (
               <div class="member-row">
                 <Avatar member={m} />
                 <span class="m-name">
                   {memberName(m)}{m.id === member.id ? ' (you)' : ''}
                   <small>{m.email}</small>
                 </span>
-                <span class={m.role === 'admin' ? 'chip solid' : 'chip'}>{ROLE_LABELS[m.role]}</span>
-                <span class="m-meta">
-                  {LEVELS.find((l) => l.value === m.notify_level)?.label}
-                  <small>{replies(m.id)} replies · seen {relTime(m.last_seen_at)}</small>
-                </span>
-                {isAdmin && m.id !== member.id ? (
-                  <span class="m-actions">
+                <span class="m-role">
+                  {editable ? (
                     <form method="post" action={`${base}/members/${m.id}/role`} class="inline role-form">
                       <select name="role" class="role-select" aria-label={`Role of ${memberName(m)}`} title={ROLE_HINTS[m.role]}>
                         <option value="reader" data-hint={ROLE_HINTS.reader} selected={m.role === 'reader'}>Reader</option>
@@ -1367,14 +1364,25 @@ app.get('/inbox/:addr/members', async (c) => {
                         <option value="admin" data-hint={ROLE_HINTS.admin} selected={m.role === 'admin'}>Admin</option>
                       </select>
                     </form>
+                  ) : (
+                    <span class={m.role === 'admin' ? 'chip solid' : 'chip'} title={ROLE_HINTS[m.role]}>{ROLE_LABELS[m.role]}</span>
+                  )}
+                </span>
+                <span class="m-meta">
+                  {LEVELS.find((l) => l.value === m.notify_level)?.label}
+                  <small>{replies(m.id)} replies · seen {relTime(m.last_seen_at)}</small>
+                </span>
+                <span class="m-remove">
+                  {editable ? (
                     <form method="post" action={`${base}/members/${m.id}/remove`} class="inline">
                       <button class="linkish danger" type="submit" disabled={m.role === 'admin' && adminCount <= 1}
                         data-confirm={`Remove ${memberName(m)} from the collective? They lose access immediately; their past replies stay attributed.`}>Remove</button>
                     </form>
-                  </span>
-                ) : <span class="m-actions" />}
+                  ) : null}
+                </span>
               </div>
-            ))}
+              )
+            })}
           </div>
         </section>
       </div>
