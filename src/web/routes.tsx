@@ -1903,9 +1903,12 @@ app.post('/inbox/:addr/domain', async (c) => {
   }
   try {
     const created = await createResendDomain(domainName)
-    await run("UPDATE collectives SET custom_domain = ?, custom_local = ?, resend_domain_id = ?, domain_status = 'pending', receive_mode = 'forwarding' WHERE id = ?",
-      [domainName, local, created.id, collective.id])
-    return c.redirect(`${base}/domain?m=` + encodeURIComponent(`${local}@${domainName} is set up — add the forward and the DNS records.`))
+    const status = created.status === 'verified' ? 'verified' : 'pending'
+    await run("UPDATE collectives SET custom_domain = ?, custom_local = ?, resend_domain_id = ?, domain_status = ?, receive_mode = 'forwarding' WHERE id = ?",
+      [domainName, local, created.id, status, collective.id])
+    return c.redirect(`${base}/domain?m=` + encodeURIComponent(status === 'verified'
+      ? `${local}@${domainName} is set up — the domain was already verified, so replies go out as it right away. Just add the forward.`
+      : `${local}@${domainName} is set up — add the forward and the DNS records.`))
   } catch (err) {
     return c.redirect(`${base}/domain?m=` + encodeURIComponent(err instanceof Error ? err.message : 'Could not create the domain.'))
   }
