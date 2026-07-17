@@ -21,11 +21,16 @@ export interface LoginCodeRow {
   created_at: number
 }
 
-/** Create a 6-digit code and email it. Returns false when rate-limited. */
+/** Create a 6-digit code and deliver it. By default it's emailed to `email`;
+ *  pass `deliver` to route it elsewhere (e.g. the Open Collective contact form
+ *  for ownership verification) — the code is still stored under `email`, which
+ *  is the login identity, so checkCode(email, code) works regardless of channel.
+ *  Returns false when rate-limited or when delivery failed. */
 export async function issueCode(
   email: string,
   purpose: 'login' | 'join' | 'claim',
   join?: { inviteToken?: string; name?: string; level?: string; claimSlug?: string; claimRef?: string },
+  deliver?: (code: string) => Promise<boolean>,
 ): Promise<boolean> {
   const clean = email.toLowerCase().trim()
   const recent = await get<{ created_at: number }>('SELECT created_at FROM login_codes WHERE email = ? ORDER BY id DESC LIMIT 1', [clean])
@@ -37,6 +42,7 @@ export async function issueCode(
     INSERT INTO login_codes (email, code_hash, purpose, invite_token, join_name, join_level, claim_slug, claim_ref, expires_at, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [clean, sha256(code + cfg.secret), purpose, join?.inviteToken ?? null, join?.name ?? null, join?.level ?? null, join?.claimSlug ?? null, join?.claimRef ?? null, now() + CODE_TTL, now()])
+  if (deliver) return deliver(code)
   await sendLoginCode(clean, code)
   return true
 }

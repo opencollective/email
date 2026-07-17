@@ -43,19 +43,22 @@ export async function ocSlugTaken(slug: string): Promise<boolean> {
   }
 }
 
-/** Full availability check for public claiming (format, reserved list,
- *  opencollective.com names, and stale-pending release). Returns an error
- *  message or null when the slug can be reserved right now. */
+/** Availability for public claiming: format, reserved list, and stale-pending
+ *  release. Returns an error message or null when the slug can be reserved.
+ *  Existing opencollective.com names are NOT blocked here — they're claimable
+ *  by proving ownership (see ocCollectiveInfo); the claim flow enforces that. */
 export async function slugAvailability(slug: string): Promise<string | null> {
   const invalid = validateClaimSlug(slug)
   if (invalid) return invalid
   const free = await releaseStalePending(slug)
   if (!free) return `${slug} is already taken.`
-  if (await ocSlugTaken(slug)) {
-    return `"${slug}" belongs to a collective on opencollective.com — we reserve those names for their owners. If that's you, email hello@collective.email.`
-  }
   return null
 }
+
+/** Stable per-slug token an admin pastes into their collective's OC description
+ *  to prove control when the contact form is unavailable. Not secret — it only
+ *  proves the paster can edit that specific collective's public profile. */
+export const ocVerifyToken = (slug: string) => hmac(`ocverify:${slug}`, 10)
 
 /** Discount codes are bound to the slug they unlock.
  *  `<slug>-<m>m-XXXXXXXX` grants a free trial of m months;

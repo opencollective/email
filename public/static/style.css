@@ -140,6 +140,11 @@ small { color: var(--muted); }
 .wl-addr:focus-within { border-color: var(--accent); }
 .wl-addr input { border: none; background: none; color: var(--ink); font: inherit; padding: 10px 0; width: 9ch; flex: 1 0 auto; max-width: 100%; outline: none; }
 .wl-addr .domain { color: var(--accent); font-weight: 700; white-space: nowrap; padding: 10px 0; }
+.oc-status { font-size: 12.5px; margin: 8px 0 4px; line-height: 1.45; }
+.oc-status code { font-family: var(--mono); font-size: 11.5px; background: var(--fill); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; overflow-wrap: anywhere; }
+.oc-ok { color: var(--accent); }
+.oc-warn { color: var(--warn); }
+.oc-bad { color: var(--danger); }
 @media (max-width: 480px) { .wl-addr { font-size: 13px; } }
 
 /* ---------- app shell ---------- */

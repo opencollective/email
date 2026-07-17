@@ -17,8 +17,10 @@ import { digestTick, sendOnboarding, trialTick } from '../notify.js'
 import { backupTick } from '../backup.js'
 import { CONTRIBUTE_SLUG, creditBalance, creditsLedger, creditsTick, fileContribution, mintCredits, referralUrl , PRO_MONTH_CREDITS } from '../credits.js'
 import {
-  approveApplication, checkDiscountCode, discountCodeFor, fileApplication, fileProApplication, slugAvailability,
+  approveApplication, checkDiscountCode, discountCodeFor, fileApplication, fileProApplication,
+  ocSlugTaken, ocVerifyToken, slugAvailability,
 } from '../claim.js'
+import { ocCollectiveInfo, ocDescriptionContains, sendOcVerificationCode, type OcStatus } from '../oc.js'
 import { sendAppEmail } from '../appmail.js'
 import { readBlob, saveBlob } from '../storage.js'
 import { createCheckoutSession, createPortalSession, stripeEnabled } from '../stripe.js'
@@ -231,10 +233,14 @@ app.post('/waitlist', async (c) => {
 const safeNext = (v: unknown): string | null =>
   typeof v === 'string' && /^\/[^/\\]/.test(v) ? v : null
 
-const CodeForm = (p: { email: string; error?: string; next?: string | null }) => (
+const CodeForm = (p: { email: string; error?: string; next?: string | null; sentToAdmins?: string }) => (
   <AuthCard title="Enter code">
     <h1>Check your inbox</h1>
-    <p class="muted">We sent a 6-digit code to <b>{p.email}</b>. <a href="/login">Wrong address?</a></p>
+    {p.sentToAdmins ? (
+      <p class="muted">To confirm you're part of <b>{p.sentToAdmins}</b>, we sent a 6-digit code to its admins on Open Collective. Whoever receives it can enter it here. <a href="/claim">Not your collective?</a></p>
+    ) : (
+      <p class="muted">We sent a 6-digit code to <b>{p.email}</b>. <a href="/login">Wrong address?</a></p>
+    )}
     {p.error ? <p class="error">{p.error}</p> : null}
     <form method="post" action="/verify">
       <input type="hidden" name="email" value={p.email} />
@@ -2085,28 +2091,100 @@ app.post('/inbox/:addr/billing/portal', async (c) => {
 
 // ---------- public claiming: verify email → pay / discount / apply ----------
 
-const ClaimForm = (p: { address?: string; error?: string; refSlug?: string }) => (
-  <AuthCard title="Claim your address" flash={p.error}>
-    <h1>Claim your address</h1>
-    <p class="muted">Pick your collective's email address, confirm your own email with a 6-digit code, and it's reserved for you.</p>
-    <form method="post" action="/claim">
-      {p.refSlug ? <input type="hidden" name="ref" value={p.refSlug} /> : null}
-      <label class="lbl">Your collective's address</label>
-      <span class="wl-addr">
-        <input name="address" value={p.address || ''} placeholder="yourcollective" minlength={6} maxlength={40} pattern="[a-z0-9]{6,40}" autocomplete="off" spellcheck={false} required />
-        <span class="domain">@{cfg.emailDomain}</span>
-      </span>
-      <p class="fineprint">At least 6 characters — letters and numbers only.</p>
-      <label class="lbl">Your name</label>
-      <input class="input" name="name" placeholder="First name" required />
-      <label class="lbl">Your personal email</label>
-      <input class="input" type="email" name="email" placeholder="you@example.com" required />
-      <button class="btn" type="submit" data-busy="Sending code…">Send me a code</button>
-    </form>
-  </AuthCard>
-)
+/** Server-rendered OC state (progressive enhancement; the live script keeps it
+ *  in sync as the slug is typed). `oc` present only after a submit that surfaced
+ *  a contactable/uncontactable collective. */
+const ClaimForm = (p: {
+  address?: string; name?: string; email?: string; error?: string; refSlug?: string
+  oc?: { kind: 'contactable' | 'uncontactable'; name: string; admins?: string[] }
+}) => {
+  const uncontactable = p.oc?.kind === 'uncontactable'
+  const token = uncontactable ? ocVerifyToken(p.address || '') : ''
+  return (
+    <AuthCard title="Claim your address" flash={p.error}>
+      <h1>Claim your address</h1>
+      <p class="muted">Pick your collective's email address, confirm with a 6-digit code, and it's reserved for you.</p>
+      <form method="post" action="/claim">
+        {p.refSlug ? <input type="hidden" name="ref" value={p.refSlug} /> : null}
+        <label class="lbl">Your collective's address</label>
+        <span class="wl-addr">
+          <input id="claim-address" name="address" value={p.address || ''} placeholder="yourcollective" minlength={6} maxlength={40} pattern="[a-z0-9]{6,40}" autocomplete="off" spellcheck={false} required />
+          <span class="domain">@{cfg.emailDomain}</span>
+        </span>
+        <p id="oc-status" class="oc-status">
+          {p.oc?.kind === 'contactable' ? (
+            <span class="oc-ok">🔒 <b>{p.oc.name}</b> is a collective on Open Collective. To confirm you're part of it, your code goes to its {p.oc.admins!.length} admin{p.oc.admins!.length === 1 ? '' : 's'}: {p.oc.admins!.join(', ')}.</span>
+          ) : uncontactable ? (
+            <span class="oc-warn">⚠ <b>{p.oc!.name}</b> exists on Open Collective but its contact form is off, so we can't message its admins. To prove you manage it, add this line anywhere in the collective's description on opencollective.com/{p.address}: <code>collective.email:{token}</code> — then use the button below. Or email hello@collective.email.</span>
+          ) : (
+            <span class="fineprint">At least 6 characters — letters and numbers only.</span>
+          )}
+        </p>
+        <label class="lbl">Your name</label>
+        <input class="input" name="name" value={p.name || ''} placeholder="First name" required />
+        <label class="lbl">Your personal email</label>
+        <input class="input" type="email" name="email" value={p.email || ''} placeholder="you@example.com" required />
+        <button class={`btn ${uncontactable ? 'hidden' : ''}`} id="claim-submit" type="submit" data-busy="Sending code…">
+          {p.oc?.kind === 'contactable' ? "Send the code to the collective's admins" : 'Send me a code'}
+        </button>
+        <button class={`btn ${uncontactable ? '' : 'hidden'}`} id="claim-verify" type="submit" formaction="/claim/oc-verify" data-busy="Checking…">I've added it — verify &amp; continue</button>
+      </form>
+      <script dangerouslySetInnerHTML={{ __html: CLAIM_SCRIPT }} />
+    </AuthCard>
+  )
+}
+
+const CLAIM_SCRIPT = `
+(function(){
+  var addr=document.getElementById('claim-address');
+  var submit=document.getElementById('claim-submit');
+  var verify=document.getElementById('claim-verify');
+  var status=document.getElementById('oc-status');
+  if(!addr) return;
+  function esc(s){var d=document.createElement('div');d.textContent=s==null?'':s;return d.innerHTML;}
+  function slugify(v){return v.toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,40);}
+  function normal(){submit.classList.remove('hidden');submit.disabled=false;submit.textContent='Send me a code';verify.classList.add('hidden');}
+  function render(d,slug){
+    normal();
+    if(d.unavailable){status.innerHTML='<span class="oc-bad">'+esc(d.unavailable)+'</span>';submit.disabled=true;return;}
+    var oc=d.oc||{kind:'none'};
+    if(oc.kind==='contactable'){
+      submit.textContent="Send the code to the collective's admins";
+      status.innerHTML='<span class="oc-ok">🔒 <b>'+esc(oc.name)+'</b> is a collective on Open Collective. To confirm you\\'re part of it, your code goes to its '+oc.admins.length+' admin'+(oc.admins.length===1?'':'s')+': '+oc.admins.map(esc).join(', ')+'.</span>';
+    }else if(oc.kind==='uncontactable'){
+      submit.classList.add('hidden');submit.disabled=true;
+      verify.classList.remove('hidden');
+      status.innerHTML='<span class="oc-warn">⚠ <b>'+esc(oc.name)+'</b> exists on Open Collective but its contact form is off, so we can\\'t message its admins. To prove you manage it, add this line anywhere in the collective\\'s description on opencollective.com/'+esc(slug)+': <code>collective.email:'+esc(oc.token)+'</code> — then click below. Or email hello@collective.email.</span>';
+    }else{
+      status.innerHTML='<span class="fineprint">At least 6 characters — letters and numbers only.</span>';
+    }
+  }
+  var timer;
+  function check(){
+    var slug=slugify(addr.value);
+    if(slug.length<6){normal();status.innerHTML='<span class="fineprint">At least 6 characters — letters and numbers only.</span>';return;}
+    fetch('/claim/oc?slug='+encodeURIComponent(slug)).then(function(r){return r.json();}).then(function(d){render(d,slug);}).catch(function(){});
+  }
+  addr.addEventListener('input',function(){clearTimeout(timer);timer=setTimeout(check,400);});
+  if(slugify(addr.value).length>=6) check();
+})();
+`
 
 app.get('/claim', (c) => c.html(<ClaimForm address={slugify(c.req.query('address') || '')} refSlug={slugify(c.req.query('ref') || '') || undefined} error={c.req.query('m')} />))
+
+/** Live check for the claim form: availability + Open Collective status. */
+app.get('/claim/oc', async (c) => {
+  const slug = slugify(c.req.query('slug') || '')
+  const unavailable = await slugAvailability(slug)
+  if (unavailable) return c.json({ unavailable, oc: { kind: 'none' } })
+  const info = await ocCollectiveInfo(slug)
+  if (info.kind === 'contactable') return c.json({ unavailable: null, oc: { kind: 'contactable', name: info.name, admins: info.admins } })
+  if (info.kind === 'uncontactable') return c.json({ unavailable: null, oc: { kind: 'uncontactable', name: info.name, token: ocVerifyToken(slug) } })
+  // none / unknown → normal claim (unknown is resolved server-side on submit)
+  return c.json({ unavailable: null, oc: { kind: 'none' } })
+})
+
+const emailLooksValid = (e: string) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)
 
 app.post('/claim', async (c) => {
   const body = await c.req.parseBody()
@@ -2114,9 +2192,62 @@ app.post('/claim', async (c) => {
   const name = String(body.name || '').trim().slice(0, 60)
   const email = String(body.email || '').toLowerCase().trim()
   const refSlug = slugify(String(body.ref || ''))
+  const form = (extra: Partial<Parameters<typeof ClaimForm>[0]>) => <ClaimForm address={address} name={name} email={email} refSlug={refSlug || undefined} {...extra} />
+
   const unavailable = await slugAvailability(address)
-  if (unavailable) return c.html(<ClaimForm address={address} refSlug={refSlug || undefined} error={unavailable} />)
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return c.html(<ClaimForm address={address} refSlug={refSlug || undefined} error="That email address doesn't look right." />)
+  if (unavailable) return c.html(form({ error: unavailable }))
+  if (!emailLooksValid(email)) return c.html(form({ error: "That email address doesn't look right." }))
+
+  const info = await ocCollectiveInfo(address)
+  if (info.kind === 'contactable') {
+    const ok = await issueCode(email, 'claim', { name, claimSlug: address, claimRef: refSlug || undefined },
+      (code) => sendOcVerificationCode(address, code))
+    if (!ok) return c.html(form({ oc: { kind: 'contactable', name: info.name, admins: info.admins }, error: "We couldn't reach the collective's admins just now — try again in a moment, or email hello@collective.email." }))
+    return c.html(<CodeForm email={email} sentToAdmins={info.name} />)
+  }
+  if (info.kind === 'uncontactable') {
+    return c.html(form({ oc: { kind: 'uncontactable', name: info.name } }))
+  }
+  if (info.kind === 'unknown' && await ocSlugTaken(address)) {
+    // Can't verify ownership (no OC token / API down) but the name exists there — don't let it be squatted.
+    return c.html(form({ error: `"${address}" belongs to a collective on opencollective.com — we couldn't verify ownership automatically. Email hello@collective.email and we'll sort it out.` }))
+  }
+  // none, or unknown-and-free → ordinary claim to the personal email
+  await issueCode(email, 'claim', { name, claimSlug: address, claimRef: refSlug || undefined })
+  return c.html(<CodeForm email={email} />)
+})
+
+/** Fallback ownership proof: the admin pasted our token into the collective's
+ *  OC description. Verify it's there, then send the code to their personal email. */
+app.post('/claim/oc-verify', async (c) => {
+  const body = await c.req.parseBody()
+  const address = String(body.address || '').toLowerCase().trim()
+  const name = String(body.name || '').trim().slice(0, 60)
+  const email = String(body.email || '').toLowerCase().trim()
+  const refSlug = slugify(String(body.ref || ''))
+  const form = (extra: Partial<Parameters<typeof ClaimForm>[0]>) => <ClaimForm address={address} name={name} email={email} refSlug={refSlug || undefined} {...extra} />
+
+  const unavailable = await slugAvailability(address)
+  if (unavailable) return c.html(form({ error: unavailable }))
+  if (!emailLooksValid(email)) return c.html(form({ error: "That email address doesn't look right." }))
+
+  const info = await ocCollectiveInfo(address)
+  if (info.kind === 'contactable') {
+    // became reachable — send via the contact form instead
+    const ok = await issueCode(email, 'claim', { name, claimSlug: address, claimRef: refSlug || undefined }, (code) => sendOcVerificationCode(address, code))
+    if (!ok) return c.html(form({ oc: { kind: 'contactable', name: info.name, admins: info.admins }, error: 'Try again in a moment.' }))
+    return c.html(<CodeForm email={email} sentToAdmins={info.name} />)
+  }
+  if (info.kind !== 'uncontactable') {
+    // no collective / can't check → just proceed as an ordinary claim
+    await issueCode(email, 'claim', { name, claimSlug: address, claimRef: refSlug || undefined })
+    return c.html(<CodeForm email={email} />)
+  }
+  const found = await ocDescriptionContains(address, `collective.email:${ocVerifyToken(address)}`)
+  if (!found) {
+    return c.html(form({ oc: { kind: 'uncontactable', name: info.name }, error: "We couldn't find that line in the collective's description yet. Save it on Open Collective (it can take a moment) and try again." }))
+  }
+  // profile edit proves admin control → deliver the code to the personal email
   await issueCode(email, 'claim', { name, claimSlug: address, claimRef: refSlug || undefined })
   return c.html(<CodeForm email={email} />)
 })

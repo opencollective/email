@@ -46,6 +46,11 @@ export const cfg = {
   /** Platform admin: can access /admin and convert waitlist entries into collectives. */
   adminEmail: env('ADMIN_EMAIL').toLowerCase().trim(),
   resendKey: secretEnv('RESEND_API_KEY'),
+  /** Open Collective personal token (of a dedicated Individual). Enables
+   *  ownership verification: claiming an existing opencollective.com/<slug>
+   *  sends the code to that collective's admins. Unset → falls back to
+   *  blocking existing OC names (no self-serve ownership proof). */
+  ocToken: secretEnv('OPENCOLLECTIVE_TOKEN'),
   /** Sender for app emails (login codes, notifications, digests). Must be on a Resend-verified domain. */
   resendFrom: env('RESEND_FROM', `collective.email <notifications@${emailDomain}>`),
   /** Signing secret of the Resend webhook endpoint (svix, `whsec_…`). Empty disables verification (dev only). */
@@ -64,6 +69,7 @@ export function warnMissingConfig() {
   if (!cfg.resendKey) notes.push('RESEND_API_KEY not set — all email (login codes, notifications, replies, inbound fetch) is disabled; emails are logged to stdout.')
   if (!cfg.resendWebhookSecret) notes.push('RESEND_WEBHOOK_SECRET not set — inbound webhook signatures are NOT verified. Fine in dev, not in production.')
   if (!cfg.adminEmail) notes.push('ADMIN_EMAIL not set — nobody can access /admin to create collectives.')
+  if (!cfg.ocToken) notes.push('OPENCOLLECTIVE_TOKEN not set — existing opencollective.com names are blocked (no self-serve ownership verification).')
   if (isVercel && cfg.dbUrl.startsWith('file:')) notes.push('Running on Vercel without TURSO_DATABASE_URL — the file: database lives in /tmp and WILL be lost between invocations.')
   if (isVercel && !cfg.blobToken) notes.push('Running on Vercel without BLOB_READ_WRITE_TOKEN — attachments in /tmp WILL be lost between invocations.')
   for (const n of notes) console.warn(`[config] ${n}`)
