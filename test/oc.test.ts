@@ -5,7 +5,6 @@ import { app } from '../src/app.js'
 import { cfg } from '../src/config.js'
 import { get } from '../src/db.js'
 import { __setOcFetcher } from '../src/oc.js'
-import { ocVerifyToken } from '../src/claim.js'
 
 let seq = 0
 const uniq = () => `oc${Date.now() % 100000}${++seq}`
@@ -58,7 +57,7 @@ test('live check: none / contactable / uncontactable', async () => {
   fake.accounts[s3] = { name: 'Inactive Co', contactForm: 'UNSUPPORTED', admins: ['Xavier'] }
   r = await (await app.request(`/claim/oc?slug=${s3}`)).json() as any
   assert.equal(r.oc.kind, 'uncontactable')
-  assert.equal(r.oc.token, ocVerifyToken(s3))
+  assert.equal(r.oc.token, undefined, 'no random token — the proof is the public address in the description')
 })
 
 test('claiming a contactable collective sends the code via OC, not to the personal email', async () => {
@@ -83,7 +82,7 @@ test('an uncontactable collective cannot be claimed until the description token 
   // plain submit → no code, form comes back asking for the description proof
   let res = await claim('/claim', { address: slug, name: 'X', email: mail })
   let html = await res.text()
-  assert.match(html, /add this line/i)
+  assert.match(html, /advertise it there anyway/i)
   assert.equal(await get<any>('SELECT id FROM login_codes WHERE email = ?', [mail]), undefined, 'no code issued')
 
   // verify before adding the token → still refused
@@ -92,7 +91,7 @@ test('an uncontactable collective cannot be claimed until the description token 
   assert.equal(await get<any>('SELECT id FROM login_codes WHERE email = ?', [mail]), undefined)
 
   // add the token to the description → verify passes, code goes to the personal email
-  fake.accounts[slug].description = `We do good things. collective.email:${ocVerifyToken(slug)}`
+  fake.accounts[slug].description = `We do good things. Reach us at ${slug}@collective.email!`
   res = await claim('/claim/oc-verify', { address: slug, name: 'X', email: mail })
   assert.match(await res.text(), /check your inbox/i)
   const row = await get<any>('SELECT claim_slug FROM login_codes WHERE email = ?', [mail])

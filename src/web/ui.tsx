@@ -188,7 +188,7 @@ export const Page: FC<{ title?: string; flash?: string; children?: Child }> = (p
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=12" />
+      <link rel="stylesheet" href="/static/style.css?v=13" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script
@@ -273,13 +273,17 @@ export const Shell: FC<{
       <div class="app">
         {/* desktop sidebar */}
         <aside class="side">
-          <a class="org" href={base}>
-            <span class="mark">{initials(props.collective.name)}</span>
-            <div>
-              <span class="org-name">{props.collective.name}</span>
-              <small>{addr}</small>
-            </div>
-          </a>
+          <div class="org-wrap">
+            <a class="org" href={base} data-org data-slug={props.collective.slug}>
+              <span class="mark">{initials(props.collective.name)}</span>
+              <div>
+                <span class="org-name">{props.collective.name}</span>
+                <small>{addr}</small>
+              </div>
+              <span class="org-caret" hidden aria-hidden="true">⌄</span>
+            </a>
+            <div class="org-menu" hidden />
+          </div>
           {props.sidebar}
           <div class="label">Menu</div>
           <Menu base={base} active={props.active} isAdmin={isAdmin} />
@@ -299,12 +303,16 @@ export const Shell: FC<{
         <div class="drawer" aria-hidden="true">
           <div class="drawer-backdrop" data-drawer />
           <div class="drawer-panel">
-            <div class="org">
-              <span class="mark">{initials(props.collective.name)}</span>
-              <div>
-                <span class="org-name">{props.collective.name}</span>
-                <small>{addr}</small>
-              </div>
+            <div class="org-wrap">
+              <a class="org" href={base} data-org data-slug={props.collective.slug}>
+                <span class="mark">{initials(props.collective.name)}</span>
+                <div>
+                  <span class="org-name">{props.collective.name}</span>
+                  <small>{addr}</small>
+                </div>
+                <span class="org-caret" hidden aria-hidden="true">⌄</span>
+              </a>
+              <div class="org-menu" hidden />
             </div>
             <Menu base={base} active={props.active} isAdmin={isAdmin} />
             <div class="drawer-foot">{userBlock}</div>
@@ -337,8 +345,46 @@ export const Shell: FC<{
           {props.children}
         </main>
       </div>
+      <script dangerouslySetInnerHTML={{ __html: SWITCHER_SCRIPT }} />
     </Page>
   )
 }
+
+/** Collective switcher: upgrades the org block into a dropdown when the user
+ *  belongs to more than one mailbox. Progressive enhancement — without JS the
+ *  org block stays a plain link to the current inbox. */
+const SWITCHER_SCRIPT = `
+(function(){
+  fetch('/mailboxes').then(function(r){return r.json();}).then(function(d){
+    var boxes=(d&&d.mailboxes)||[];
+    if(boxes.length<2) return;
+    function esc(s){var e=document.createElement('div');e.textContent=s==null?'':s;return e.innerHTML;}
+    document.querySelectorAll('[data-org]').forEach(function(org){
+      var current=org.getAttribute('data-slug');
+      var caret=org.querySelector('.org-caret');
+      var menu=org.parentElement.querySelector('.org-menu');
+      if(caret) caret.hidden=false;
+      menu.innerHTML=boxes.map(function(b){
+        var badges='';
+        if(b.needsReply>0) badges+='<span class="ob-badge ob-wait" title="conversations waiting for a reply">'+b.needsReply+' waiting</span>';
+        if(b.mine>0) badges+='<span class="ob-badge ob-mine" title="assigned to you">'+b.mine+' yours</span>';
+        return '<a class="org-item'+(b.slug===current?' on':'')+'" href="/inbox/'+encodeURIComponent(b.slug)+'">'+
+          '<span class="oi-main"><b>'+esc(b.name)+'</b><small>'+esc(b.slug)+'@collective.email</small></span>'+
+          '<span class="oi-badges">'+badges+'</span></a>';
+      }).join('');
+      org.addEventListener('click',function(e){
+        e.preventDefault();
+        var open=!menu.hidden;
+        document.querySelectorAll('.org-menu').forEach(function(m){m.hidden=true;});
+        menu.hidden=open;
+      });
+    });
+    document.addEventListener('click',function(e){
+      if(e.target.closest('[data-org]')||e.target.closest('.org-menu')) return;
+      document.querySelectorAll('.org-menu').forEach(function(m){m.hidden=true;});
+    });
+  }).catch(function(){});
+})();
+`
 
 export const TimeAgo: FC<{ ts: number | null }> = ({ ts }) => <span class="time" title={ts ? new Date(ts * 1000).toISOString() : ''}>{relTime(ts)}</span>

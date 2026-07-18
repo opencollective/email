@@ -55,10 +55,6 @@ export async function slugAvailability(slug: string): Promise<string | null> {
   return null
 }
 
-/** Stable per-slug token an admin pastes into their collective's OC description
- *  to prove control when the contact form is unavailable. Not secret — it only
- *  proves the paster can edit that specific collective's public profile. */
-export const ocVerifyToken = (slug: string) => hmac(`ocverify:${slug}`, 10)
 
 /** Discount codes are bound to the slug they unlock.
  *  `<slug>-<m>m-XXXXXXXX` grants a free trial of m months;

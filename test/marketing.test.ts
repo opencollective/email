@@ -76,3 +76,36 @@ test('admin data archive: browsable inbox.html + canonical JSON + attachments', 
   const res2 = await app.request(`/inbox/${col.slug}/export`, { headers: { cookie: `requests_sid=${readerSid}` } })
   assert.equal(res2.status, 302, 'non-admins are redirected')
 })
+
+test('/mailboxes lists the user\'s collectives with waiting + assigned counts', async () => {
+  const { createCollective, run, get } = await import('../src/db.js')
+  const { createSession } = await import('../src/auth.js')
+  const { now } = await import('../src/util.js')
+  const email = `multi-${Date.now() % 100000}@t.test`
+
+  const a = await createCollective(`mba${Date.now() % 100000}`, 'Alpha')
+  const b = await createCollective(`mbb${Date.now() % 100000}`, 'Beta')
+  for (const col of [a, b]) {
+    await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)', [col.id, email, 'M', 'admin', 'every', now()])
+  }
+  const am = (await get<any>('SELECT id FROM members WHERE collective_id = ? AND email = ?', [a.id, email]))!.id
+  // Alpha: 2 waiting (one assigned to me), Beta: 1 waiting unassigned
+  await run(`INSERT INTO threads (collective_id, subject, status, counterpart_email, first_message_at, last_message_at, last_direction, created_at, updated_at) VALUES (?, 'w', 'needs_reply', 'p@x.t', ?, ?, 'inbound', ?, ?)`, [a.id, now(), now(), now(), now()])
+  await run(`INSERT INTO threads (collective_id, subject, status, counterpart_email, assignee_member_id, first_message_at, last_message_at, last_direction, created_at, updated_at) VALUES (?, 'mine', 'needs_reply', 'p@x.t', ?, ?, ?, 'inbound', ?, ?)`, [a.id, am, now(), now(), now(), now()])
+  await run(`INSERT INTO threads (collective_id, subject, status, counterpart_email, first_message_at, last_message_at, last_direction, created_at, updated_at) VALUES (?, 'w', 'needs_reply', 'p@x.t', ?, ?, 'inbound', ?, ?)`, [b.id, now(), now(), now(), now()])
+
+  const sid = await createSession(email)
+  const res = await app.request('/mailboxes', { headers: { cookie: `requests_sid=${sid}` } })
+  const { mailboxes } = await res.json() as any
+  assert.equal(mailboxes.length, 2)
+  const alpha = mailboxes.find((m: any) => m.name === 'Alpha')
+  assert.equal(alpha.needsReply, 2)
+  assert.equal(alpha.mine, 1)
+  const beta = mailboxes.find((m: any) => m.name === 'Beta')
+  assert.equal(beta.needsReply, 1)
+  assert.equal(beta.mine, 0)
+
+  // signed-out → empty
+  const anon = await app.request('/mailboxes')
+  assert.deepEqual((await anon.json() as any).mailboxes, [])
+})

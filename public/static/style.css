@@ -197,6 +197,27 @@ small { color: var(--muted); }
 .danger-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .main { min-width: 0; }
 a.org { text-decoration: none; }
+.org-wrap { position: relative; }
+.org .org-caret { margin-left: auto; color: var(--muted); font-size: 13px; align-self: center; }
+a.org:hover .org-caret { color: var(--ink); }
+.org-menu {
+  position: absolute; top: calc(100% - 8px); left: 0; right: 0; z-index: 30;
+  background: var(--card); border: 1.5px solid var(--line); border-radius: 12px;
+  box-shadow: var(--shadow); padding: 6px; display: flex; flex-direction: column; gap: 2px;
+  max-height: 60vh; overflow-y: auto;
+}
+.org-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; text-decoration: none; color: var(--ink); }
+.org-item:hover { background: var(--fill); }
+.org-item.on { background: var(--fill); }
+.oi-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.oi-main b { font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oi-main small { font-family: var(--mono); font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oi-badges { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; flex: none; }
+.ob-badge { font-size: 10.5px; font-weight: 700; border-radius: 999px; padding: 1px 7px; white-space: nowrap; }
+.ob-wait { color: var(--warn); background: var(--warn-bg); }
+.ob-mine { color: var(--accent); background: var(--fill); }
+/* in the mobile drawer the menu flows inline rather than floating */
+.drawer-panel .org-menu { position: static; margin-top: 6px; box-shadow: none; }
 
 /* ---------- mobile header + drawer ---------- */
 .m-head { display: none; }

@@ -18,7 +18,7 @@ import { backupTick } from '../backup.js'
 import { CONTRIBUTE_SLUG, creditBalance, creditsLedger, creditsTick, fileContribution, mintCredits, referralUrl , PRO_MONTH_CREDITS } from '../credits.js'
 import {
   approveApplication, checkDiscountCode, discountCodeFor, fileApplication, fileProApplication,
-  ocSlugTaken, ocVerifyToken, slugAvailability,
+  ocSlugTaken, slugAvailability,
 } from '../claim.js'
 import { ocCollectiveInfo, ocDescriptionContains, sendOcVerificationCode, type OcStatus } from '../oc.js'
 import { sendAppEmail } from '../appmail.js'
@@ -358,6 +358,22 @@ const doLogout = async (c: Context<Env>) => {
 }
 app.post('/logout', doLogout)
 app.get('/logout', doLogout) // force sign-out by URL
+
+/** All mailboxes the signed-in user belongs to, with live counts, for the
+ *  collective switcher. One query; only fetched when the switcher is opened. */
+app.get('/mailboxes', async (c) => {
+  const email = c.get('email')
+  if (!email) return c.json({ mailboxes: [] })
+  const rows = await all<{ slug: string; name: string; needs_reply: number; mine: number }>(`
+    SELECT c.slug, c.name,
+      (SELECT COUNT(*) FROM threads t WHERE t.collective_id = c.id AND t.status = 'needs_reply') AS needs_reply,
+      (SELECT COUNT(*) FROM threads t WHERE t.collective_id = c.id AND t.assignee_member_id = m.id AND t.status IN ('needs_reply','answered')) AS mine
+    FROM members m JOIN collectives c ON c.id = m.collective_id
+    WHERE m.email = ? AND m.removed_at IS NULL AND c.status = 'active'
+    ORDER BY needs_reply DESC, c.name COLLATE NOCASE
+  `, [email.toLowerCase().trim()])
+  return c.json({ mailboxes: rows.map((r) => ({ slug: r.slug, name: r.name, needsReply: r.needs_reply, mine: r.mine })) })
+})
 
 // ---------- join via invite ----------
 
@@ -2099,7 +2115,7 @@ const ClaimForm = (p: {
   oc?: { kind: 'contactable' | 'uncontactable'; name: string; admins?: string[] }
 }) => {
   const uncontactable = p.oc?.kind === 'uncontactable'
-  const token = uncontactable ? ocVerifyToken(p.address || '') : ''
+  const claimAddr = `${p.address || ''}@${cfg.emailDomain}`
   return (
     <AuthCard title="Claim your address" flash={p.error}>
       <h1>Claim your address</h1>
@@ -2115,7 +2131,7 @@ const ClaimForm = (p: {
           {p.oc?.kind === 'contactable' ? (
             <span class="oc-ok">🔒 <b>{p.oc.name}</b> is a collective on Open Collective. To confirm you're part of it, your code goes to its {p.oc.admins!.length} admin{p.oc.admins!.length === 1 ? '' : 's'}: {p.oc.admins!.join(', ')}.</span>
           ) : uncontactable ? (
-            <span class="oc-warn">⚠ <b>{p.oc!.name}</b> exists on Open Collective but its contact form is off, so we can't message its admins. To prove you manage it, add this line anywhere in the collective's description on opencollective.com/{p.address}: <code>collective.email:{token}</code> — then use the button below. Or email hello@collective.email.</span>
+            <span class="oc-warn">⚠ <b>{p.oc!.name}</b> exists on Open Collective, but its contact form is off so we can't message its admins. To prove you manage it, add <code>{claimAddr}</code> to the collective's description on opencollective.com/{p.address} — you'll want to advertise it there anyway — then use the button below. Or email hello@collective.email.</span>
           ) : (
             <span class="fineprint">At least 6 characters — letters and numbers only.</span>
           )}
@@ -2154,7 +2170,7 @@ const CLAIM_SCRIPT = `
     }else if(oc.kind==='uncontactable'){
       submit.classList.add('hidden');submit.disabled=true;
       verify.classList.remove('hidden');
-      status.innerHTML='<span class="oc-warn">⚠ <b>'+esc(oc.name)+'</b> exists on Open Collective but its contact form is off, so we can\\'t message its admins. To prove you manage it, add this line anywhere in the collective\\'s description on opencollective.com/'+esc(slug)+': <code>collective.email:'+esc(oc.token)+'</code> — then click below. Or email hello@collective.email.</span>';
+      status.innerHTML='<span class="oc-warn">⚠ <b>'+esc(oc.name)+'</b> exists on Open Collective, but its contact form is off so we can\\'t message its admins. To prove you manage it, add <code>'+esc(slug)+'@collective.email</code> to the collective\\'s description on opencollective.com/'+esc(slug)+' — you\\'ll want to advertise it there anyway — then click below. Or email hello@collective.email.</span>';
     }else{
       status.innerHTML='<span class="fineprint">At least 6 characters — letters and numbers only.</span>';
     }
@@ -2179,7 +2195,7 @@ app.get('/claim/oc', async (c) => {
   if (unavailable) return c.json({ unavailable, oc: { kind: 'none' } })
   const info = await ocCollectiveInfo(slug)
   if (info.kind === 'contactable') return c.json({ unavailable: null, oc: { kind: 'contactable', name: info.name, admins: info.admins } })
-  if (info.kind === 'uncontactable') return c.json({ unavailable: null, oc: { kind: 'uncontactable', name: info.name, token: ocVerifyToken(slug) } })
+  if (info.kind === 'uncontactable') return c.json({ unavailable: null, oc: { kind: 'uncontactable', name: info.name } })
   // none / unknown → normal claim (unknown is resolved server-side on submit)
   return c.json({ unavailable: null, oc: { kind: 'none' } })
 })
@@ -2243,7 +2259,7 @@ app.post('/claim/oc-verify', async (c) => {
     await issueCode(email, 'claim', { name, claimSlug: address, claimRef: refSlug || undefined })
     return c.html(<CodeForm email={email} />)
   }
-  const found = await ocDescriptionContains(address, `collective.email:${ocVerifyToken(address)}`)
+  const found = await ocDescriptionContains(address, `${address}@${cfg.emailDomain}`)
   if (!found) {
     return c.html(form({ oc: { kind: 'uncontactable', name: info.name }, error: "We couldn't find that line in the collective's description yet. Save it on Open Collective (it can take a moment) and try again." }))
   }
