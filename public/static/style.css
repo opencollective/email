@@ -206,6 +206,7 @@ a.org:hover .org-caret { color: var(--ink); }
   box-shadow: var(--shadow); padding: 6px; display: flex; flex-direction: column; gap: 2px;
   max-height: 60vh; overflow-y: auto;
 }
+.org-menu[hidden] { display: none; } /* author display:flex would otherwise override the UA [hidden] rule */
 .org-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; text-decoration: none; color: var(--ink); }
 .org-item:hover { background: var(--fill); }
 .org-item.on { background: var(--fill); }
