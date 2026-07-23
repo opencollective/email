@@ -167,3 +167,31 @@ test('stale pending reservations are released after 48h', async () => {
   const owners = await all<any>('SELECT m.email FROM members m JOIN collectives c ON c.id = m.collective_id WHERE c.slug = ?', [slug])
   assert.deepEqual(owners.map((o) => o.email), [email2])
 })
+
+test('the free trial is self-serve: one click starts one month, and only once', async () => {
+  const slug = `trial${uniq()}`
+  const email = `tr-${uniq()}@t.test`
+  await verifiedClaim(slug, email)
+  const sid = await createSession(email)
+
+  const res = await app.request(`/claim/${slug}/trial`, {
+    method: 'POST',
+    headers: { cookie: `requests_sid=${sid}`, 'content-type': 'application/x-www-form-urlencoded' },
+    body: '',
+  })
+  assert.match(decodeURIComponent(res.headers.get('location')!), /your free month has started/)
+  const col = (await get<any>('SELECT * FROM collectives WHERE slug = ?', [slug]))!
+  assert.equal(col.status, 'active')
+  assert.ok(col.trial_ends_at > now() + 29 * 86400 && col.trial_ends_at < now() + 31 * 86400, 'exactly one month')
+  assert.ok(col.activated_at, 'activation stamped (referral clock starts)')
+
+  // a second click cannot extend it — the status guard blocks re-taking the trial
+  const before = col.trial_ends_at
+  const again = await app.request(`/claim/${slug}/trial`, {
+    method: 'POST',
+    headers: { cookie: `requests_sid=${sid}`, 'content-type': 'application/x-www-form-urlencoded' },
+    body: '',
+  })
+  assert.equal(again.status, 404, 'no longer a pending claim')
+  assert.equal((await get<any>('SELECT trial_ends_at FROM collectives WHERE slug = ?', [slug]))!.trial_ends_at, before)
+})

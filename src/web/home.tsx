@@ -499,7 +499,6 @@ export const HomePage: FC<{ joined?: boolean; currency?: 'USD' | 'EUR' }> = ({ j
                 <a class="btn ghost" href="/claim">Claim your address</a>
               </div>
             </div>
-            <p class="foot">Prices are the same in USD and EUR — you're seeing {currency === 'EUR' ? 'euros' : 'dollars'} based on your location. Addresses of lapsed trials are released, so nobody can squat a name. Something special needed? Email hello@collective.email — we're building this with the first collectives.</p>
           </section>
 
           

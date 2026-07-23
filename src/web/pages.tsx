@@ -29,7 +29,7 @@ export const FaqPage: FC<{ currency?: 'USD' | 'EUR' }> = ({ currency = 'USD' }) 
     </Q>
 
     <Q q="Can we use our own domain, like hello@ourcollective.org?">
-      <p>Yes — that's the <b>Pro plan</b>, and it's self-serve from the <b>Your domain</b> page. Two ways to receive: keep your current mailbox and simply <b>add a forward</b> (Gmail's confirmation email lands right in your shared inbox — one click), or point your domain's MX records at us for a full takeover. To <b>send</b> as your domain you add a few DNS records (DKIM + SPF) — being able to add them is the ownership proof — and the moment they verify, replies go out as hello@ourcollective.org. Until then, replies are sent from your @collective.email address with your domain in the display name. Pay for Pro like everything here: subscribe, redeem a code, spend credits, or apply by contributing.</p>
+      <p>Yes — that's the <b>Pro plan</b>, and it's self-serve from the <b>Your domain</b> page. Two ways to receive: keep your current mailbox and simply <b>add a forward</b> (Gmail's confirmation email lands right in your shared inbox — one click), or point your domain's MX records at us for a full takeover. To <b>send</b> as your domain you add a few DNS records (DKIM + SPF) — being able to add them is the ownership proof — and the moment they verify, replies go out as hello@ourcollective.org. Until then, replies are sent from your @collective.email address with your domain in the display name. Pay for Pro like everything here: subscribe, redeem a code, or spend credits.</p>
     </Q>
 
     <Q q="Who gets notified when an email arrives?">
@@ -45,7 +45,7 @@ export const FaqPage: FC<{ currency?: 'USD' | 'EUR' }> = ({ currency = 'USD' }) 
     </Q>
 
     <Q q="How much does it cost? Is there a free plan?">
-      <p>The Collective plan is {s}10 a month — up to 10 senders, 1,000 replies a month, unlimited readers and commenters. Pro is {s}100 a month with your own domain and room to grow. There is <b>no free plan</b> — but there are two other ways to pay: apply for a trial by offering a contribution (onboarding another collective, writing a tutorial, spreading the word…), or earn credits by referring collectives that actually use it. One credit is one month of service.</p>
+      <p>Every collective starts with a <b>free month</b> — no card needed. After that the Collective plan is {s}10 a month: up to 10 senders, 1,000 replies a month, unlimited readers and commenters. Pro is {s}100 a month with your own domain and room to grow. You can also earn credits by referring collectives that actually use it — one credit is one month of service.</p>
     </Q>
 
     <Q q="What happens if we stop paying?">
@@ -100,7 +100,7 @@ export const DocsPage: FC<{ currency?: 'USD' | 'EUR' }> = ({ currency = 'USD' })
       <h2>Getting started</h2>
       <ol>
         <li><b>Claim your address</b> at <a href="/claim">/claim</a> — at least 6 characters, letters and numbers. We email you a 6-digit code to confirm; the address is then reserved for you for 48 hours.</li>
-        <li><b>Activate it</b>: subscribe ({s}10 a month), redeem a discount code, or apply for a trial by telling us what you'll contribute instead.</li>
+        <li><b>Activate it</b>: start your <b>free month</b> (one click, no card), subscribe ({s}10 a month), or redeem a discount code.</li>
         <li><b>Invite your collective</b> — share one link, no accounts to create for anyone.</li>
       </ol>
       <p>The address works immediately: put it on your website, flyers, anywhere.</p>
@@ -150,9 +150,8 @@ export const DocsPage: FC<{ currency?: 'USD' | 'EUR' }> = ({ currency = 'USD' })
       <p><b>Credits</b>: 1 credit = 1 month of service, and they're used automatically if a subscription or trial lapses (after which the inbox is read-only for a 30-day grace period). You earn credits by:</p>
       <ul>
         <li><b>Referring collectives</b> — share your referral link from the Billing page. You earn a credit once the collective you brought has been active for a month and is really using its inbox.</li>
-        <li><b>Contributing</b> — onboarding other collectives, writing tutorials or blog posts, translating, running a workshop… Tell us what you did (or want to do) from the Billing page and we'll grant credits.</li>
       </ul>
-      <p>There's no free plan on purpose: everyone pays in money or in contribution, so the tool is sustained by the collectives it serves.</p>
+      <p>After the free month, the tool is sustained by the collectives it serves rather than by ads or investors.</p>
     </section>
 
     <section id="domain">
@@ -163,7 +162,7 @@ export const DocsPage: FC<{ currency?: 'USD' | 'EUR' }> = ({ currency = 'USD' })
         <li><b>Receiving</b> — pick one: keep your current mailbox and <b>add a forward</b> to your @collective.email address (Gmail sends a confirmation that appears right in your shared inbox; there's a “send a test” button to prove the loop works), or point your domain's <b>MX records</b> at us for a full takeover. Careful with MX: personal mailboxes at the same domain stop working, so use forwarding if anyone has one.</li>
         <li><b>Sending</b> — add the DKIM and SPF records shown on the page wherever your DNS lives (Cloudflare, Gandi, OVH…). Adding them is the ownership proof. Hit “Check verification”; the moment it turns green, replies go out as your domain. Until then they're sent from your @collective.email address with your domain in the display name — honest and deliverable.</li>
       </ol>
-      <p>Your website and everything else on the domain are untouched. Pro can be paid like everything here: subscription, discount code, credits (a Pro month is 10 credits), or an application with a contribution.</p>
+      <p>Your website and everything else on the domain are untouched. Pro can be paid like everything here: subscription, discount code, or credits (a Pro month is 10 credits).</p>
     </section>
 
     <section id="app">
@@ -200,7 +199,7 @@ export const AboutPage: FC<{ currency?: 'USD' | 'EUR' }> = ({ currency = 'USD' }
 
     <p>Two principles behind it:</p>
     <ul>
-      <li><b>No free plan, no ads.</b> Tools for communities should be sustained by the communities they serve. You pay {s}10 a month — or you contribute instead: onboard another collective, write a tutorial, translate, spread the word. Contribution is a currency here, literally: it earns credits, and a credit is a month of service.</li>
+      <li><b>No ads, no investors.</b> Tools for communities should be sustained by the communities they serve. You get a free month to try it, then it's {s}10 a month — and referring other collectives earns you credits, one credit being one month of service.</li>
       <li><b>Built with its users.</b> This started as the shared inbox for the Commons Hub in Brussels and is shaped daily by the first collectives using it. If something's missing, <a href="mailto:hello@collective.email">tell us</a> — that address is, of course, a shared inbox.</li>
     </ul>
 

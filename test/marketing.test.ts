@@ -8,7 +8,7 @@ test('marketing pages render with their key content', async () => {
   assert.equal(faq.status, 200)
   const faqHtml = await faq.text()
   assert.match(faqHtml, /own domain/i)
-  assert.match(faqHtml, /no free plan/i)
+  assert.match(faqHtml, /free month/i)
 
   const docs = await app.request('/docs')
   assert.equal(docs.status, 200)

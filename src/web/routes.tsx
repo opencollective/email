@@ -1664,13 +1664,7 @@ app.get('/inbox/:addr/billing', async (c) => {
           <p class="muted"><b>{String(await creditBalance(collective.id))} credit{(await creditBalance(collective.id)) === 1 ? '' : 's'}</b> — 1 credit = 1 month of service, used automatically when a paid period or trial lapses.</p>
           <span class="kv"><span class="k">EARN</span> <span>Refer another collective: <code class="invite-url" style="padding:2px 8px">{referralUrl(collective.slug)}</code> <button class="btn small ghost" type="button" data-copy={referralUrl(collective.slug)}>Copy</button></span></span>
           <p class="fineprint">You earn 1 credit when a collective you referred has been active for a month and is really using its inbox.</p>
-          <details>
-            <summary class="fineprint" style="cursor:pointer">Contribute to earn credits (translations, workshops, spreading the word…)</summary>
-            <form method="post" action={`${base}/billing/contribute`} class="me-form" style="margin-top:10px">
-              <textarea name="text" rows={3} minlength={20} placeholder="What did you do (or want to do) for the collective.email community?" required></textarea>
-              <div class="btn-row"><button class="btn small ghost" type="submit" data-busy="Sending…">Submit contribution</button></div>
-            </form>
-          </details>
+          {/* Contribute-to-earn-credits is hidden for now (POST /billing/contribute still exists). */}
           {(await creditsLedger(collective.id, 8)).length > 0 ? (
             <div class="admin-list">
               {(await creditsLedger(collective.id, 8)).map((l) => (
@@ -1796,22 +1790,10 @@ const DomainUpsell = (p: { base: string; balance: number; currency: 'eur' | 'usd
             <button class="btn small" type="submit" data-busy="Redeeming…">Use {String(PRO_MONTH_CREDITS)} credits → 1 month of Pro</button>
           </form>
         ) : (
-          <p class="fineprint">Earn more by referring collectives or contributing (see Billing).</p>
+          <p class="fineprint">Earn more by referring collectives (see Billing).</p>
         )}
       </section>
-
-      <section class="card">
-        <h2>Apply — pay by contributing</h2>
-        <p class="muted">There are no free months here either. Tell us what you'll contribute and how long you need; a human reads every application.</p>
-        <form method="post" action={`${p.base}/domain/apply`} class="me-form">
-          <textarea name="contribution" rows={3} minlength={30} placeholder="Onboard other collectives, write a tutorial, run a workshop, translate the interface… what would you like to contribute?" required></textarea>
-          <label class="lbl">How many months of Pro do you need?</label>
-          <select class="input" name="months">
-            {[1, 2, 3, 6, 12].map((m) => <option value={String(m)} selected={m === 2}>{m} month{m > 1 ? 's' : ''}</option>)}
-          </select>
-          <div class="btn-row"><button class="btn small ghost" type="submit" data-busy="Sending…">Send application</button></div>
-        </form>
-      </section>
+      {/* Pay-by-contribution applications are hidden for now (POST /domain/apply still exists). */}
     </div>
   )
 }
@@ -2111,7 +2093,7 @@ app.post('/inbox/:addr/billing/portal', async (c) => {
  *  in sync as the slug is typed). `oc` present only after a submit that surfaced
  *  a contactable/uncontactable collective. */
 const ClaimForm = (p: {
-  address?: string; name?: string; email?: string; error?: string; refSlug?: string
+  address?: string; name?: string; email?: string; error?: string; slugError?: string; refSlug?: string
   oc?: { kind: 'contactable' | 'uncontactable'; name: string; admins?: string[] }
 }) => {
   const uncontactable = p.oc?.kind === 'uncontactable'
@@ -2128,7 +2110,9 @@ const ClaimForm = (p: {
           <span class="domain">@{cfg.emailDomain}</span>
         </span>
         <p id="oc-status" class="oc-status">
-          {p.oc?.kind === 'contactable' ? (
+          {p.slugError ? (
+            <span class="oc-bad">{p.slugError}</span>
+          ) : p.oc?.kind === 'contactable' ? (
             <span class="oc-ok">🔒 <b>{p.oc.name}</b> is a collective on Open Collective. To confirm you're part of it, your code goes to its {p.oc.admins!.length} admin{p.oc.admins!.length === 1 ? '' : 's'}: {p.oc.admins!.join(', ')}.</span>
           ) : uncontactable ? (
             <span class="oc-warn">⚠ <b>{p.oc!.name}</b> exists on Open Collective, but its contact form is off so we can't message its admins. To prove you manage it, add <code>{claimAddr}</code> to the collective's description on opencollective.com/{p.address} — you'll want to advertise it there anyway — then use the button below. Or email hello@collective.email.</span>
@@ -2163,6 +2147,7 @@ const CLAIM_SCRIPT = `
   function render(d,slug){
     normal();
     if(d.unavailable){status.innerHTML='<span class="oc-bad">'+esc(d.unavailable)+'</span>';submit.disabled=true;return;}
+    if(d.available){status.innerHTML='<span class="oc-ok">✓ '+esc(d.available)+'</span>';return;}
     var oc=d.oc||{kind:'none'};
     if(oc.kind==='contactable'){
       submit.textContent="Send the code to the collective's admins";
@@ -2182,6 +2167,7 @@ const CLAIM_SCRIPT = `
     fetch('/claim/oc?slug='+encodeURIComponent(slug)).then(function(r){return r.json();}).then(function(d){render(d,slug);}).catch(function(){});
   }
   addr.addEventListener('input',function(){clearTimeout(timer);timer=setTimeout(check,400);});
+  addr.addEventListener('blur',function(){clearTimeout(timer);check();});
   if(slugify(addr.value).length>=6) check();
 })();
 `
@@ -2196,11 +2182,17 @@ app.get('/claim/oc', async (c) => {
   const info = await ocCollectiveInfo(slug)
   if (info.kind === 'contactable') return c.json({ unavailable: null, oc: { kind: 'contactable', name: info.name, admins: info.admins } })
   if (info.kind === 'uncontactable') return c.json({ unavailable: null, oc: { kind: 'uncontactable', name: info.name } })
-  // none / unknown → normal claim (unknown is resolved server-side on submit)
-  return c.json({ unavailable: null, oc: { kind: 'none' } })
+  if (info.kind === 'unknown' && await ocSlugTaken(slug)) {
+    // Can't verify ownership (no OC token / API down) but the name exists there.
+    return c.json({ unavailable: OC_TAKEN_MSG(slug), oc: { kind: 'none' } })
+  }
+  return c.json({ unavailable: null, oc: { kind: 'none' }, available: `${slug}@${cfg.emailDomain} is available` })
 })
 
 const emailLooksValid = (e: string) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)
+
+const OC_TAKEN_MSG = (slug: string) =>
+  `"${slug}" belongs to a collective on opencollective.com — we couldn't verify ownership automatically. Email hello@collective.email and we'll sort it out.`
 
 app.post('/claim', async (c) => {
   const body = await c.req.parseBody()
@@ -2211,7 +2203,7 @@ app.post('/claim', async (c) => {
   const form = (extra: Partial<Parameters<typeof ClaimForm>[0]>) => <ClaimForm address={address} name={name} email={email} refSlug={refSlug || undefined} {...extra} />
 
   const unavailable = await slugAvailability(address)
-  if (unavailable) return c.html(form({ error: unavailable }))
+  if (unavailable) return c.html(form({ slugError: unavailable }))
   if (!emailLooksValid(email)) return c.html(form({ error: "That email address doesn't look right." }))
 
   const info = await ocCollectiveInfo(address)
@@ -2226,7 +2218,7 @@ app.post('/claim', async (c) => {
   }
   if (info.kind === 'unknown' && await ocSlugTaken(address)) {
     // Can't verify ownership (no OC token / API down) but the name exists there — don't let it be squatted.
-    return c.html(form({ error: `"${address}" belongs to a collective on opencollective.com — we couldn't verify ownership automatically. Email hello@collective.email and we'll sort it out.` }))
+    return c.html(form({ slugError: OC_TAKEN_MSG(address) }))
   }
   // none, or unknown-and-free → ordinary claim to the personal email
   await issueCode(email, 'claim', { name, claimSlug: address, claimRef: refSlug || undefined })
@@ -2244,7 +2236,7 @@ app.post('/claim/oc-verify', async (c) => {
   const form = (extra: Partial<Parameters<typeof ClaimForm>[0]>) => <ClaimForm address={address} name={name} email={email} refSlug={refSlug || undefined} {...extra} />
 
   const unavailable = await slugAvailability(address)
-  if (unavailable) return c.html(form({ error: unavailable }))
+  if (unavailable) return c.html(form({ slugError: unavailable }))
   if (!emailLooksValid(email)) return c.html(form({ error: "That email address doesn't look right." }))
 
   const info = await ocCollectiveInfo(address)
@@ -2307,22 +2299,12 @@ app.get('/claim/:slug', async (c) => {
         </form>
       </section>
 
-      {collective.status !== 'applied' ? (
-        <section class="claim-option">
-          <h2>Apply for a free trial</h2>
-          <p class="muted">There are no free months here — collectives pay {s}10 a month, <b>or contribute something instead</b>. Tell us what you'd like to contribute; a human reads every application.</p>
-          <form method="post" action={`/claim/${slug}/apply`}>
-            <textarea name="contribution" rows={4} minlength={30} placeholder="Onboard another collective, write a tutorial or a blog post, translate the interface, run a workshop, tell your network… what would you like to contribute?" required></textarea>
-            <label class="lbl">How many months of free trial do you need?</label>
-            <select class="input" name="months">
-              {[1, 2, 3, 6, 12].map((m) => <option value={String(m)} selected={m === 2}>{m} month{m > 1 ? 's' : ''}</option>)}
-            </select>
-            <div class="btn-row">
-              <button class="btn small ghost" type="submit" data-busy="Sending…">Send application</button>
-            </div>
-          </form>
-        </section>
-      ) : null}
+      <section class="claim-option">
+        <form method="post" action={`/claim/${slug}/trial`}>
+          <button class="btn ghost" type="submit" data-busy="Starting your trial…">Apply for a free trial</button>
+        </form>
+        <p class="fineprint">One month free, no card needed — your address works straight away. We'll email you before it ends.</p>
+      </section>
     </AuthCard>,
   )
 })
@@ -2370,6 +2352,26 @@ app.post('/claim/:slug/discount', async (c) => {
     redemption.duration === 'forever' ? `Welcome! ${t.collective.slug}@${cfg.emailDomain} is live${planNote}.` : `Welcome! ${t.collective.slug}@${cfg.emailDomain} is live — ${redemption.duration} months free${planNote}.`))
 })
 
+/** Self-serve free trial: one month, no card, no review. The reservation is
+ *  already email-verified (and ownership-verified for OC names), and the
+ *  status guard means a collective can only take it once. */
+app.post('/claim/:slug/trial', async (c) => {
+  const t = await pendingClaim(c)
+  if (t instanceof Response) return t
+  await run(
+    "UPDATE collectives SET status = 'active', trial_ends_at = ?, activated_at = COALESCE(activated_at, ?) WHERE id = ? AND status IN ('pending', 'applied')",
+    [now() + 30 * 86400, now(), t.collective.id],
+  )
+  const fresh = await getCollective(t.collective.id)
+  if (!fresh || fresh.status !== 'active') {
+    return c.redirect(`/claim/${t.collective.slug}?m=` + encodeURIComponent('Could not start the trial — try again or email hello@collective.email.'))
+  }
+  await sendOnboarding(fresh, t.member.email).catch(() => {})
+  return c.redirect(`/inbox/${t.collective.slug}?m=` + encodeURIComponent(
+    `Welcome! ${t.collective.slug}@${cfg.emailDomain} is live — your free month has started.`))
+})
+
+// Kept but no longer linked: pay-by-contribution applications (hidden for now).
 app.post('/claim/:slug/apply', async (c) => {
   const t = await pendingClaim(c)
   if (t instanceof Response) return t
