@@ -333,3 +333,64 @@ test('the forwarding test email round-trips into the inbox; other own-domain mai
   await ingestInbound(col, await mk('Weekly digest'))
   assert.equal((await allRows<any>('SELECT * FROM threads WHERE collective_id = ?', [col.id])).length, 1, 'other own-domain mail is still dropped (loop guard)')
 })
+
+test('google-group forward: counterpart is the original author, not the group', async () => {
+  const { ingestInbound, effectiveSender } = await import('../src/ingest.js')
+  const col = await createCollective(`gg${Date.now() % 100000}`, 'Commons Hub')
+  await run("UPDATE collectives SET plan = 'pro', custom_domain = 'commonshub.test', custom_local = 'hello', domain_status = 'verified' WHERE id = ?", [col.id])
+  const pro = (await get<any>('SELECT * FROM collectives WHERE id = ?', [col.id]))!
+
+  // Google rewrites From to the group address (DMARC) and keeps the author in
+  // Reply-To / X-Original-Sender.
+  const parsed = await simpleParser([
+    `From: 'Tidjane George' via Commons Hub <hello@commonshub.test>`,
+    'Reply-To: Tidjane George <tidjane.george@unseen-group.test>',
+    'X-Original-Sender: tidjane.george@unseen-group.test',
+    'To: hello@commonshub.test',
+    'Subject: Room hire',
+    `Message-ID: <gg-${uniq()}@groups.test>`,
+    '', 'Hi, can I hire the room?',
+  ].join('\r\n'))
+  await ingestInbound(pro, parsed)
+  const thread = await lastThread(col.id)
+  assert.equal(thread.counterpart_email, 'tidjane.george@unseen-group.test')
+  assert.equal(thread.counterpart_name, 'Tidjane George')
+  const [msg] = await threadMessages(thread.id)
+  assert.equal(msg.from_email, 'tidjane.george@unseen-group.test', 'message records the author too')
+
+  // a second author through the same group gets their own thread, not lumped in
+  const parsed2 = await simpleParser([
+    `From: 'Ada Q' via Commons Hub <hello@commonshub.test>`,
+    'Reply-To: ada@elsewhere.test',
+    'X-Original-Sender: ada@elsewhere.test',
+    'To: hello@commonshub.test',
+    'Subject: Room hire',
+    `Message-ID: <gg-${uniq()}@groups.test>`,
+    '', 'Me too please',
+  ].join('\r\n'))
+  await ingestInbound(pro, parsed2)
+  const threads = await all<Thread>('SELECT * FROM threads WHERE collective_id = ?', [col.id])
+  assert.equal(threads.length, 2, 'different authors are different counterparts')
+
+  // ordinary direct mail is untouched: Reply-To alone must NOT override From
+  const direct = await simpleParser([
+    'From: Marie <marie@sender.test>',
+    'Reply-To: other@sender.test',
+    'To: hello@commonshub.test',
+    'Subject: Direct',
+    `Message-ID: <d-${uniq()}@sender.test>`,
+    '', 'hi',
+  ].join('\r\n'))
+  assert.deepEqual(effectiveSender(direct, pro), { address: 'marie@sender.test', name: 'Marie' })
+
+  // but an X-Original-Sender marker (list rewrite to an external group address) does
+  const extGroup = await simpleParser([
+    "From: 'Bo' via Some List <somelist@googlegroups.test>",
+    'X-Original-Sender: bo@company.test',
+    'To: hello@commonshub.test',
+    'Subject: Via list',
+    `Message-ID: <l-${uniq()}@googlegroups.test>`,
+    '', 'hi',
+  ].join('\r\n'))
+  assert.equal(effectiveSender(extGroup, pro).address, 'bo@company.test')
+})

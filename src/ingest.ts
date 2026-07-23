@@ -26,6 +26,37 @@ export const addrList = (a?: AddressObject | AddressObject[]): { address: string
   return arr.flatMap((x) => x.value).map((v) => ({ address: (v.address || '').toLowerCase(), name: v.name || '' }))
 }
 
+/** Who the email is really from. Mail relayed through a group or list (e.g. a
+ *  Google Group forwarding hello@domain to us) often rewrites From to the
+ *  group's own address to satisfy DMARC — the original author survives in
+ *  X-Original-From / X-Original-Sender / Reply-To. Threading, auto-assignment
+ *  and replies must track the author, not the relay. */
+export function effectiveSender(parsed: ParsedMail, collective: Collective): { address: string; name: string } {
+  const from = addrList(parsed.from)[0] || { address: '', name: '' }
+  const ownAddrs = [
+    `${collective.slug}@${cfg.emailDomain}`,
+    collective.custom_domain && collective.custom_local ? `${collective.custom_local}@${collective.custom_domain}`.toLowerCase() : '',
+  ].filter(Boolean)
+  const own = (a: string) => !a || a.endsWith(`@${cfg.emailDomain}`) || ownAddrs.includes(a)
+  const headerAddr = (h: string): { address: string; name: string } | null => {
+    const raw = String(parsed.headers?.get(h) ?? '').trim()
+    if (!raw) return null
+    const m = raw.match(/<([^<>\s]+@[^<>\s]+)>/)
+    const address = (m ? m[1] : raw).toLowerCase().trim()
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(address)) return null
+    return { address, name: m ? raw.slice(0, raw.indexOf('<')).replace(/["']/g, '').trim() : '' }
+  }
+  // Only distrust From when a relay clearly rewrote it: it's one of our own
+  // receiving addresses, or the relay left its X-Original-* marker behind.
+  const rewritten = own(from.address) || headerAddr('x-original-sender') || headerAddr('x-original-from')
+  if (!rewritten) return from
+  const candidates = [headerAddr('x-original-from'), headerAddr('x-original-sender'), ...addrList(parsed.replyTo)]
+  const real = candidates.find((c): c is { address: string; name: string } => !!c && !own(c.address))
+  if (!real) return from
+  // Google keeps the author's name in From as "'Their Name' via Group Name"
+  return { address: real.address, name: real.name || from.name.replace(/\s+via\s+.+$/i, '').replace(/^'(.*)'$/, '$1').trim() }
+}
+
 export function isAutoSubmitted(parsed: ParsedMail): boolean {
   const h = (name: string) => String(parsed.headers?.get(name) ?? '')
   if (/^auto-(replied|generated)/i.test(h('auto-submitted'))) return true
@@ -74,14 +105,15 @@ export async function ingestInbound(
   const msgId = parsed.messageId || `<synthetic-${resendEmailId || now()}@${cfg.emailDomain}>`
   if (await get('SELECT id FROM messages WHERE rfc822_message_id = ?', [msgId])) return
 
-  const from = addrList(parsed.from)[0] || { address: '', name: '' }
+  const rawFrom = addrList(parsed.from)[0] || { address: '', name: '' }
   const tos = addrList(parsed.to)
   const ccs = addrList(parsed.cc)
   // Loop guard: never ingest mail sent from our own domain (our notifications,
   // our replies) — EXCEPT the forwarding test, whose whole point is to come
   // back around and prove the custom-domain forward works.
   const isForwardTest = /^Forwarding test for /.test(parsed.subject || '')
-  if (from.address.endsWith(`@${cfg.emailDomain}`) && !isForwardTest) return
+  if (rawFrom.address.endsWith(`@${cfg.emailDomain}`) && !isForwardTest) return
+  const from = effectiveSender(parsed, collective)
 
   const sentAt = parsed.date ? Math.floor(parsed.date.getTime() / 1000) : now()
   let thread = await findThread(collective, parsed, from.address)

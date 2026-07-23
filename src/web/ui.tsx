@@ -32,7 +32,9 @@ document.addEventListener('click', (e) => {
 const wantedPane = new URLSearchParams(location.search).get('pane');
 if (wantedPane === 'note') document.querySelector('[data-tab="note"]')?.click();
 const code = document.querySelector('input.code-input');
-if (code) { code.focus(); code.addEventListener('input', () => { if (code.value.trim().length === 6) code.form.submit(); }); }
+// requestSubmit (not submit) so the once-only submit guard below applies —
+// iOS OTP autofill can fire 'input' twice, which double-posted the code.
+if (code) { code.focus(); code.addEventListener('input', () => { if (code.value.trim().length === 6) code.form.requestSubmit(); }); }
 document.querySelectorAll('.file-input').forEach((inp) => {
   inp.addEventListener('change', () => {
     const label = inp.closest('.file-label');
@@ -80,6 +82,8 @@ document.addEventListener('change', (e) => {
 });
 
 document.addEventListener('submit', (e) => {
+  if (e.target.dataset.sent) { e.preventDefault(); return; } // a form only submits once
+  e.target.dataset.sent = '1';
   const btn = e.target.querySelector('button[type="submit"]');
   if (btn && !btn.disabled) {
     btn.dataset.label = btn.textContent;
@@ -89,6 +93,7 @@ document.addEventListener('submit', (e) => {
   }
 });
 window.addEventListener('pageshow', () => {
+  document.querySelectorAll('form[data-sent]').forEach((f) => { delete f.dataset.sent; });
   document.querySelectorAll('button.busy').forEach((b) => {
     b.disabled = false; b.classList.remove('busy');
     if (b.dataset.label) b.textContent = b.dataset.label;

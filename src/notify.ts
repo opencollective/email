@@ -4,6 +4,7 @@ import {
   type Collective, type Member, type Message, type Thread,
 } from './db.js'
 import { sendAppEmail } from './appmail.js'
+import { outboundFrom } from './outbound.js'
 import { escapeHtml, excerpt, fmtDateTime, replyAddress, signToken, waitingFor } from './util.js'
 
 const threadUrl = (c: Collective, id: number) => `${cfg.baseUrl}/inbox/${c.slug}/thread/${id}`
@@ -90,6 +91,11 @@ export async function notifyInbound(
   if (recipients.length === 0) return
 
   const senderLabel = message.from_name ? `${message.from_name} <${message.from_email}>` : message.from_email || 'unknown sender'
+  // What the collective actually receives and sends as — the custom address
+  // for Pro domains, slug@ otherwise (outboundFrom degrades until verified).
+  const inboundAddr = collective.custom_domain && collective.custom_local
+    ? `${collective.custom_local}@${collective.custom_domain}` : `${collective.slug}@${cfg.emailDomain}`
+  const { fromAddress: sendAddr } = outboundFrom(collective)
   const assignee = assigneeId ? members.find((m) => m.id === assigneeId) : undefined
   const bodyPreview = (message.body_text || '').slice(0, 4000)
   const atts = await messageAttachments(message.id)
@@ -109,13 +115,13 @@ export async function notifyInbound(
     const noteUrl = `${threadUrl(collective, thread.id)}?pane=note#composer`
 
     const html = shell(collective.name, `
-      <p style="margin:0 0 4px;font-size:13px;color:#6b7280">New message to ${escapeHtml(collective.slug)}@${escapeHtml(cfg.emailDomain)}</p>
+      <p style="margin:0 0 4px;font-size:13px;color:#6b7280">New message to ${escapeHtml(inboundAddr)}</p>
       <p style="margin:0 0 2px;font-size:16px;font-weight:700;color:#0c2d66">${escapeHtml(thread.subject)}</p>
       <p style="margin:0 0 14px;font-size:13px;color:#6b7280">From ${escapeHtml(senderLabel)} · ${fmtDateTime(message.sent_at)}</p>
       ${assignLine}
       <div style="border:1px solid #e6e8eb;border-radius:12px;padding:14px;font-size:14px;white-space:pre-wrap;margin-bottom:14px">${escapeHtml(bodyPreview)}</div>
       ${attHtml}
-      <p style="margin:0 0 12px;font-size:14px;color:#141414"><b>Just reply to this email</b> to answer ${escapeHtml(message.from_email || 'the sender')} as ${escapeHtml(collective.slug)}@${escapeHtml(cfg.emailDomain)} — the thread is assigned to you. If a teammate answers first, we stop your reply and tell you.</p>
+      <p style="margin:0 0 12px;font-size:14px;color:#141414"><b>Just reply to this email</b> to answer ${escapeHtml(message.from_email || 'the sender')} as ${escapeHtml(sendAddr)} — the thread is assigned to you. If a teammate answers first, we stop your reply and tell you.</p>
       ${(extraActions || []).map((x) => btn(x.url, x.label)).join('')}
       ${btn(assignUrl(thread.id, m.id, m.id, true), 'Assign to me — answer later')}
       ${btn(threadUrl(collective, thread.id), 'Open thread', false)}
@@ -124,7 +130,7 @@ export async function notifyInbound(
       <p style="margin:14px 0 0;font-size:12px;color:#9aa1ab"><a href="${noteUrl}" style="color:#6b7280">Add a private note</a> · <a href="${spamUrl}" style="color:#6b7280">Mark as spam</a></p>`)
 
     const text = [
-      `New message to ${collective.slug}@${cfg.emailDomain}`,
+      `New message to ${inboundAddr}`,
       `Subject: ${thread.subject}`,
       `From: ${senderLabel}`,
       assignee ? `Assigned to ${memberLabel(assignee)}${assignee.id === m.id ? ' (you)' : ''}` : 'Nobody has this yet.',
@@ -134,7 +140,7 @@ export async function notifyInbound(
       attText + `Assign to me & reply: ${assignUrl(thread.id, m.id, m.id, true)}`,
       `Open thread: ${threadUrl(collective, thread.id)}`,
       '',
-      `Or just reply to this email — your answer goes to the sender as ${collective.slug}@${cfg.emailDomain} and the thread is assigned to you.`,
+      `Or just reply to this email — your answer goes to the sender as ${sendAddr} and the thread is assigned to you.`,
     ].join('\n')
 
     await sendAppEmail({

@@ -10,7 +10,7 @@ import {
   type Attachment, type Collective, type Invite, type Member, type Message, type Thread,
 } from '../db.js'
 import {
-  checkCode, createSession, destroyEmailSessions, destroySession, emailFromSession, issueCode,
+  checkCode, createSession, destroyEmailSessions, destroySession, emailFromSession, issueCode, type LoginCodeRow,
 } from '../auth.js'
 import { outboundFrom, sendCollectiveReply } from '../outbound.js'
 import { digestTick, sendOnboarding, trialTick } from '../notify.js'
@@ -233,7 +233,7 @@ app.post('/waitlist', async (c) => {
 const safeNext = (v: unknown): string | null =>
   typeof v === 'string' && /^\/[^/\\]/.test(v) ? v : null
 
-const CodeForm = (p: { email: string; error?: string; next?: string | null; sentToAdmins?: string }) => (
+const CodeForm = (p: { email: string; error?: string; next?: string | null; sentToAdmins?: string; resend?: boolean }) => (
   <AuthCard title="Enter code">
     <h1>Check your inbox</h1>
     {p.sentToAdmins ? (
@@ -242,12 +242,22 @@ const CodeForm = (p: { email: string; error?: string; next?: string | null; sent
       <p class="muted">We sent a 6-digit code to <b>{p.email}</b>. <a href="/login">Wrong address?</a></p>
     )}
     {p.error ? <p class="error">{p.error}</p> : null}
-    <form method="post" action="/verify">
-      <input type="hidden" name="email" value={p.email} />
-      {p.next ? <input type="hidden" name="next" value={p.next} /> : null}
-      <input class="code-input" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength={6} placeholder="······" required />
-      <button class="btn" type="submit">Sign in</button>
-    </form>
+    {p.resend ? (
+      // The code can't work anymore (expired / used / too many tries) — the only
+      // useful action is getting a fresh one, so that becomes the button.
+      <form method="post" action="/resend">
+        <input type="hidden" name="email" value={p.email} />
+        {p.next ? <input type="hidden" name="next" value={p.next} /> : null}
+        <button class="btn" type="submit" data-busy="Sending…">Send me a new code</button>
+      </form>
+    ) : (
+      <form method="post" action="/verify">
+        <input type="hidden" name="email" value={p.email} />
+        {p.next ? <input type="hidden" name="next" value={p.next} /> : null}
+        <input class="code-input" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength={6} placeholder="······" required />
+        <button class="btn" type="submit">Sign in</button>
+      </form>
+    )}
     <p class="fineprint">Code expires in 10 minutes. You'll stay signed in on this device for 3 months, unless you sign out.</p>
   </AuthCard>
 )
@@ -298,10 +308,14 @@ app.post('/verify', async (c) => {
   const email = String(body.email || '').toLowerCase().trim()
   const code = String(body.code || '')
   const res = await checkCode(email, code)
-  if (!res.ok) return c.html(<CodeForm email={email} error={res.error} next={safeNext(body.next)} />)
+  if (!res.ok) return c.html(<CodeForm email={email} error={res.error} resend={res.resend} next={safeNext(body.next)} />)
 
   let redirect = safeNext(body.next) || '/'
-  if (res.row.purpose === 'claim' && res.row.claim_slug) {
+  if (res.replay) {
+    // Duplicate of a submit that already succeeded (double tap / OTP autofill
+    // firing twice): the claim/join side effects already ran — just sign in.
+    redirect = res.row.purpose === 'claim' && res.row.claim_slug ? `/claim/${res.row.claim_slug}` : redirect
+  } else if (res.row.purpose === 'claim' && res.row.claim_slug) {
     const slug = res.row.claim_slug
     // re-check availability at the moment of reservation (it may have been
     // claimed, or appeared on opencollective.com, since the code was sent)
@@ -348,6 +362,41 @@ app.post('/verify', async (c) => {
     path: '/',
   })
   return c.redirect(redirect)
+})
+
+// "Send me a new code" from the code screen. Re-issues with the same purpose and
+// payload as the previous code so a claim/join in progress isn't lost.
+app.post('/resend', async (c) => {
+  const body = await c.req.parseBody()
+  const email = String(body.email || '').toLowerCase().trim()
+  const next = safeNext(body.next)
+  if (!emailLooksValid(email)) return c.redirect('/login')
+
+  const prev = await get<LoginCodeRow>('SELECT * FROM login_codes WHERE email = ? ORDER BY id DESC LIMIT 1', [email])
+  const rateLimited = 'We sent a code less than a minute ago — check your inbox (and spam).'
+  if (prev) {
+    const join = {
+      inviteToken: prev.invite_token ?? undefined, name: prev.join_name ?? undefined, level: prev.join_level ?? undefined,
+      claimSlug: prev.claim_slug ?? undefined, claimRef: prev.claim_ref ?? undefined,
+    }
+    if (prev.purpose === 'claim' && prev.claim_slug) {
+      // Ownership proof must not be bypassable: if the slug belongs to a
+      // contactable OC collective, the new code goes to its admins again.
+      const info = await ocCollectiveInfo(prev.claim_slug)
+      if (info.kind === 'contactable') {
+        const slug = prev.claim_slug
+        const ok = await issueCode(email, 'claim', join, (code) => sendOcVerificationCode(slug, code))
+        return c.html(<CodeForm email={email} sentToAdmins={info.name} next={next} error={ok ? undefined : rateLimited} />)
+      }
+    }
+    const ok = await issueCode(email, prev.purpose, join)
+    return c.html(<CodeForm email={email} next={next} error={ok ? undefined : rateLimited} />)
+  }
+
+  // No previous code (already consumed & cleaned up) — plain sign-in resend.
+  if ((await membershipsByEmail(email)).length === 0 && !isPlatformAdmin(email)) return c.redirect('/login')
+  const ok = await issueCode(email, 'login')
+  return c.html(<CodeForm email={email} next={next} error={ok ? undefined : rateLimited} />)
 })
 
 const doLogout = async (c: Context<Env>) => {

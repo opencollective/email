@@ -5,6 +5,9 @@ import { sendLoginCode } from './notify.js'
 
 const CODE_TTL = 10 * 60
 const MAX_ATTEMPTS = 5
+// A duplicate submit of a just-used code (double tap, iOS OTP autofill firing
+// twice) should sign in again, not scare the user with "expired".
+const REPLAY_WINDOW = 2 * 60
 
 export interface LoginCodeRow {
   id: number
@@ -17,6 +20,7 @@ export interface LoginCodeRow {
   join_name: string | null
   join_level: string | null
   attempts: number
+  consumed_at: number | null
   expires_at: number
   created_at: number
 }
@@ -47,14 +51,24 @@ export async function issueCode(
   return true
 }
 
-export async function checkCode(email: string, code: string): Promise<{ ok: true; row: LoginCodeRow } | { ok: false; error: string }> {
+export type CheckResult =
+  | { ok: true; row: LoginCodeRow; replay?: boolean }
+  // `resend: true` = the code can't work anymore — offer a "send a new code" button.
+  | { ok: false; error: string; resend?: boolean }
+
+export async function checkCode(email: string, code: string): Promise<CheckResult> {
   const clean = email.toLowerCase().trim()
   const row = await get<LoginCodeRow>('SELECT * FROM login_codes WHERE email = ? ORDER BY id DESC LIMIT 1', [clean])
-  if (!row || row.expires_at < now()) return { ok: false, error: 'That code expired — request a new one.' }
-  if (row.attempts >= MAX_ATTEMPTS) return { ok: false, error: 'Too many attempts — request a new code.' }
+  if (!row) return { ok: false, error: 'That code expired — request a new one.', resend: true }
+  if (row.consumed_at) {
+    if (now() - row.consumed_at < REPLAY_WINDOW && sha256(code.trim() + cfg.secret) === row.code_hash) return { ok: true, row, replay: true }
+    return { ok: false, error: 'That code was already used — request a new one.', resend: true }
+  }
+  if (row.expires_at < now()) return { ok: false, error: 'That code expired — request a new one.', resend: true }
+  if (row.attempts >= MAX_ATTEMPTS) return { ok: false, error: 'Too many attempts — request a new code.', resend: true }
   await run('UPDATE login_codes SET attempts = attempts + 1 WHERE id = ?', [row.id])
   if (sha256(code.trim() + cfg.secret) !== row.code_hash) return { ok: false, error: 'That code is not right — check the email and try again.' }
-  await run('DELETE FROM login_codes WHERE id = ?', [row.id])
+  await run('UPDATE login_codes SET consumed_at = ? WHERE id = ?', [now(), row.id])
   return { ok: true, row }
 }
 

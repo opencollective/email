@@ -54,6 +54,7 @@ const SCHEMA = [
     join_level TEXT,
     claim_slug TEXT,
     attempts INTEGER NOT NULL DEFAULT 0,
+    consumed_at INTEGER,
     expires_at INTEGER NOT NULL,
     created_at INTEGER NOT NULL
   )`,
@@ -173,6 +174,7 @@ function init(): Promise<void> {
       'ALTER TABLE login_codes ADD COLUMN claim_ref TEXT',
       'ALTER TABLE collectives ADD COLUMN referred_by INTEGER',
       'ALTER TABLE collectives ADD COLUMN activated_at INTEGER',
+      'ALTER TABLE login_codes ADD COLUMN consumed_at INTEGER',
     ]
     ready = db.batch(SCHEMA, 'write')
       // additive migrations for pre-existing tables; ignore "duplicate column"

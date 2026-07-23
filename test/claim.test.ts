@@ -95,6 +95,70 @@ test('months-bound discount code grants a trial of that length', async () => {
   assert.ok(col.trial_ends_at > now() + 89 * 86400 && col.trial_ends_at < now() + 91 * 86400)
 })
 
+test('duplicate verify (double tap / OTP autofill) replays as success, no duplicate side effects', async () => {
+  const slug = `dupe${uniq()}xx`
+  const email = `d-${uniq()}@t.test`
+  const first = await verifiedClaim(slug, email)
+  assert.equal(first.status, 302)
+  assert.equal(first.headers.get('location'), `/claim/${slug}`)
+  // the exact same POST again — the code row is consumed, not gone
+  const again = await app.request('/verify', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: `email=${encodeURIComponent(email)}&code=123456`,
+  })
+  assert.equal(again.status, 302, 'replay signs in instead of "expired"')
+  assert.equal(again.headers.get('location'), `/claim/${slug}`)
+  assert.ok(again.headers.get('set-cookie')?.includes('requests_sid='))
+  const members = await all<any>('SELECT m.* FROM members m JOIN collectives c ON c.id = m.collective_id WHERE c.slug = ?', [slug])
+  assert.equal(members.length, 1, 'no duplicate member from the replay')
+})
+
+test('wrong code after a successful sign-in offers a resend button', async () => {
+  const slug = `wrong${uniq()}x`
+  const email = `w-${uniq()}@t.test`
+  await verifiedClaim(slug, email)
+  const res = await app.request('/verify', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: `email=${encodeURIComponent(email)}&code=999999`,
+  })
+  const html = await res.text()
+  assert.match(html, /already used/)
+  assert.match(html, /action="\/resend"/)
+  assert.match(html, /Send me a new code/)
+})
+
+test('expired code shows the resend button; /resend re-issues with the claim intact', async () => {
+  const slug = `stale${uniq()}x`
+  const email = `s-${uniq()}@t.test`
+  // plant an expired claim code (created long enough ago to clear the rate limit)
+  await run(`INSERT INTO login_codes (email, code_hash, purpose, join_name, claim_slug, expires_at, created_at)
+             VALUES (?, ?, 'claim', 'Sam', ?, ?, ?)`,
+    [email, sha256('123456' + cfg.secret), slug, now() - 60, now() - 700])
+  const res = await app.request('/verify', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: `email=${encodeURIComponent(email)}&code=123456`,
+  })
+  const html = await res.text()
+  assert.match(html, /expired/)
+  assert.match(html, /action="\/resend"/)
+
+  const resend = await app.request('/resend', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: `email=${encodeURIComponent(email)}`,
+  })
+  assert.equal(resend.status, 200)
+  assert.match(await resend.text(), /Sign in/)
+  const row = (await get<any>('SELECT * FROM login_codes WHERE email = ? ORDER BY id DESC LIMIT 1', [email]))!
+  assert.equal(row.purpose, 'claim', 'resent code keeps the claim purpose')
+  assert.equal(row.claim_slug, slug, 'resent code keeps the slug')
+  assert.equal(row.join_name, 'Sam')
+  assert.ok(row.expires_at > now(), 'fresh expiry')
+})
+
 test('discount code activates the pending collective as comped', async () => {
   const slug = `garden${uniq()}`
   const email = `g-${uniq()}@t.test`
