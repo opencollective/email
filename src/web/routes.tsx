@@ -25,7 +25,7 @@ import { sendAppEmail } from '../appmail.js'
 import { readBlob, saveBlob } from '../storage.js'
 import { createCheckoutSession, createPortalSession, stripeEnabled } from '../stripe.js'
 import { billingState, canSend, planLimits, repliesThisMonth, trialDaysLeft, GRACE_DAYS } from '../billing.js'
-import { escapeHtml, excerpt, fmtDateTime, now, randomToken, relTime, slugify, verifyToken, waitingFor } from '../util.js'
+import { escapeHtml, excerpt, fmtDateTime, now, randomToken, relTime, slugify, splitQuotedTail, verifyToken, waitingFor } from '../util.js'
 import { AssigneeChip, AuthCard, Avatar, eventText, Shell, StatusChip, TimeAgo } from './ui.js'
 import { HomePage } from './home.js'
 import { AboutPage, DocsPage, FaqPage } from './pages.js'
@@ -1015,7 +1015,20 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                     ) : null}
                     <span class="when">{fmtDateTime(g.sent_at)}</span>
                   </div>
-                  <div class="msg-body">{g.body_text || '(no text content)'}</div>
+                  {(() => {
+                    const q = splitQuotedTail(g.body_text || '')
+                    return (
+                      <div class="msg-body">
+                        {q.main || '(no text content)'}
+                        {q.quoted ? (
+                          <details class="qhist">
+                            <summary>Show quoted history</summary>
+                            {'\n'}{q.quoted}
+                          </details>
+                        ) : null}
+                      </div>
+                    )
+                  })()}
                   {(attsMap.get(g.id) || []).length > 0 ? (
                     <div class="msg-atts">
                       {(attsMap.get(g.id) || []).map((a) =>

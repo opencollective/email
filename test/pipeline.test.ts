@@ -394,3 +394,53 @@ test('google-group forward: counterpart is the original author, not the group', 
   ].join('\r\n'))
   assert.equal(effectiveSender(extGroup, pro).address, 'bo@company.test')
 })
+
+test("a member's direct reply arriving through the group counts as the team's answer", async () => {
+  const { ingestInbound } = await import('../src/ingest.js')
+  const col = await createCollective(`ma${Date.now() % 100000}`, 'Member Answer Co')
+  const memberId = await addMember(col.id, 'cedric@team.test')
+
+  const inboundMsgId = `<c-${uniq()}@customer.test>`
+  await ingestInbound(col, await simpleParser([
+    'From: Ruta <ruta@customer.test>',
+    `To: ${col.slug}@collective.email`,
+    'Subject: Quotation',
+    `Message-ID: ${inboundMsgId}`,
+    '', 'Any updates?',
+  ].join('\r\n')))
+  const thread = await lastThread(col.id)
+  assert.equal(thread.status, 'needs_reply')
+
+  // Cédric replies from his own mailbox; the group forwards us the copy
+  await ingestInbound(col, await simpleParser([
+    'From: Cedric <cedric@team.test>',
+    'To: ruta@customer.test',
+    `Cc: ${col.slug}@collective.email`,
+    'Subject: Re: Quotation',
+    `Message-ID: <r-${uniq()}@team.test>`,
+    `In-Reply-To: ${inboundMsgId}`,
+    `References: ${inboundMsgId}`,
+    '', 'Fantastic news, quote attached.',
+  ].join('\r\n')))
+
+  const after = (await getThread(thread.id))!
+  assert.equal(after.status, 'answered', "a teammate's reply answers the thread")
+  assert.equal(after.assignee_member_id, memberId, 'and claims it for them')
+  const msgs = await threadMessages(thread.id)
+  assert.equal(msgs.length, 2)
+  assert.equal(msgs[1].direction, 'outbound', 'recorded as the team side of the conversation')
+  assert.equal(msgs[1].sent_by_member_id, memberId)
+
+  // a NEW thread started by a member stays ordinary inbound
+  await ingestInbound(col, await simpleParser([
+    'From: Cedric <cedric@team.test>',
+    `To: ${col.slug}@collective.email`,
+    'Subject: Team announcement',
+    `Message-ID: <n-${uniq()}@team.test>`,
+    '', 'FYI everyone',
+  ].join('\r\n')))
+  const fresh = await lastThread(col.id)
+  assert.notEqual(fresh.id, thread.id)
+  assert.equal(fresh.status, 'needs_reply')
+  assert.equal((await threadMessages(fresh.id))[0].direction, 'inbound')
+})

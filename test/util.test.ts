@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { simpleParser } from 'mailparser'
 import {
-  htmlToText, parseReplyAddress, replyAddress, signToken, slugify, stripQuotedReply, verifyToken,
+  htmlToText, parseReplyAddress, replyAddress, signToken, slugify, splitQuotedTail, stripQuotedReply, verifyToken,
 } from '../src/util.js'
 import { isAutoSubmitted, plainText } from '../src/ingest.js'
 
@@ -90,4 +90,28 @@ test('isAutoSubmitted detects autoresponders', async () => {
   assert.equal(isAutoSubmitted(ooo), true)
   const normal = await simpleParser('Subject: Re: hello\r\n\r\nA real reply')
   assert.equal(isAutoSubmitted(normal), false)
+})
+
+test('splitQuotedTail: collapses "On … wrote:" + quoted tail, keeps new content', () => {
+  const { main, quoted } = splitQuotedTail('Any updates on my request?\n\nBest,\nRuta\n\nOn Thu, 16 Jul 2026 at 14:08, Rūta\nPuodžiukynaitė <r@x.test> wrote:\n> Dear Cédric,\n> Original request here\n> More lines')
+  assert.equal(main, 'Any updates on my request?\n\nBest,\nRuta')
+  assert.match(quoted, /^On Thu, 16 Jul 2026/)
+  assert.match(quoted, /Original request here/)
+})
+
+test('splitQuotedTail: inline replies in the middle stay visible', () => {
+  const text = '> Can you do Tuesday?\nYes, Tuesday works.\n> And catering?\nCatering is confirmed.'
+  const { main, quoted } = splitQuotedTail(text)
+  assert.equal(main, text)
+  assert.equal(quoted, '')
+})
+
+test('splitQuotedTail: a message that is only quotes stays intact', () => {
+  const text = '> forwarded line one\n> forwarded line two'
+  assert.deepEqual(splitQuotedTail(text), { main: text, quoted: '' })
+})
+
+test('splitQuotedTail: tiny single-line tail is not worth a toggle', () => {
+  const text = 'Thanks!\n> ok'
+  assert.deepEqual(splitQuotedTail(text), { main: text, quoted: '' })
 })

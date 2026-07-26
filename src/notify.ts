@@ -5,7 +5,7 @@ import {
 } from './db.js'
 import { sendAppEmail } from './appmail.js'
 import { outboundFrom } from './outbound.js'
-import { escapeHtml, excerpt, fmtDateTime, replyAddress, signToken, waitingFor } from './util.js'
+import { escapeHtml, excerpt, fmtDateTime, replyAddress, signToken, splitQuotedTail, waitingFor } from './util.js'
 
 const threadUrl = (c: Collective, id: number) => `${cfg.baseUrl}/inbox/${c.slug}/thread/${id}`
 const inboxUrl = (c: Collective) => `${cfg.baseUrl}/inbox/${c.slug}`
@@ -97,7 +97,8 @@ export async function notifyInbound(
     ? `${collective.custom_local}@${collective.custom_domain}` : `${collective.slug}@${cfg.emailDomain}`
   const { fromAddress: sendAddr } = outboundFrom(collective)
   const assignee = assigneeId ? members.find((m) => m.id === assigneeId) : undefined
-  const bodyPreview = (message.body_text || '').slice(0, 4000)
+  // the quoted tail is noise in a notification — the thread has the history
+  const bodyPreview = splitQuotedTail(message.body_text || '').main.slice(0, 4000)
   const atts = await messageAttachments(message.id)
   const attHtml = atts.length
     ? `<p style="margin:0 0 14px;font-size:13px;color:#6b7280">📎 ${atts.map((a) => `<a href="${cfg.baseUrl}/attachment/${a.id}" style="color:#0c2d66">${escapeHtml(a.filename)}</a> (${Math.ceil(a.size / 1024)} KB)`).join(' · ')}</p>`

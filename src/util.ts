@@ -96,6 +96,36 @@ export function stripQuotedReply(text: string): string {
   return lines.slice(0, cut).join('\n').trim()
 }
 
+/** Split a message into its new content and the trailing quoted history
+ *  (the "On … wrote:" + "> …" tail). Inline quotes mid-message stay visible;
+ *  a message that is ONLY quotes is returned intact. For display: the quoted
+ *  part collapses behind a toggle so long threads stay readable. */
+export function splitQuotedTail(text: string): { main: string; quoted: string } {
+  const lines = (text || '').replace(/\r\n/g, '\n').split('\n')
+  let cut = lines.length
+  // walk back over the trailing quoted/blank block
+  while (cut > 0 && (/^\s*>/.test(lines[cut - 1]) || lines[cut - 1].trim() === '')) cut--
+  // absorb the attribution just above it ("On … wrote:" — possibly wrapped
+  // over a couple of lines — or an "--- Original Message ---" divider)
+  if (cut < lines.length) {
+    let j = cut
+    while (j > 0 && lines[j - 1].trim() === '') j--
+    if (j > 0 && (/(wrote|schreef|a écrit|écrit)\s*:\s*$/i.test(lines[j - 1]) || /^\s*-{2,}\s*(Original Message|Ursprüngliche Nachricht|Forwarded message)/i.test(lines[j - 1]))) {
+      let start = j - 1
+      for (let back = 2; back <= 3 && j - back >= 0; back++) {
+        if (lines[j - back].trim() === '') break
+        if (/^\s*(On|Le|Op|Am)\b/.test(lines[j - back])) { start = j - back; break }
+      }
+      cut = start
+    }
+  }
+  const main = lines.slice(0, cut).join('\n').trim()
+  const quoted = lines.slice(cut).join('\n').trim()
+  // nothing new (a bare forward) or a tiny tail — not worth a toggle
+  if (!main || quoted.split('\n').filter((l) => l.trim()).length < 2) return { main: text || '', quoted: '' }
+  return { main, quoted }
+}
+
 /** Crude but dependency-free HTML → plain text (for HTML-only emails). */
 export function htmlToText(html: string): string {
   return html

@@ -1,7 +1,7 @@
 import type { AddressObject, ParsedMail } from 'mailparser'
 import { cfg } from './config.js'
 import {
-  addEvent, all, get, getCollective, getMember, getThread, run, setAssignee, setStatus, storeAttachment,
+  addEvent, all, get, getCollective, getMember, getMemberIn, getThread, run, setAssignee, setStatus, storeAttachment,
   suggestedAssigneeFor, type Collective, type Message, type Thread,
 } from './db.js'
 import { htmlToText, normalizeSubject, now, stripQuotedReply } from './util.js'
@@ -127,15 +127,22 @@ export async function ingestInbound(
     thread = (await getThread(r.lastId))!
   }
 
+  // A teammate replying from their own mailbox (their reply reaches us through
+  // the group/forward) is the team's answer, not a new customer message:
+  // record it as outbound, mark the thread answered, and skip the "new
+  // message" notification. New threads a member starts stay ordinary inbound.
+  const senderMember = !isNewThread && !isForwardTest && from.address ? await getMemberIn(collective.id, from.address) : undefined
+  const asMember = senderMember && !senderMember.removed_at ? senderMember : undefined
+
   const refs = Array.isArray(parsed.references) ? parsed.references[0] : parsed.references
   const r = await run(`
-    INSERT INTO messages (thread_id, rfc822_message_id, in_reply_to, direction, from_email, from_name, to_json, cc_json, body_text, resend_email_id, sent_at, created_at)
-    VALUES (?, ?, ?, 'inbound', ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO messages (thread_id, rfc822_message_id, in_reply_to, direction, from_email, from_name, to_json, cc_json, body_text, sent_by_member_id, resend_email_id, sent_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
-    thread.id, msgId, parsed.inReplyTo || refs || null,
+    thread.id, msgId, parsed.inReplyTo || refs || null, asMember ? 'outbound' : 'inbound',
     from.address, from.name,
     JSON.stringify(tos.map((t) => t.address)), JSON.stringify(ccs.map((c) => c.address)),
-    plainText(parsed).slice(0, 100_000),
+    plainText(parsed).slice(0, 100_000), asMember?.id ?? null,
     resendEmailId ?? null, sentAt, now(),
   ])
   const messageDbId = r.lastId
@@ -148,9 +155,14 @@ export async function ingestInbound(
   }
 
   if (sentAt >= (thread.last_message_at ?? 0)) {
-    await run("UPDATE threads SET last_message_at = ?, last_direction = 'inbound', updated_at = ? WHERE id = ?", [sentAt, now(), thread.id])
+    await run('UPDATE threads SET last_message_at = ?, last_direction = ?, updated_at = ? WHERE id = ?',
+      [sentAt, asMember ? 'outbound' : 'inbound', now(), thread.id])
   }
-  if (thread.status !== 'spam') await setStatus(thread.id, isForwardTest ? 'answered' : 'needs_reply', null, true)
+  if (thread.status !== 'spam') await setStatus(thread.id, isForwardTest || asMember ? 'answered' : 'needs_reply', asMember?.id ?? null, true)
+
+  if (asMember && !thread.assignee_member_id) {
+    await setAssignee(thread, asMember.id, asMember.id, 'email_reply')
+  }
 
   // Auto-assign new threads based on who handled this sender before
   if (isNewThread && from.address) {
@@ -158,13 +170,13 @@ export async function ingestInbound(
     if (suggested) await setAssignee((await getThread(thread.id))!, suggested, null, 'auto_sender')
   }
 
-  if (!isAutoSubmitted(parsed) && !isForwardTest) {
+  if (!isAutoSubmitted(parsed) && !isForwardTest && !asMember) {
     const message = (await get<Message>('SELECT * FROM messages WHERE id = ?', [messageDbId]))!
     // awaited: on serverless, work after the response is returned may be killed
     await notifyInbound(collective, (await getThread(thread.id))!, message, extraActions).catch((err) => console.error('[notify] failed:', err))
   }
 
-  console.log(`[ingest] ${collective.slug}: "${parsed.subject}" → thread ${thread.id}${isNewThread ? ' (new)' : ''}`)
+  console.log(`[ingest] ${collective.slug}: "${parsed.subject}" → thread ${thread.id}${isNewThread ? ' (new)' : ''}${asMember ? ` (answer by ${asMember.email})` : ''}`)
 }
 
 // ---------- member reply-by-email (notification Reply-To) ----------
