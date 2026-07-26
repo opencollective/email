@@ -103,22 +103,25 @@ export function stripQuotedReply(text: string): string {
 export function splitQuotedTail(text: string): { main: string; quoted: string } {
   const lines = (text || '').replace(/\r\n/g, '\n').split('\n')
   let cut = lines.length
-  // walk back over the trailing quoted/blank block
-  while (cut > 0 && (/^\s*>/.test(lines[cut - 1]) || lines[cut - 1].trim() === '')) cut--
-  // absorb the attribution just above it ("On … wrote:" — possibly wrapped
-  // over a couple of lines — or an "--- Original Message ---" divider)
-  if (cut < lines.length) {
-    let j = cut
-    while (j > 0 && lines[j - 1].trim() === '') j--
-    if (j > 0 && (/(wrote|schreef|a écrit|écrit)\s*:\s*$/i.test(lines[j - 1]) || /^\s*-{2,}\s*(Original Message|Ursprüngliche Nachricht|Forwarded message)/i.test(lines[j - 1]))) {
-      let start = j - 1
-      for (let back = 2; back <= 3 && j - back >= 0; back++) {
-        if (lines[j - back].trim() === '') break
-        if (/^\s*(On|Le|Op|Am)\b/.test(lines[j - back])) { start = j - back; break }
+
+  // First choice: cut at the attribution line — everything after "On … wrote:"
+  // is history, even unquoted stragglers like the original signature or a
+  // mailing-list footer. Gmail wraps long attributions, so allow the
+  // "… wrote:" to land up to two lines below the "On …" opener.
+  outer: for (let i = 0; i < lines.length; i++) {
+    if (/^\s*-{2,}\s*(Original Message|Ursprüngliche Nachricht|Forwarded message|Message d'origine)/i.test(lines[i])) { cut = i; break }
+    if (/^\s*(On|Le|Op|Am)\b\s.{3,}/.test(lines[i])) {
+      for (let k = 0; k <= 2 && i + k < lines.length; k++) {
+        if (k > 0 && lines[i + k].trim() === '') break
+        if (/\b(wrote|schreef|a écrit|geschrieben)\s*:\s*$/i.test(lines[i + k])) { cut = i; break outer }
       }
-      cut = start
     }
   }
+  // Fallback: no attribution, but the message ends in a block of "> " quotes.
+  if (cut === lines.length) {
+    while (cut > 0 && (/^\s*>/.test(lines[cut - 1]) || lines[cut - 1].trim() === '')) cut--
+  }
+
   const main = lines.slice(0, cut).join('\n').trim()
   const quoted = lines.slice(cut).join('\n').trim()
   // nothing new (a bare forward) or a tiny tail — not worth a toggle

@@ -115,3 +115,16 @@ test('splitQuotedTail: tiny single-line tail is not worth a toggle', () => {
   const text = 'Thanks!\n> ok'
   assert.deepEqual(splitQuotedTail(text), { main: text, quoted: '' })
 })
+
+test('splitQuotedTail: wrapped attribution + unquoted signature after the quotes (Gmail via group)', () => {
+  const body = 'Dear Cédric,\n\nAny updates on my request above?\n\nBest,\nRuta\n\nOn Thu, 16 Jul 2026 at 14:08, Rūta Puodžiukynaitė <\nruta@europeancorrespondent.com> wrote:\n\n> Dear Cédric,\n>\n> Original request details\n\n\n-- \nRuta Puodziukynaite (she/her)\nImplementation Lead\n\nTo unsubscribe from this group send an email to hello+unsubscribe@x.test.'
+  const { main, quoted } = splitQuotedTail(body)
+  assert.equal(main, 'Dear Cédric,\n\nAny updates on my request above?\n\nBest,\nRuta')
+  assert.match(quoted, /^On Thu, 16 Jul 2026/)
+  assert.match(quoted, /unsubscribe/, 'the group footer collapses with the history')
+})
+
+test('splitQuotedTail: prose starting with "On" does not false-trigger', () => {
+  const text = 'On Monday we will meet at 10.\n\nAs Marc wrote: the plan is fine.\nSee you then — long enough tail here.'
+  assert.deepEqual(splitQuotedTail(text), { main: text, quoted: '' })
+})
