@@ -13,7 +13,9 @@ export async function stripeUsable(): Promise<boolean> {
   if (!cfg.stripeKey || process.env.STRIPE_DISABLED) return false
   if (usable && Date.now() - usable.at < 10 * 60_000) return usable.ok
   try {
-    const res = await fetch('https://api.stripe.com/v1/balance', { headers: { Authorization: `Bearer ${cfg.stripeKey}` } })
+    // probe what checkout actually needs (price lookup) — a restricted key can
+    // pass a lighter check like /v1/balance and still fail at checkout
+    const res = await fetch('https://api.stripe.com/v1/prices?limit=1', { headers: { Authorization: `Bearer ${cfg.stripeKey}` } })
     if (!res.ok && usable?.ok !== false) console.error(`[stripe] key check failed (${res.status}) — subscribe UI hidden until the key is fixed`)
     usable = { ok: res.ok, at: Date.now() }
   } catch {
