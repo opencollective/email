@@ -347,21 +347,6 @@ img.avatar-img { object-fit: cover; }
 }
 .msg-body { padding: 14px 16px; font-size: 14.5px; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 72ch; }
 
-/* Sandboxed HTML email display (newsletters & co.) */
-iframe.msg-frame {
-  display: block; width: 100%; border: 0; min-height: 200px;
-  border-radius: 0 0 14px 14px; background: #fff;
-}
-
-/* Rules page */
-.rule-list { display: flex; flex-direction: column; gap: 8px; margin: 14px 0 22px; }
-.rule-row {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
-  border: 1.5px solid var(--line); border-radius: 12px; padding: 10px 14px; font-size: 14px;
-}
-.rule-row .rule-match { font-family: var(--mono); font-size: 13px; }
-.rule-row form { margin-left: auto; }
-
 /* "Who answered this?" — unlinked sender decision strip (admins) */
 .link-sender {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px;

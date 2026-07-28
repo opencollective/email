@@ -1,12 +1,10 @@
 import type { AddressObject, ParsedMail } from 'mailparser'
 import { cfg } from './config.js'
 import {
-  addEvent, addTag, all, get, getCollective, getMember, getMemberIn, getThread, run, setAssignee, setStatus, storeAttachment,
+  addEvent, all, get, getCollective, getMember, getMemberIn, getThread, run, setAssignee, setStatus, storeAttachment,
   suggestedAssigneeFor, type Collective, type Member, type Message, type Thread,
 } from './db.js'
 import { htmlToText, normalizeSubject, now, stripQuotedReply } from './util.js'
-import { ruleFor, type Rule } from './rules.js'
-import { sanitizeEmailHtml } from './sanitize.js'
 import { notifyInbound, sendCollisionNotice, sendReplyConfirmation, sendReplyFailure } from './notify.js'
 import { sendCollectiveReply } from './outbound.js'
 import { kvGet, kvSet } from './db.js'
@@ -185,17 +183,13 @@ export async function ingestInbound(
     if (ext) { counterpart = ext; teamAnswer = true }
   }
 
-  // Sender rules: newsletters & co. get tagged and filed — closed, never
-  // assigned — but still forwarded to members (in HTML) so they can read them.
-  const rule: Rule | undefined = !isForwardTest && !team ? await ruleFor(collective.id, from.address) : undefined
-
   // An answer from an address we don't know, written TO the thread's
   // counterpart (a customer never writes to themselves): someone on the team
   // answered from an unlinked mailbox. File it as the answer so the thread
   // doesn't scream needs-reply, but leave it unattributed — the thread view
   // asks an admin to link the address to a member or mark it external.
   let unknownAnswer = false
-  if (!team && !rule && !teamAnswer && thread && thread.counterpart_email && from.address
+  if (!team && !teamAnswer && thread && thread.counterpart_email && from.address
     && from.address !== thread.counterpart_email && !isAutoSubmitted(parsed)) {
     const rcpts = [...tos, ...ccs].map((a) => a.address)
     if (rcpts.includes(thread.counterpart_email) && !(await kvGet(`notteam:${collective.id}:${from.address}`))) {
@@ -214,16 +208,14 @@ export async function ingestInbound(
     thread = (await getThread(r.lastId))!
   }
 
-  const rawHtml = typeof parsed.html === 'string' ? parsed.html : ''
-  const bodyHtml = rawHtml ? sanitizeEmailHtml(rawHtml).slice(0, 400_000) : null
   const r = await run(`
-    INSERT INTO messages (thread_id, rfc822_message_id, in_reply_to, direction, from_email, from_name, to_json, cc_json, body_text, body_html, sent_by_member_id, resend_email_id, sent_at, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO messages (thread_id, rfc822_message_id, in_reply_to, direction, from_email, from_name, to_json, cc_json, body_text, sent_by_member_id, resend_email_id, sent_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     thread.id, msgId, parsed.inReplyTo || refs || null, answer ? 'outbound' : 'inbound',
     from.address, from.name,
     JSON.stringify(tos.map((t) => t.address)), JSON.stringify(ccs.map((c) => c.address)),
-    plainText(parsed).slice(0, 100_000), bodyHtml, teamAnswer ? member?.id ?? null : null,
+    plainText(parsed).slice(0, 100_000), teamAnswer ? member?.id ?? null : null,
     resendEmailId ?? null, sentAt, now(),
   ])
   const messageDbId = r.lastId
@@ -239,10 +231,7 @@ export async function ingestInbound(
     await run('UPDATE threads SET last_message_at = ?, last_direction = ?, updated_at = ? WHERE id = ?',
       [sentAt, answer ? 'outbound' : 'inbound', now(), thread.id])
   }
-  if (thread.status !== 'spam') {
-    await setStatus(thread.id, isForwardTest || answer ? 'answered' : rule ? 'closed' : 'needs_reply', member?.id ?? null, true)
-  }
-  if (rule) await addTag(collective.id, thread.id, rule.tag, null, true)
+  if (thread.status !== 'spam') await setStatus(thread.id, isForwardTest || answer ? 'answered' : 'needs_reply', member?.id ?? null, true)
 
   // The answer's author claims the thread. A member's genuine question or
   // internal note does NOT self-claim: it needs a teammate to pick it up.
@@ -251,7 +240,7 @@ export async function ingestInbound(
   }
 
   // Auto-assign new threads based on who handled this sender before
-  if (isNewThread && from.address && !team && !rule) {
+  if (isNewThread && from.address && !team) {
     const suggested = await suggestedAssigneeFor(collective.id, from.address, thread.id)
     if (suggested) await setAssignee((await getThread(thread.id))!, suggested, null, 'auto_sender')
   }
@@ -259,10 +248,10 @@ export async function ingestInbound(
   if (!isAutoSubmitted(parsed) && !isForwardTest && !answer) {
     const message = (await get<Message>('SELECT * FROM messages WHERE id = ?', [messageDbId]))!
     // awaited: on serverless, work after the response is returned may be killed
-    await notifyInbound(collective, (await getThread(thread.id))!, message, extraActions, rule).catch((err) => console.error('[notify] failed:', err))
+    await notifyInbound(collective, (await getThread(thread.id))!, message, extraActions).catch((err) => console.error('[notify] failed:', err))
   }
 
-  console.log(`[ingest] ${collective.slug}: "${parsed.subject}" → thread ${thread.id}${isNewThread ? ' (new)' : ''}${answer ? ` (answer by ${from.address}${unknownAnswer ? ', unlinked' : ''})` : ''}${rule ? ` (rule: ${rule.tag})` : ''}`)
+  console.log(`[ingest] ${collective.slug}: "${parsed.subject}" → thread ${thread.id}${isNewThread ? ' (new)' : ''}${answer ? ` (answer by ${from.address}${unknownAnswer ? ', unlinked' : ''})` : ''}`)
 }
 
 // ---------- member reply-by-email (notification Reply-To) ----------

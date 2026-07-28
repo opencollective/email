@@ -35,14 +35,6 @@ const code = document.querySelector('input.code-input');
 // requestSubmit (not submit) so the once-only submit guard below applies —
 // iOS OTP autofill can fire 'input' twice, which double-posted the code.
 if (code) { code.focus(); code.addEventListener('input', () => { if (code.value.trim().length === 6) code.form.requestSubmit(); }); }
-// Sandboxed email frames grow to fit their content (no scripts inside the
-// frame, so the parent measures for it).
-document.querySelectorAll('iframe.msg-frame').forEach((f) => {
-  const fit = () => { try { f.style.height = Math.min(f.contentDocument.documentElement.scrollHeight + 24, 4000) + 'px'; } catch {} };
-  f.addEventListener('load', fit);
-  fit();
-  setTimeout(fit, 400); // once more after images load enough to size
-});
 document.querySelectorAll('.file-input').forEach((inp) => {
   inp.addEventListener('change', () => {
     const label = inp.closest('.file-label');
@@ -146,8 +138,7 @@ export const StatusChip: FC<{ status: Thread['status'] }> = ({ status }) => {
 
 export const AssigneeChip: FC<{ thread: Thread; members: Map<number, Member> }> = ({ thread, members }) => {
   const m = thread.assignee_member_id ? members.get(thread.assignee_member_id) : null
-  // only warn where it matters: an unanswered thread with no owner
-  if (!m) return thread.status === 'needs_reply' ? <span class="chip unassigned">⚠ unassigned</span> : null
+  if (!m) return <span class="chip unassigned">⚠ unassigned</span>
   return (
     <span class="chip assignee">
       <Avatar member={m} /> {m.name || m.email.split('@')[0]}
@@ -202,7 +193,7 @@ export const Page: FC<{ title?: string; flash?: string; children?: Child }> = (p
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=17" />
+      <link rel="stylesheet" href="/static/style.css?v=16" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script
@@ -255,7 +246,6 @@ const Menu: FC<{ base: string; active: string; isAdmin: boolean }> = ({ base, ac
     <a class={`nav-item ${active === 'inbox' ? 'active' : ''}`} href={base}>📥 Inbox</a>
     <a class={`nav-item ${active === 'members' ? 'active' : ''}`} href={`${base}/members`}>☺ Members</a>
     <a class={`nav-item ${active === 'notifications' ? 'active' : ''}`} href={`${base}/notifications`}>🔔 Notifications</a>
-    {isAdmin ? <a class={`nav-item ${active === 'rules' ? 'active' : ''}`} href={`${base}/rules`}>⚡ Rules</a> : null}
     {isAdmin ? <a class={`nav-item ${active === 'domain' ? 'active' : ''}`} href={`${base}/domain`}>🌐 Your domain</a> : null}
     {isAdmin ? <a class={`nav-item ${active === 'billing' ? 'active' : ''}`} href={`${base}/billing`}>💳 Billing</a> : null}
   </nav>
