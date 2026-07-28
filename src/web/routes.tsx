@@ -25,7 +25,7 @@ import { createRule, deleteRule, listRules, ruleFor } from '../rules.js'
 import { emailHtmlDocument } from '../sanitize.js'
 import { sendAppEmail } from '../appmail.js'
 import { readBlob, saveBlob } from '../storage.js'
-import { createCheckoutSession, createPortalSession, stripeEnabled } from '../stripe.js'
+import { createCheckoutSession, createPortalSession, stripeUsable } from '../stripe.js'
 import { billingState, canSend, planLimits, repliesThisMonth, trialDaysLeft, GRACE_DAYS } from '../billing.js'
 import { escapeHtml, excerpt, fmtDateTime, now, randomToken, relTime, slugify, splitQuotedTail, verifyToken, waitingFor } from '../util.js'
 import { AssigneeChip, AuthCard, Avatar, eventText, Shell, StatusChip, TimeAgo } from './ui.js'
@@ -159,13 +159,15 @@ async function tenant(c: Context<Env>): Promise<{ collective: Collective; member
 
 // ---------- health, cron & home ----------
 
-app.get('/health', (c) => c.json({
+app.get('/health', async (c) => c.json({
   ok: true,
   // 'remote' = Turso; 'ephemeral' = file fallback (catastrophic on Vercel — CI fails the deploy)
   db: cfg.dbUrl.startsWith('file:') ? 'ephemeral' : 'remote',
   // config fingerprints (no secret material): which Stripe mode, and are secrets present
   stripe: cfg.stripeKey.startsWith('sk_live') ? 'live' : cfg.stripeKey.startsWith('sk_test') ? 'test' : 'none',
   stripe_webhook: cfg.stripeWebhookSecret.startsWith('whsec_'),
+  // key validated against Stripe (cached) — false hides all subscribe UI
+  stripe_usable: await stripeUsable(),
 }))
 
 // Vercel Cron (or any external scheduler) hits this hourly; digestTick decides who is due.
@@ -1889,7 +1891,7 @@ app.get('/inbox/:addr/billing', async (c) => {
           <a class="btn small ghost" href={`${base}/export`} download>⬇ Download archive (.zip)</a>
         </section>
 
-        {!stripeEnabled() ? (
+        {!(await stripeUsable()) ? (
           <section class="card">
             <h2>Nothing to pay yet</h2>
             <p class="muted">Online payment isn't enabled in this environment yet. Your trial status above is accurate — we'll email the admins before anything changes.</p>
@@ -1948,6 +1950,7 @@ app.post('/inbox/:addr/billing/checkout', async (c) => {
   if (t instanceof Response) return t
   const base = `/inbox/${t.collective.slug}`
   if (t.member.role !== 'admin') return c.redirect(base)
+  if (!(await stripeUsable())) return c.redirect(`${base}/billing?m=` + encodeURIComponent('Online payment is not available right now.'))
   const body = await c.req.parseBody()
   const plan = ['duo', 'collective', 'pro'].includes(String(body.plan)) ? String(body.plan) : 'collective'
   const cycle = String(body.cycle) === 'yearly' ? 'yearly' as const : 'monthly' as const
@@ -1963,13 +1966,14 @@ app.post('/inbox/:addr/billing/checkout', async (c) => {
 
 // ---------- Pro: your own domain ----------
 
-const DomainUpsell = (p: { base: string; balance: number; currency: 'eur' | 'usd' }) => {
+const DomainUpsell = (p: { base: string; balance: number; currency: 'eur' | 'usd'; canPay: boolean }) => {
   const s = p.currency === 'eur' ? '€' : '$'
   return (
     <div class="page">
       <h1>Your own domain</h1>
       <p class="muted">Receive and answer as <b>hello@yourcollective.org</b> — same shared inbox, your identity. This is the Pro plan ({s}100 a month). Like everything here: pay, use a code, spend credits, or contribute.</p>
 
+      {p.canPay ? (
       <section class="card">
         <h2>Subscribe to Pro</h2>
         <form method="post" action={`${p.base}/billing/checkout`} class="btn-row">
@@ -1979,6 +1983,7 @@ const DomainUpsell = (p: { base: string; balance: number; currency: 'eur' | 'usd
           <button class="btn small ghost" name="cycle" value="yearly" type="submit" data-busy="Opening…">{s}1,000 / year — 2 months free</button>
         </form>
       </section>
+      ) : null}
 
       <section class="card">
         <h2>Have a discount code?</h2>
@@ -2016,7 +2021,7 @@ app.get('/inbox/:addr/domain', async (c) => {
   if (collective.plan !== 'pro') {
     return c.html(
       <Shell member={member} collective={collective} title="Your domain" active="domain" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
-        <DomainUpsell base={base} balance={await creditBalance(collective.id)} currency={currency} />
+        <DomainUpsell base={base} balance={await creditBalance(collective.id)} currency={currency} canPay={await stripeUsable()} />
       </Shell>,
     )
   }
@@ -2477,6 +2482,9 @@ app.get('/claim/:slug', async (c) => {
   if (collective.status === 'active') return c.redirect(`/inbox/${slug}`)
   const currency = visitorCurrency(c) === 'EUR' ? 'eur' : 'usd'
   const s = currency === 'eur' ? '€' : '$'
+  // With no working Stripe key the subscribe card would only dead-end people —
+  // hide it and lead with the free trial instead.
+  const canPay = await stripeUsable()
   return c.html(
     <AuthCard title={`Activate ${slug}`} flash={c.req.query('m')}>
       <h1>{slug}@{cfg.emailDomain} is reserved for you</h1>
@@ -2484,6 +2492,7 @@ app.get('/claim/:slug', async (c) => {
         ? 'Your free-trial application is being reviewed — we normally answer within a day. You can also activate right away:'
         : 'One last step — pick how to activate it. The reservation holds for 48 hours.'}</p>
 
+      {canPay ? (
       <section class="claim-option">
         <h2>Subscribe — {s}10/month</h2>
         <p class="muted">Unlimited readers, 10 contributors, 1,000 replies a month. Cancel anytime.</p>
@@ -2496,6 +2505,16 @@ app.get('/claim/:slug', async (c) => {
           <button class="btn" type="submit" data-busy="Redirecting to Stripe…">Pay & activate →</button>
         </form>
       </section>
+      ) : null}
+
+      <section class="claim-option">
+        <form method="post" action={`/claim/${slug}/trial`}>
+          <button class={canPay ? 'btn ghost' : 'btn'} type="submit" data-busy="Starting your trial…">
+            {canPay ? 'Apply for a free trial' : 'Start your free trial'}
+          </button>
+        </form>
+        <p class="fineprint">One month free, no card needed — your address works straight away. We'll email you before it ends.</p>
+      </section>
 
       <section class="claim-option">
         <h2>Have a discount code?</h2>
@@ -2503,13 +2522,6 @@ app.get('/claim/:slug', async (c) => {
           <input class="input" name="code" placeholder={`${slug}-xxxxxxxx`} autocomplete="off" spellcheck={false} />
           <button class="btn small ghost" type="submit" data-busy="Checking…">Redeem</button>
         </form>
-      </section>
-
-      <section class="claim-option">
-        <form method="post" action={`/claim/${slug}/trial`}>
-          <button class="btn ghost" type="submit" data-busy="Starting your trial…">Apply for a free trial</button>
-        </form>
-        <p class="fineprint">One month free, no card needed — your address works straight away. We'll email you before it ends.</p>
       </section>
     </AuthCard>,
   )
@@ -2528,6 +2540,7 @@ async function pendingClaim(c: Context<Env>): Promise<{ collective: Collective; 
 app.post('/claim/:slug/checkout', async (c) => {
   const t = await pendingClaim(c)
   if (t instanceof Response) return t
+  if (!(await stripeUsable())) return c.redirect(`/claim/${t.collective.slug}?m=` + encodeURIComponent('Online payment is not available right now — start with the free trial.'))
   const body = await c.req.parseBody()
   const cycle = String(body.cycle) === 'yearly' ? 'yearly' as const : 'monthly' as const
   const currency = String(body.currency) === 'usd' ? 'usd' as const : 'eur' as const

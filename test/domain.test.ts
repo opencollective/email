@@ -44,7 +44,7 @@ test('domain page: upsell for collective plan, wizard + full pro path for pro', 
   const upsell = await app.request(`${base}/domain`, { headers: { cookie: `requests_sid=${sid}` } })
   assert.equal(upsell.status, 200)
   const upsellHtml = await upsell.text()
-  assert.match(upsellHtml, /Subscribe to Pro/)
+  assert.doesNotMatch(upsellHtml, /Subscribe to Pro/, 'no working Stripe key in tests → checkout hidden')
   assert.match(upsellHtml, /credits/i)
   assert.match(upsellHtml, /contribut/i)
 

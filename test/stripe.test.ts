@@ -89,5 +89,36 @@ test('checkout POST without a Stripe key fails gracefully with a flash', async (
     body: 'plan=duo&cycle=monthly&currency=eur',
   })
   assert.equal(res.status, 302)
-  assert.match(res.headers.get('location')!, /billing\?m=Checkout\+failed|billing\?m=Checkout%20failed/)
+  // an unusable key is caught BEFORE Stripe is called now
+  assert.match(decodeURIComponent(res.headers.get('location')!), /Online payment is not available/)
+})
+
+test('no usable Stripe key: subscribe UI hidden, trial is the primary action', async () => {
+  const { run } = await import('../src/db.js')
+  const { createSession } = await import('../src/auth.js')
+  const { now, sha256 } = await import('../src/util.js')
+  const { cfg } = await import('../src/config.js')
+  const { stripeUsable } = await import('../src/stripe.js')
+  assert.equal(await stripeUsable(), false, 'no key in tests')
+
+  const slug = `nostripe${Date.now() % 100000}`
+  const col = await createCollective(slug, 'NoStripe', 'collective', { status: 'pending', trial: false })
+  void sha256; void cfg
+  await run("INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, 'ns@t.test', 'N', 'admin', 'every', ?)", [col.id, now()])
+  const sid = await createSession('ns@t.test')
+
+  const page = await app.request(`/claim/${slug}`, { headers: { cookie: `requests_sid=${sid}` } })
+  const html = await page.text()
+  assert.doesNotMatch(html, /Pay & activate/, 'no dead-end checkout button')
+  assert.match(html, /Start your free trial/, 'trial promoted to the primary action')
+  assert.match(html, /discount code/i, 'discount codes still work')
+
+  // the checkout POST is guarded too
+  const res = await app.request(`/claim/${slug}/checkout`, {
+    method: 'POST',
+    headers: { cookie: `requests_sid=${sid}`, 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'cycle=monthly&currency=eur',
+  })
+  assert.equal(res.status, 302)
+  assert.match(decodeURIComponent(res.headers.get('location')!), /start with the free trial/)
 })

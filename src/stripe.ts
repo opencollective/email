@@ -4,6 +4,25 @@ import type { Collective } from './db.js'
 
 export const stripeEnabled = () => !!cfg.stripeKey
 
+// A key can exist but be revoked or belong to the wrong account. Validate it
+// against Stripe once (cached ~10 min per instance) so subscribe buttons only
+// show when checkout can actually succeed — an invalid key must never block
+// people from starting a free trial. STRIPE_DISABLED=1 forces it off.
+let usable: { ok: boolean; at: number } | null = null
+export async function stripeUsable(): Promise<boolean> {
+  if (!cfg.stripeKey || process.env.STRIPE_DISABLED) return false
+  if (usable && Date.now() - usable.at < 10 * 60_000) return usable.ok
+  try {
+    const res = await fetch('https://api.stripe.com/v1/balance', { headers: { Authorization: `Bearer ${cfg.stripeKey}` } })
+    if (!res.ok && usable?.ok !== false) console.error(`[stripe] key check failed (${res.status}) — subscribe UI hidden until the key is fixed`)
+    usable = { ok: res.ok, at: Date.now() }
+  } catch {
+    usable = { ok: usable?.ok ?? false, at: Date.now() } // network blip: keep the last verdict
+  }
+  return usable.ok
+}
+export const __resetStripeUsable = () => { usable = null }
+
 export const PLAN_PRICING: Record<string, { label: string; monthly: number; yearly: number }> = {
   collective: { label: 'Collective', monthly: 1000, yearly: 10000 },
   pro: { label: 'Pro', monthly: 10000, yearly: 100000 },
