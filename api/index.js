@@ -1,6 +1,8 @@
 // Vercel serverless entry. `npm run build` (vercel.json buildCommand) compiles
 // src/ → dist/ first; this adapts Vercel's Node request/response to the Hono app.
-// DEBUG: dynamic import so a module-load failure surfaces in the response
+// The app is imported dynamically so a module-load failure (bad dependency,
+// tracing miss) surfaces as a readable 500 instead of an opaque
+// FUNCTION_INVOCATION_FAILED — that cost us a 20-minute outage once.
 let app = null
 let loadError = null
 const loading = import('../dist/app.js').then((m) => { app = m.app }).catch((err) => { loadError = err })

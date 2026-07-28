@@ -20,7 +20,7 @@
     "fflate": "0.8.3",
     "hono": "^4.6.16",
     "mailparser": "^3.7.2",
-    "sanitize-html": "2.17.6",
+    "sanitize-html": "2.13.0",
     "satori": "0.26.0"
   },
   "devDependencies": {
