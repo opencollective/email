@@ -82,6 +82,7 @@ export async function notifyInbound(
   thread: Thread,
   message: Message,
   extraActions?: { label: string; url: string }[],
+  rule?: { tag: string },
 ) {
   const members = await activeMembers(collective.id)
   const assigneeId = thread.assignee_member_id
@@ -115,12 +116,26 @@ export async function notifyInbound(
     const spamUrl = `${cfg.baseUrl}/a/${signToken({ a: 'spam', th: thread.id, by: m.id }, 60 * 60 * 24 * 14)}`
     const noteUrl = `${threadUrl(collective, thread.id)}?pane=note#composer`
 
-    const html = shell(collective.name, `
+    // Rule-filed mail (newsletters, updates): forward the real HTML (already
+    // sanitized at ingest) instead of a text preview, and drop the reply /
+    // assignment machinery — it's filed, nobody needs to answer it.
+    const bodyBlock = rule && message.body_html
+      ? `<div style="border:1px solid #e6e8eb;border-radius:12px;padding:6px;margin-bottom:14px">${message.body_html}</div>`
+      : `<div style="border:1px solid #e6e8eb;border-radius:12px;padding:14px;font-size:14px;white-space:pre-wrap;margin-bottom:14px">${escapeHtml(bodyPreview)}</div>`
+
+    const html = shell(collective.name, rule ? `
+      <p style="margin:0 0 4px;font-size:13px;color:#6b7280">Filed as <b>#${escapeHtml(rule.tag)}</b> · to ${escapeHtml(inboundAddr)} — no reply needed</p>
+      <p style="margin:0 0 2px;font-size:16px;font-weight:700;color:#0c2d66">${escapeHtml(thread.subject)}</p>
+      <p style="margin:0 0 14px;font-size:13px;color:#6b7280">From ${escapeHtml(senderLabel)} · ${fmtDateTime(message.sent_at)}</p>
+      ${bodyBlock}
+      ${attHtml}
+      ${btn(threadUrl(collective, thread.id), 'Open thread', false)}
+      <p style="margin:14px 0 0;font-size:12px;color:#9aa1ab"><a href="${noteUrl}" style="color:#6b7280">Add a private note</a> · <a href="${spamUrl}" style="color:#6b7280">Mark as spam</a></p>` : `
       <p style="margin:0 0 4px;font-size:13px;color:#6b7280">New message to ${escapeHtml(inboundAddr)}</p>
       <p style="margin:0 0 2px;font-size:16px;font-weight:700;color:#0c2d66">${escapeHtml(thread.subject)}</p>
       <p style="margin:0 0 14px;font-size:13px;color:#6b7280">From ${escapeHtml(senderLabel)} · ${fmtDateTime(message.sent_at)}</p>
       ${assignLine}
-      <div style="border:1px solid #e6e8eb;border-radius:12px;padding:14px;font-size:14px;white-space:pre-wrap;margin-bottom:14px">${escapeHtml(bodyPreview)}</div>
+      ${bodyBlock}
       ${attHtml}
       <p style="margin:0 0 12px;font-size:14px;color:#141414"><b>Just reply to this email</b> to answer ${escapeHtml(message.from_email || 'the sender')} as ${escapeHtml(sendAddr)} — the thread is assigned to you. If a teammate answers first, we stop your reply and tell you.</p>
       ${(extraActions || []).map((x) => btn(x.url, x.label)).join('')}
@@ -130,7 +145,15 @@ export async function notifyInbound(
       <p style="margin:0;line-height:2.1">${others.slice(0, 12).map((o) => `<a href="${assignUrl(thread.id, o.id, m.id)}" style="display:inline-block;border:1.5px solid #d3d6da;border-radius:100px;padding:4px 14px;margin:0 6px 6px 0;font-size:13px;color:#0c2d66;text-decoration:none;font-weight:600">${escapeHtml(memberLabel(o))}</a>`).join('')}</p>` : ''}
       <p style="margin:14px 0 0;font-size:12px;color:#9aa1ab"><a href="${noteUrl}" style="color:#6b7280">Add a private note</a> · <a href="${spamUrl}" style="color:#6b7280">Mark as spam</a></p>`)
 
-    const text = [
+    const text = rule ? [
+      `Filed as #${rule.tag} — no reply needed (to ${inboundAddr})`,
+      `Subject: ${thread.subject}`,
+      `From: ${senderLabel}`,
+      '',
+      bodyPreview,
+      '',
+      attText + `Open thread: ${threadUrl(collective, thread.id)}`,
+    ].join('\n') : [
       `New message to ${inboundAddr}`,
       `Subject: ${thread.subject}`,
       `From: ${senderLabel}`,
