@@ -2,7 +2,7 @@ import type { AddressObject, ParsedMail } from 'mailparser'
 import { cfg } from './config.js'
 import {
   addEvent, all, get, getCollective, getMember, getMemberIn, getThread, run, setAssignee, setStatus, storeAttachment,
-  suggestedAssigneeFor, type Collective, type Message, type Thread,
+  suggestedAssigneeFor, type Collective, type Member, type Message, type Thread,
 } from './db.js'
 import { htmlToText, normalizeSubject, now, stripQuotedReply } from './util.js'
 import { notifyInbound, sendCollisionNotice, sendReplyConfirmation, sendReplyFailure } from './notify.js'
@@ -26,6 +26,46 @@ export const addrList = (a?: AddressObject | AddressObject[]): { address: string
   return arr.flatMap((x) => x.value).map((v) => ({ address: (v.address || '').toLowerCase(), name: v.name || '' }))
 }
 
+/** The collective's own receiving addresses. */
+const ownAddressesOf = (collective: Collective): string[] => [
+  `${collective.slug}@${cfg.emailDomain}`,
+  collective.custom_domain && collective.custom_local ? `${collective.custom_local}@${collective.custom_domain}`.toLowerCase() : '',
+].filter(Boolean)
+
+/** Resolve a sender to the team. Exact member email first; otherwise anyone
+ *  on the collective's own custom domain writes as the team (people use
+ *  aliases like inge@domain while their member record says another address) —
+ *  matched to a member by local part when possible. The collective's own
+ *  receiving address is NOT a team sender (website tools send as it). */
+export async function teamSender(collective: Collective, address: string): Promise<{ team: boolean; member?: Member }> {
+  if (!address || ownAddressesOf(collective).includes(address)) return { team: false }
+  const exact = await getMemberIn(collective.id, address)
+  if (exact && !exact.removed_at) return { team: true, member: exact }
+  const domain = collective.custom_domain?.toLowerCase()
+  if (domain && address.endsWith(`@${domain}`)) {
+    const local = address.split('@')[0]
+    const members = await all<Member>('SELECT * FROM members WHERE collective_id = ? AND removed_at IS NULL', [collective.id])
+    return { team: true, member: members.find((m) => m.email.split('@')[0].toLowerCase() === local) }
+  }
+  return { team: false }
+}
+
+/** First recipient who is neither the collective nor the team — who a team
+ *  member was actually writing to when they looped the collective in. */
+export async function externalRecipient(
+  collective: Collective,
+  addrs: { address: string; name: string }[],
+): Promise<{ address: string; name: string } | undefined> {
+  const own = new Set(ownAddressesOf(collective))
+  const domain = collective.custom_domain?.toLowerCase()
+  const memberEmails = new Set(
+    (await all<{ email: string }>('SELECT email FROM members WHERE collective_id = ? AND removed_at IS NULL', [collective.id])).map((r) => r.email),
+  )
+  return addrs.find((a) =>
+    a.address && !a.address.endsWith(`@${cfg.emailDomain}`) && !own.has(a.address)
+    && !memberEmails.has(a.address) && !(domain && a.address.endsWith(`@${domain}`)))
+}
+
 /** Who the email is really from. Mail relayed through a group or list (e.g. a
  *  Google Group forwarding hello@domain to us) often rewrites From to the
  *  group's own address to satisfy DMARC — the original author survives in
@@ -33,10 +73,7 @@ export const addrList = (a?: AddressObject | AddressObject[]): { address: string
  *  and replies must track the author, not the relay. */
 export function effectiveSender(parsed: ParsedMail, collective: Collective): { address: string; name: string } {
   const from = addrList(parsed.from)[0] || { address: '', name: '' }
-  const ownAddrs = [
-    `${collective.slug}@${cfg.emailDomain}`,
-    collective.custom_domain && collective.custom_local ? `${collective.custom_local}@${collective.custom_domain}`.toLowerCase() : '',
-  ].filter(Boolean)
+  const ownAddrs = ownAddressesOf(collective)
   const own = (a: string) => !a || a.endsWith(`@${cfg.emailDomain}`) || ownAddrs.includes(a)
   const headerAddr = (h: string): { address: string; name: string } | null => {
     const raw = String(parsed.headers?.get(h) ?? '').trim()
@@ -116,33 +153,47 @@ export async function ingestInbound(
   const from = effectiveSender(parsed, collective)
 
   const sentAt = parsed.date ? Math.floor(parsed.date.getTime() / 1000) : now()
+  const refs = Array.isArray(parsed.references) ? parsed.references[0] : parsed.references
+  const isReply = !!(parsed.inReplyTo || refs)
+
+  const { team, member } = isForwardTest ? { team: false, member: undefined } : await teamSender(collective, from.address)
+
   let thread = await findThread(collective, parsed, from.address)
+
+  // A teammate writing from their own mailbox (the copy reaches us through the
+  // group/forward) is the team side of the conversation, not a new customer:
+  // - on a thread we know → it's the answer
+  // - a reply referencing mail we never received → they're looping the
+  //   collective into an external conversation; the thread is WITH whoever
+  //   they were writing to, already answered by them
+  // - genuinely new mail to the collective (or an internal note to teammates)
+  //   → ordinary inbound, but claimed by that member so it never sits
+  //   "unclaimed" in the inbox
+  let counterpart = from
+  let teamAnswer = team && !!thread
+  if (!thread && team && isReply) {
+    const ext = await externalRecipient(collective, [...tos, ...ccs])
+    if (ext) { counterpart = ext; teamAnswer = true }
+  }
+
   let isNewThread = false
   if (!thread) {
     isNewThread = true
     const r = await run(`
       INSERT INTO threads (collective_id, subject, status, counterpart_email, counterpart_name, first_message_at, last_message_at, last_direction, created_at, updated_at)
       VALUES (?, ?, 'needs_reply', ?, ?, ?, ?, 'inbound', ?, ?)
-    `, [collective.id, parsed.subject?.trim() || '(no subject)', from.address || null, from.name || null, sentAt, sentAt, now(), now()])
+    `, [collective.id, parsed.subject?.trim() || '(no subject)', counterpart.address || null, counterpart.name || null, sentAt, sentAt, now(), now()])
     thread = (await getThread(r.lastId))!
   }
 
-  // A teammate replying from their own mailbox (their reply reaches us through
-  // the group/forward) is the team's answer, not a new customer message:
-  // record it as outbound, mark the thread answered, and skip the "new
-  // message" notification. New threads a member starts stay ordinary inbound.
-  const senderMember = !isNewThread && !isForwardTest && from.address ? await getMemberIn(collective.id, from.address) : undefined
-  const asMember = senderMember && !senderMember.removed_at ? senderMember : undefined
-
-  const refs = Array.isArray(parsed.references) ? parsed.references[0] : parsed.references
   const r = await run(`
     INSERT INTO messages (thread_id, rfc822_message_id, in_reply_to, direction, from_email, from_name, to_json, cc_json, body_text, sent_by_member_id, resend_email_id, sent_at, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
-    thread.id, msgId, parsed.inReplyTo || refs || null, asMember ? 'outbound' : 'inbound',
+    thread.id, msgId, parsed.inReplyTo || refs || null, teamAnswer ? 'outbound' : 'inbound',
     from.address, from.name,
     JSON.stringify(tos.map((t) => t.address)), JSON.stringify(ccs.map((c) => c.address)),
-    plainText(parsed).slice(0, 100_000), asMember?.id ?? null,
+    plainText(parsed).slice(0, 100_000), teamAnswer ? member?.id ?? null : null,
     resendEmailId ?? null, sentAt, now(),
   ])
   const messageDbId = r.lastId
@@ -156,27 +207,29 @@ export async function ingestInbound(
 
   if (sentAt >= (thread.last_message_at ?? 0)) {
     await run('UPDATE threads SET last_message_at = ?, last_direction = ?, updated_at = ? WHERE id = ?',
-      [sentAt, asMember ? 'outbound' : 'inbound', now(), thread.id])
+      [sentAt, teamAnswer ? 'outbound' : 'inbound', now(), thread.id])
   }
-  if (thread.status !== 'spam') await setStatus(thread.id, isForwardTest || asMember ? 'answered' : 'needs_reply', asMember?.id ?? null, true)
+  if (thread.status !== 'spam') await setStatus(thread.id, isForwardTest || teamAnswer ? 'answered' : 'needs_reply', member?.id ?? null, true)
 
-  if (asMember && !thread.assignee_member_id) {
-    await setAssignee(thread, asMember.id, asMember.id, 'email_reply')
+  // Team mail always has an owner: the answer's author, or for an internal
+  // note/announcement the member who wrote it — never "unclaimed".
+  if (member && !thread.assignee_member_id) {
+    await setAssignee(thread, member.id, member.id, teamAnswer ? 'email_reply' : 'auto_sender')
   }
 
   // Auto-assign new threads based on who handled this sender before
-  if (isNewThread && from.address) {
+  if (isNewThread && from.address && !team) {
     const suggested = await suggestedAssigneeFor(collective.id, from.address, thread.id)
     if (suggested) await setAssignee((await getThread(thread.id))!, suggested, null, 'auto_sender')
   }
 
-  if (!isAutoSubmitted(parsed) && !isForwardTest && !asMember) {
+  if (!isAutoSubmitted(parsed) && !isForwardTest && !teamAnswer) {
     const message = (await get<Message>('SELECT * FROM messages WHERE id = ?', [messageDbId]))!
     // awaited: on serverless, work after the response is returned may be killed
     await notifyInbound(collective, (await getThread(thread.id))!, message, extraActions).catch((err) => console.error('[notify] failed:', err))
   }
 
-  console.log(`[ingest] ${collective.slug}: "${parsed.subject}" → thread ${thread.id}${isNewThread ? ' (new)' : ''}${asMember ? ` (answer by ${asMember.email})` : ''}`)
+  console.log(`[ingest] ${collective.slug}: "${parsed.subject}" → thread ${thread.id}${isNewThread ? ' (new)' : ''}${teamAnswer ? ` (answer by ${from.address})` : ''}`)
 }
 
 // ---------- member reply-by-email (notification Reply-To) ----------

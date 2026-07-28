@@ -431,7 +431,7 @@ test("a member's direct reply arriving through the group counts as the team's an
   assert.equal(msgs[1].direction, 'outbound', 'recorded as the team side of the conversation')
   assert.equal(msgs[1].sent_by_member_id, memberId)
 
-  // a NEW thread started by a member stays ordinary inbound
+  // a NEW thread started by a member stays inbound, but is claimed by them
   await ingestInbound(col, await simpleParser([
     'From: Cedric <cedric@team.test>',
     `To: ${col.slug}@collective.email`,
@@ -443,4 +443,96 @@ test("a member's direct reply arriving through the group counts as the team's an
   assert.notEqual(fresh.id, thread.id)
   assert.equal(fresh.status, 'needs_reply')
   assert.equal((await threadMessages(fresh.id))[0].direction, 'inbound')
+  assert.equal(fresh.assignee_member_id, memberId, "a member's own thread is never unclaimed")
+})
+
+test("a member's reply to mail we never received: thread is WITH their recipient, already answered", async () => {
+  const { ingestInbound } = await import('../src/ingest.js')
+  const col = await createCollective(`loop${Date.now() % 100000}`, 'Loop Co')
+  const memberId = await addMember(col.id, 'cedric@team.test')
+
+  // Cedric follows up on a conversation that never passed through the
+  // collective, cc'ing it to loop the team in
+  await ingestInbound(col, await simpleParser([
+    'From: Cedric <cedric@team.test>',
+    'To: Emilie <e.marchand@aalz.test>',
+    `Cc: ${col.slug}@collective.email`,
+    'Subject: Re: Demande d\'informations',
+    `Message-ID: <f-${uniq()}@team.test>`,
+    `In-Reply-To: <unknown-${uniq()}@mail.gmail.test>`,
+    '', 'Bonjour Emilie! Je reviens vers toi.',
+  ].join('\r\n')))
+  const thread = await lastThread(col.id)
+  assert.equal(thread.counterpart_email, 'e.marchand@aalz.test', 'the conversation is with the recipient, not the member')
+  assert.equal(thread.counterpart_name, 'Emilie')
+  assert.equal(thread.status, 'answered')
+  assert.equal(thread.assignee_member_id, memberId)
+  assert.equal((await threadMessages(thread.id))[0].direction, 'outbound')
+
+  // …whereas a reply-to-unknown addressed only to teammates is an internal
+  // thread from that member: inbound, claimed by its author
+  await addMember(col.id, 'leen@team3.test')
+  await ingestInbound(col, await simpleParser([
+    'From: Cedric <cedric@team.test>',
+    'To: leen@team3.test',
+    `Cc: ${col.slug}@collective.email`,
+    'Subject: Re: internal check',
+    `Message-ID: <h-${uniq()}@team.test>`,
+    `In-Reply-To: <unknown3-${uniq()}@mail.gmail.test>`,
+    '', 'Is this confirmed?',
+  ].join('\r\n')))
+  const internal = await lastThread(col.id)
+  assert.notEqual(internal.id, thread.id)
+  assert.equal(internal.counterpart_email, 'cedric@team.test')
+  assert.equal(internal.status, 'needs_reply')
+  assert.equal(internal.assignee_member_id, memberId, 'claimed by its author, not left dangling')
+  assert.equal((await threadMessages(internal.id))[0].direction, 'inbound')
+})
+
+test('a custom-domain alias counts as the team even without an exact member record', async () => {
+  const { ingestInbound } = await import('../src/ingest.js')
+  const col = await createCollective(`alias${Date.now() % 100000}`, 'Alias Co')
+  await run("UPDATE collectives SET plan = 'pro', custom_domain = 'aliasco.test', custom_local = 'hello', domain_status = 'verified' WHERE id = ?", [col.id])
+  const pro = (await get<any>('SELECT * FROM collectives WHERE id = ?', [col.id]))!
+  // Inge's member record uses a DIFFERENT domain — she writes from the team domain
+  const ingeId = await addMember(col.id, 'inge@elsewhere.test')
+
+  const custMsgId = `<cust-${uniq()}@yahoo.test>`
+  await ingestInbound(pro, await simpleParser([
+    'From: Fatemah <fatemah@yahoo.test>',
+    'To: hello@aliasco.test',
+    'Subject: Booking',
+    `Message-ID: ${custMsgId}`,
+    '', 'Can I book a room?',
+  ].join('\r\n')))
+  const thread = await lastThread(col.id)
+
+  await ingestInbound(pro, await simpleParser([
+    'From: Inge <inge@aliasco.test>',
+    'To: fatemah@yahoo.test',
+    'Cc: hello@aliasco.test',
+    'Subject: Re: Booking',
+    `Message-ID: <i-${uniq()}@aliasco.test>`,
+    `In-Reply-To: ${custMsgId}`,
+    '', 'Of course, here are the details.',
+  ].join('\r\n')))
+  const after = (await getThread(thread.id))!
+  assert.equal(after.status, 'answered')
+  assert.equal(after.assignee_member_id, ingeId, 'matched to her member record by local part')
+  const msgs = await threadMessages(thread.id)
+  assert.equal(msgs[1].direction, 'outbound')
+  assert.equal(msgs[1].sent_by_member_id, ingeId)
+
+  // mail from the collective's own receiving address stays a plain counterpart
+  // (website tools send as it) — never "the team answering itself"
+  await ingestInbound(pro, await simpleParser([
+    'From: Website <hello@aliasco.test>',
+    'To: hello@aliasco.test',
+    'Subject: New Contact Form: Someone',
+    `Message-ID: <w-${uniq()}@aliasco.test>`,
+    '', 'Contact form contents',
+  ].join('\r\n')))
+  const site = await lastThread(col.id)
+  assert.equal(site.status, 'needs_reply')
+  assert.equal((await threadMessages(site.id))[0].direction, 'inbound')
 })
