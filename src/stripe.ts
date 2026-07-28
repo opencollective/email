@@ -13,11 +13,17 @@ export async function stripeUsable(): Promise<boolean> {
   if (!cfg.stripeKey || process.env.STRIPE_DISABLED) return false
   if (usable && Date.now() - usable.at < 10 * 60_000) return usable.ok
   try {
-    // probe what checkout actually needs (price lookup) — a restricted key can
-    // pass a lighter check like /v1/balance and still fail at checkout
-    const res = await fetch('https://api.stripe.com/v1/prices?limit=1', { headers: { Authorization: `Bearer ${cfg.stripeKey}` } })
-    if (!res.ok && usable?.ok !== false) console.error(`[stripe] key check failed (${res.status}) — subscribe UI hidden until the key is fixed`)
-    usable = { ok: res.ok, at: Date.now() }
+    // Probe the exact capability checkout needs: creating a checkout session.
+    // An empty POST never creates anything — a fully-capable key answers 400
+    // (missing params); a revoked or permission-restricted key answers 401/403.
+    const res = await fetch('https://api.stripe.com/v1/checkout/sessions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${cfg.stripeKey}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: '',
+    })
+    const ok = res.status !== 401 && res.status !== 403
+    if (!ok && usable?.ok !== false) console.error(`[stripe] key check failed (${res.status}) — subscribe UI hidden until the key is fixed`)
+    usable = { ok, at: Date.now() }
   } catch {
     usable = { ok: usable?.ok ?? false, at: Date.now() } // network blip: keep the last verdict
   }
