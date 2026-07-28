@@ -21,6 +21,8 @@ import {
   ocSlugTaken, slugAvailability,
 } from '../claim.js'
 import { ocCollectiveInfo, ocDescriptionContains, sendOcVerificationCode, type OcStatus } from '../oc.js'
+import { createRule, deleteRule, listRules, ruleFor } from '../rules.js'
+import { emailHtmlDocument } from '../sanitize.js'
 import { sendAppEmail } from '../appmail.js'
 import { readBlob, saveBlob } from '../storage.js'
 import { createCheckoutSession, createPortalSession, stripeEnabled } from '../stripe.js'
@@ -952,6 +954,8 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   const counterpartFirst = (thread.counterpart_name || thread.counterpart_email || 'the sender').split(' ')[0]
   // reflects the actual From: verified custom domain, else slug@collective.email
   const collectiveAddr = outboundFrom(collective).fromAddress
+  // sender rule for this counterpart (newsletters & co.) — drives HTML display
+  const rule = await ruleFor(collective.id, thread.counterpart_email)
 
   const items: TimelineItem[] = [
     ...msgs.map((m): TimelineItem => ({ kind: 'msg', ts: m.sent_at || m.created_at, msg: m })),
@@ -978,7 +982,9 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
           <div class="thread-top">
             <h1>{thread.subject}</h1>
             <StatusChip status={thread.status} />
-            <AssigneeChip thread={thread} members={members} />
+            {rule && !thread.assignee_member_id
+              ? <span class="chip" title={`Filed by the #${rule.tag} rule — no assignment needed`}>⚡ auto-filed</span>
+              : <AssigneeChip thread={thread} members={members} />}
             {tags.map((tg) => <span class="chip">#{tg.name}</span>)}
           </div>
 
@@ -1015,7 +1021,12 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                     ) : null}
                     <span class="when">{fmtDateTime(g.sent_at)}</span>
                   </div>
-                  {(() => {
+                  {rule && g.direction === 'inbound' && g.body_html ? (
+                    // Rule-filed mail renders its real (sanitized) HTML in a
+                    // sandboxed frame: no scripts, opaque to the app, links
+                    // open in a new tab.
+                    <iframe class="msg-frame" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" srcdoc={emailHtmlDocument(g.body_html)}></iframe>
+                  ) : (() => {
                     const q = splitQuotedTail(g.body_text || '')
                     return (
                       <div class="msg-body">
@@ -1132,6 +1143,8 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                 <Avatar member={assignee} /> <b>{memberName(assignee)}</b>
                 {lastAssignEvent ? <small>{eventText(lastAssignEvent, members)} · {relTime(lastAssignEvent.created_at)}</small> : null}
               </div>
+            ) : rule ? (
+              <p class="fineprint">Filed automatically by the ⚡ #{rule.tag} rule — no assignment needed.</p>
             ) : (
               <div class="assign-state unassigned-box">
                 <b>⚠ Nobody has this yet</b>
@@ -1183,6 +1196,24 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               <button class="btn small ghost" type="submit">Add</button>
             </form>
           </div>
+
+          {member.role === 'admin' && thread.counterpart_email ? (
+            <div class="side-block">
+              <span class="label">Rule</span>
+              {rule ? (
+                <p class="fineprint">⚡ Mail from <b>{rule.match_from}</b> is filed as #{rule.tag} — tagged, closed, never assigned. <a href={`${base}/rules`}>Manage rules</a></p>
+              ) : (<>
+                <p class="fineprint">Always file mail from <b>{thread.counterpart_email}</b>: tagged, closed, never assigned — shown in full HTML.</p>
+                <form method="post" action={`${base}/rules`} class="assign-form">
+                  <input type="hidden" name="from" value={thread.counterpart_email} />
+                  <input type="hidden" name="thread" value={String(thread.id)} />
+                  <input class="input small" name="tag" placeholder="newsletter" list="rule-tags" />
+                  <datalist id="rule-tags"><option value="newsletter" /><option value="updates" /></datalist>
+                  <button class="btn small ghost" type="submit" data-busy="Creating…">⚡ Create rule</button>
+                </form>
+              </>)}
+            </div>
+          ) : null}
 
           <div class="side-block">
             <span class="label">Actions</span>
@@ -1416,6 +1447,68 @@ const activeInvite = (collectiveId: number) =>
 const BackNav = ({ base }: { base: string }) => (
   <nav class="nav"><a class="nav-item" href={base}>← Back to inbox</a></nav>
 )
+
+// ---------- rules ----------
+
+app.get('/inbox/:addr/rules', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const { collective, member } = t
+  if (member.role !== 'admin') return c.redirect(`/inbox/${collective.slug}`)
+  const base = `/inbox/${collective.slug}`
+  const rules = await listRules(collective.id)
+  return c.html(
+    <Shell member={member} collective={collective} title="Rules" active="rules" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
+      <div class="page">
+        <h2>⚡ Rules</h2>
+        <p class="muted">Mail matching a rule is tagged, closed and never assigned — it stays out of the way but is still forwarded to members (in full HTML) and open for internal notes. Match a full address, or a whole domain with <code>@domain.tld</code>.</p>
+        {rules.length ? (
+          <div class="rule-list">
+            {rules.map((r) => (
+              <div class="rule-row">
+                <span class="rule-match"><b>{r.match_from}</b></span>
+                <span>→ <span class="chip">#{r.tag}</span> · closed · unassigned</span>
+                <form method="post" action={`${base}/rules/${r.id}/delete`} class="inline">
+                  <button class="btn small ghost" type="submit" data-confirm={`Delete the rule for ${r.match_from}? Future mail will land in the inbox normally.`}>Delete</button>
+                </form>
+              </div>
+            ))}
+          </div>
+        ) : <p class="muted">No rules yet. Create one below, or from any thread's sidebar.</p>}
+        <h3>New rule</h3>
+        <form method="post" action={`${base}/rules`} class="btn-row">
+          <input class="input" name="from" placeholder="update@nws.example.com or @news.example.com" required />
+          <input class="input" name="tag" placeholder="newsletter" list="rule-tags" required />
+          <datalist id="rule-tags"><option value="newsletter" /><option value="updates" /></datalist>
+          <button class="btn small" type="submit" data-busy="Creating…">Create rule</button>
+        </form>
+      </div>
+    </Shell>,
+  )
+})
+
+app.post('/inbox/:addr/rules', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  if (t.member.role !== 'admin') return c.redirect(`/inbox/${t.collective.slug}`)
+  const body = await c.req.parseBody()
+  const threadId = Number(body.thread) || 0
+  const back = threadId ? `/inbox/${t.collective.slug}/thread/${threadId}` : `/inbox/${t.collective.slug}/rules`
+  try {
+    const { rule, applied } = await createRule(t.collective, String(body.from || ''), String(body.tag || ''), t.member.id)
+    return c.redirect(back + '?m=' + encodeURIComponent(`⚡ Mail from ${rule.match_from} now files as #${rule.tag}${applied ? ` — ${applied} existing thread${applied === 1 ? '' : 's'} filed too` : ''}.`))
+  } catch (err) {
+    return c.redirect(back + '?m=' + encodeURIComponent(err instanceof Error ? err.message : 'That rule could not be created.'))
+  }
+})
+
+app.post('/inbox/:addr/rules/:id/delete', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  if (t.member.role !== 'admin') return c.redirect(`/inbox/${t.collective.slug}`)
+  await deleteRule(t.collective.id, Number(c.req.param('id')))
+  return c.redirect(`/inbox/${t.collective.slug}/rules?m=` + encodeURIComponent('Rule deleted.'))
+})
 
 app.get('/inbox/:addr/members', async (c) => {
   const t = await tenant(c)

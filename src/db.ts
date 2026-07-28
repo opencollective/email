@@ -58,6 +58,15 @@ const SCHEMA = [
     expires_at INTEGER NOT NULL,
     created_at INTEGER NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    collective_id INTEGER NOT NULL,
+    match_from TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    created_by INTEGER,
+    created_at INTEGER NOT NULL,
+    UNIQUE(collective_id, match_from)
+  )`,
   `CREATE TABLE IF NOT EXISTS member_aliases (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     collective_id INTEGER NOT NULL,
@@ -99,6 +108,7 @@ const SCHEMA = [
     from_email TEXT, from_name TEXT,
     to_json TEXT, cc_json TEXT,
     body_text TEXT,
+    body_html TEXT,
     sent_by_member_id INTEGER,
     resend_email_id TEXT,
     sent_at INTEGER,
@@ -183,6 +193,7 @@ function init(): Promise<void> {
       'ALTER TABLE collectives ADD COLUMN referred_by INTEGER',
       'ALTER TABLE collectives ADD COLUMN activated_at INTEGER',
       'ALTER TABLE login_codes ADD COLUMN consumed_at INTEGER',
+      'ALTER TABLE messages ADD COLUMN body_html TEXT',
     ]
     ready = db.batch(SCHEMA, 'write')
       // additive migrations for pre-existing tables; ignore "duplicate column"
@@ -285,6 +296,7 @@ export interface Message {
   to_json: string | null
   cc_json: string | null
   body_text: string | null
+  body_html: string | null
   sent_by_member_id: number | null
   resend_email_id: string | null
   sent_at: number | null
