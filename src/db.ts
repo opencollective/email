@@ -58,6 +58,14 @@ const SCHEMA = [
     expires_at INTEGER NOT NULL,
     created_at INTEGER NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS member_aliases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    collective_id INTEGER NOT NULL,
+    member_id INTEGER NOT NULL,
+    email TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE(collective_id, email)
+  )`,
   `CREATE TABLE IF NOT EXISTS invites (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     collective_id INTEGER NOT NULL,

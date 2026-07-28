@@ -1029,6 +1029,19 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                       </div>
                     )
                   })()}
+                  {g.direction === 'outbound' && !g.sent_by_member_id && g.from_email
+                    && g.from_email !== collectiveAddr && g.from_email !== `${collective.slug}@${cfg.emailDomain}`
+                    && member.role === 'admin' ? (
+                    <form class="link-sender" method="post" action={`/inbox/${collective.slug}/thread/${thread.id}/sender`}>
+                      <input type="hidden" name="email" value={g.from_email} />
+                      <span>This answer came from <b>{g.from_email}</b>, which isn't linked to any member.</span>
+                      <select class="input" name="member_id">
+                        {activeList.map((m) => <option value={String(m.id)}>{memberName(m)}</option>)}
+                      </select>
+                      <button class="btn small" name="act" value="link" type="submit" data-busy="Linking…">It's them — link</button>
+                      <button class="btn small ghost" name="act" value="external" type="submit" data-busy="Saving…">Not a teammate</button>
+                    </form>
+                  ) : null}
                   {(attsMap.get(g.id) || []).length > 0 ? (
                     <div class="msg-atts">
                       {(attsMap.get(g.id) || []).map((a) =>
@@ -1297,6 +1310,44 @@ app.post('/inbox/:addr/thread/:id/assign', async (c) => {
   }
   await setAssignee(thread, target, t.member.id, target === t.member.id ? 'claim' : 'manual')
   return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}`)
+})
+
+// Decide what an unrecognized answering address is: a teammate's other
+// mailbox (link it — durable alias + attribution backfill) or an external
+// party (flip the message back to inbound and remember the decision).
+app.post('/inbox/:addr/thread/:id/sender', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  if (t.member.role !== 'admin') return c.notFound()
+  const thread = await threadOf(c, t)
+  if (!thread) return c.notFound()
+  const body = await c.req.parseBody()
+  const email = String(body.email || '').toLowerCase().trim()
+  if (!emailLooksValid(email)) return c.notFound()
+
+  if (String(body.act) === 'link') {
+    const target = Number(body.member_id)
+    const tm = await getMember(target)
+    if (!tm || tm.collective_id !== t.collective.id || tm.removed_at) return c.notFound()
+    await run('INSERT INTO member_aliases (collective_id, member_id, email, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(collective_id, email) DO UPDATE SET member_id = excluded.member_id', [t.collective.id, tm.id, email, now()])
+    await run(`UPDATE messages SET sent_by_member_id = ? WHERE sent_by_member_id IS NULL AND direction = 'outbound' AND from_email = ?
+               AND thread_id IN (SELECT id FROM threads WHERE collective_id = ?)`, [tm.id, email, t.collective.id])
+    await kvSet(`notteam:${t.collective.id}:${email}`, '') // clear any earlier "external" decision
+    if (!thread.assignee_member_id) await setAssignee(thread, tm.id, t.member.id, 'manual')
+    return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}?m=` + encodeURIComponent(`${email} is now linked to ${tm.name || tm.email} — past and future answers count as theirs.`))
+  }
+
+  if (String(body.act) === 'external') {
+    await kvSet(`notteam:${t.collective.id}:${email}`, '1')
+    await run("UPDATE messages SET direction = 'inbound' WHERE thread_id = ? AND from_email = ? AND direction = 'outbound' AND sent_by_member_id IS NULL", [thread.id, email])
+    const last = await get<Message>('SELECT * FROM messages WHERE thread_id = ? ORDER BY sent_at DESC, id DESC LIMIT 1', [thread.id])
+    if (last?.from_email === email) {
+      await run("UPDATE threads SET last_direction = 'inbound', updated_at = ? WHERE id = ?", [now(), thread.id])
+      await setStatus(thread.id, 'needs_reply', t.member.id)
+    }
+    return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}?m=` + encodeURIComponent(`Got it — ${email} is treated as an external correspondent.`))
+  }
+  return c.notFound()
 })
 
 app.post('/inbox/:addr/thread/:id/status', async (c) => {

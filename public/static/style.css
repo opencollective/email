@@ -347,6 +347,15 @@ img.avatar-img { object-fit: cover; }
 }
 .msg-body { padding: 14px 16px; font-size: 14.5px; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 72ch; }
 
+/* "Who answered this?" — unlinked sender decision strip (admins) */
+.link-sender {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin: 0 16px 12px; padding: 10px 12px; font-size: 13px;
+  border: 1.5px dashed var(--line); border-radius: 10px; background: var(--bg);
+}
+.link-sender span { flex: 1 1 100%; }
+.link-sender select { height: 30px; font-size: 13px; max-width: 180px; }
+
 /* Quoted history collapses so long threads stay readable */
 .qhist { margin-top: 10px; color: var(--muted); font-size: 13px; }
 .qhist summary {

@@ -431,19 +431,20 @@ test("a member's direct reply arriving through the group counts as the team's an
   assert.equal(msgs[1].direction, 'outbound', 'recorded as the team side of the conversation')
   assert.equal(msgs[1].sent_by_member_id, memberId)
 
-  // a NEW thread started by a member stays inbound, but is claimed by them
+  // a member's genuine question to the collective is a NEW unanswered,
+  // UNCLAIMED thread — a teammate must pick it up
   await ingestInbound(col, await simpleParser([
     'From: Cedric <cedric@team.test>',
     `To: ${col.slug}@collective.email`,
-    'Subject: Team announcement',
+    'Subject: Who is following up on this?',
     `Message-ID: <n-${uniq()}@team.test>`,
-    '', 'FYI everyone',
+    '', 'Anyone?',
   ].join('\r\n')))
   const fresh = await lastThread(col.id)
   assert.notEqual(fresh.id, thread.id)
   assert.equal(fresh.status, 'needs_reply')
   assert.equal((await threadMessages(fresh.id))[0].direction, 'inbound')
-  assert.equal(fresh.assignee_member_id, memberId, "a member's own thread is never unclaimed")
+  assert.equal(fresh.assignee_member_id, null, 'a genuine member question waits for a teammate to claim it')
 })
 
 test("a member's reply to mail we never received: thread is WITH their recipient, already answered", async () => {
@@ -485,8 +486,90 @@ test("a member's reply to mail we never received: thread is WITH their recipient
   assert.notEqual(internal.id, thread.id)
   assert.equal(internal.counterpart_email, 'cedric@team.test')
   assert.equal(internal.status, 'needs_reply')
-  assert.equal(internal.assignee_member_id, memberId, 'claimed by its author, not left dangling')
+  assert.equal(internal.assignee_member_id, null, 'an internal question waits for a teammate to claim it')
   assert.equal((await threadMessages(internal.id))[0].direction, 'inbound')
+})
+
+test('an unrecognized address answering TO the counterpart files as an unlinked answer; admins decide', async () => {
+  const { ingestInbound, teamSender } = await import('../src/ingest.js')
+  const col = await createCollective(`unk${Date.now() % 100000}`, 'Unknown Co')
+  const adminEmail = `boss-${uniq()}@t.test`
+  const adminId = await addMember(col.id, adminEmail, 'admin')
+  const cedricId = await addMember(col.id, 'cedric@team.test')
+
+  const custMsgId = `<q-${uniq()}@customer.test>`
+  await ingestInbound(col, await simpleParser([
+    'From: Ruta <ruta@customer.test>',
+    `To: ${col.slug}@collective.email`,
+    'Subject: Quotation',
+    `Message-ID: ${custMsgId}`,
+    '', 'Price please?',
+  ].join('\r\n')))
+  const thread = await lastThread(col.id)
+
+  // Cédric answers from his personal gmail — unknown to the system, but the
+  // message is written TO the customer: it must not scream needs-reply
+  await ingestInbound(col, await simpleParser([
+    'From: Cedric <cedric.personal@gmail.test>',
+    'To: ruta@customer.test',
+    `Cc: ${col.slug}@collective.email`,
+    'Subject: Re: Quotation',
+    `Message-ID: <p-${uniq()}@gmail.test>`,
+    `In-Reply-To: ${custMsgId}`,
+    '', 'Here is the quote.',
+  ].join('\r\n')))
+  let after = (await getThread(thread.id))!
+  assert.equal(after.status, 'answered')
+  let msgs = await threadMessages(thread.id)
+  assert.equal(msgs[1].direction, 'outbound')
+  assert.equal(msgs[1].sent_by_member_id, null, 'unattributed until an admin links the address')
+
+  // the admin links the address to Cédric
+  const sid = await createSession(adminEmail)
+  const res = await app.request(`/inbox/${col.slug}/thread/${thread.id}/sender`, {
+    method: 'POST',
+    headers: { cookie: `requests_sid=${sid}`, 'content-type': 'application/x-www-form-urlencoded' },
+    body: `email=${encodeURIComponent('cedric.personal@gmail.test')}&act=link&member_id=${cedricId}`,
+  })
+  assert.equal(res.status, 302)
+  msgs = await threadMessages(thread.id)
+  assert.equal(msgs[1].sent_by_member_id, cedricId, 'attribution backfilled')
+  assert.deepEqual((await teamSender(col, 'cedric.personal@gmail.test')).member?.id, cedricId, 'future mail from the alias is his')
+  void adminId
+
+  // …or marks a different unknown answerer as external: message flips back
+  await ingestInbound(col, await simpleParser([
+    'From: Consultant <consultant@vendor.test>',
+    'To: ruta@customer.test',
+    `Cc: ${col.slug}@collective.email`,
+    'Subject: Re: Quotation',
+    `Message-ID: <v-${uniq()}@vendor.test>`,
+    `In-Reply-To: ${custMsgId}`,
+    '', 'I can also help with this.',
+  ].join('\r\n')))
+  const res2 = await app.request(`/inbox/${col.slug}/thread/${thread.id}/sender`, {
+    method: 'POST',
+    headers: { cookie: `requests_sid=${sid}`, 'content-type': 'application/x-www-form-urlencoded' },
+    body: `email=${encodeURIComponent('consultant@vendor.test')}&act=external`,
+  })
+  assert.equal(res2.status, 302)
+  after = (await getThread(thread.id))!
+  assert.equal(after.status, 'needs_reply', 'an external voice needing attention again')
+  msgs = await threadMessages(thread.id)
+  assert.equal(msgs[2].direction, 'inbound')
+
+  // and the decision sticks: their next message ingests as plain inbound
+  await ingestInbound(col, await simpleParser([
+    'From: Consultant <consultant@vendor.test>',
+    'To: ruta@customer.test',
+    `Cc: ${col.slug}@collective.email`,
+    'Subject: Re: Quotation',
+    `Message-ID: <v2-${uniq()}@vendor.test>`,
+    `In-Reply-To: ${custMsgId}`,
+    '', 'Following up.',
+  ].join('\r\n')))
+  msgs = await threadMessages(thread.id)
+  assert.equal(msgs[3].direction, 'inbound', 'remembered as external')
 })
 
 test('a custom-domain alias counts as the team even without an exact member record', async () => {
