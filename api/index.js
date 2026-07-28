@@ -1,6 +1,11 @@
 // Vercel serverless entry. `npm run build` (vercel.json buildCommand) compiles
 // src/ → dist/ first; this adapts Vercel's Node request/response to the Hono app.
-import { app } from '../dist/app.js'
+// The app is imported dynamically so a module-load failure (bad dependency,
+// tracing miss) surfaces as a readable 500 instead of an opaque
+// FUNCTION_INVOCATION_FAILED — that cost us a 20-minute outage once.
+let app = null
+let loadError = null
+const loading = import('../dist/app.js').then((m) => { app = m.app }).catch((err) => { loadError = err })
 
 // Keep request bodies raw (required for webhook signature verification and
 // multipart uploads). If the platform ignores this and pre-parses the body,
@@ -8,6 +13,13 @@ import { app } from '../dist/app.js'
 export const config = { api: { bodyParser: false } }
 
 export default async function handler(req, res) {
+  await loading
+  if (loadError) {
+    res.statusCode = 500
+    res.setHeader('content-type', 'text/plain')
+    res.end('MODULE LOAD FAILED:\n' + (loadError.stack || String(loadError)))
+    return
+  }
   let body
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     if (req.body !== undefined) {
