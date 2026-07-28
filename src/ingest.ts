@@ -5,7 +5,7 @@ import {
   suggestedAssigneeFor, type Collective, type Member, type Message, type Thread,
 } from './db.js'
 import { htmlToText, normalizeSubject, now, stripQuotedReply } from './util.js'
-import { ruleFor, type Rule } from './rules.js'
+import { matchingRule, type Rule } from './rules.js'
 import { sanitizeEmailHtml } from './sanitize.js'
 import { notifyInbound, sendCollisionNotice, sendReplyConfirmation, sendReplyFailure } from './notify.js'
 import { sendCollectiveReply } from './outbound.js'
@@ -187,7 +187,7 @@ export async function ingestInbound(
 
   // Sender rules: newsletters & co. get tagged and filed — closed, never
   // assigned — but still forwarded to members (in HTML) so they can read them.
-  const rule: Rule | undefined = !isForwardTest && !team ? await ruleFor(collective.id, from.address) : undefined
+  const rule: Rule | undefined = !isForwardTest && !team ? await matchingRule(collective.id, from.address, parsed.subject) : undefined
 
   // An answer from an address we don't know, written TO the thread's
   // counterpart (a customer never writes to themselves): someone on the team
@@ -240,9 +240,12 @@ export async function ingestInbound(
       [sentAt, answer ? 'outbound' : 'inbound', now(), thread.id])
   }
   if (thread.status !== 'spam') {
-    await setStatus(thread.id, isForwardTest || answer ? 'answered' : rule ? 'closed' : 'needs_reply', member?.id ?? null, true)
+    await setStatus(thread.id, isForwardTest || answer ? 'answered' : rule?.close ? 'closed' : 'needs_reply', member?.id ?? null, true)
   }
-  if (rule) await addTag(collective.id, thread.id, rule.tag, null, true)
+  if (rule?.tag) await addTag(collective.id, thread.id, rule.tag, null, true)
+  if (rule?.assign_member_id && !thread.assignee_member_id) {
+    await setAssignee(thread, rule.assign_member_id, null, 'auto_sender')
+  }
 
   // The answer's author claims the thread. A member's genuine question or
   // internal note does NOT self-claim: it needs a teammate to pick it up.
@@ -259,10 +262,12 @@ export async function ingestInbound(
   if (!isAutoSubmitted(parsed) && !isForwardTest && !answer) {
     const message = (await get<Message>('SELECT * FROM messages WHERE id = ?', [messageDbId]))!
     // awaited: on serverless, work after the response is returned may be killed
-    await notifyInbound(collective, (await getThread(thread.id))!, message, extraActions, rule).catch((err) => console.error('[notify] failed:', err))
+    // rule-closed mail gets the light "filed" notification; a rule that only
+    // tags/assigns leaves the normal reply flow intact
+    await notifyInbound(collective, (await getThread(thread.id))!, message, extraActions, rule?.close ? rule : undefined).catch((err) => console.error('[notify] failed:', err))
   }
 
-  console.log(`[ingest] ${collective.slug}: "${parsed.subject}" → thread ${thread.id}${isNewThread ? ' (new)' : ''}${answer ? ` (answer by ${from.address}${unknownAnswer ? ', unlinked' : ''})` : ''}${rule ? ` (rule: ${rule.tag})` : ''}`)
+  console.log(`[ingest] ${collective.slug}: "${parsed.subject}" → thread ${thread.id}${isNewThread ? ' (new)' : ''}${answer ? ` (answer by ${from.address}${unknownAnswer ? ', unlinked' : ''})` : ''}${rule ? ` (rule ${rule.id}${rule.tag ? `: #${rule.tag}` : ''})` : ''}`)
 }
 
 // ---------- member reply-by-email (notification Reply-To) ----------

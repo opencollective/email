@@ -82,7 +82,7 @@ export async function notifyInbound(
   thread: Thread,
   message: Message,
   extraActions?: { label: string; url: string }[],
-  rule?: { tag: string },
+  rule?: { tag: string | null },
 ) {
   const members = await activeMembers(collective.id)
   const assigneeId = thread.assignee_member_id
@@ -124,7 +124,7 @@ export async function notifyInbound(
       : `<div style="border:1px solid #e6e8eb;border-radius:12px;padding:14px;font-size:14px;white-space:pre-wrap;margin-bottom:14px">${escapeHtml(bodyPreview)}</div>`
 
     const html = shell(collective.name, rule ? `
-      <p style="margin:0 0 4px;font-size:13px;color:#6b7280">Filed as <b>#${escapeHtml(rule.tag)}</b> · to ${escapeHtml(inboundAddr)} — no reply needed</p>
+      <p style="margin:0 0 4px;font-size:13px;color:#6b7280">Filed${rule.tag ? ` as <b>#${escapeHtml(rule.tag)}</b>` : ' automatically'} · to ${escapeHtml(inboundAddr)} — no reply needed</p>
       <p style="margin:0 0 2px;font-size:16px;font-weight:700;color:#0c2d66">${escapeHtml(thread.subject)}</p>
       <p style="margin:0 0 14px;font-size:13px;color:#6b7280">From ${escapeHtml(senderLabel)} · ${fmtDateTime(message.sent_at)}</p>
       ${bodyBlock}
@@ -146,7 +146,7 @@ export async function notifyInbound(
       <p style="margin:14px 0 0;font-size:12px;color:#9aa1ab"><a href="${noteUrl}" style="color:#6b7280">Add a private note</a> · <a href="${spamUrl}" style="color:#6b7280">Mark as spam</a></p>`)
 
     const text = rule ? [
-      `Filed as #${rule.tag} — no reply needed (to ${inboundAddr})`,
+      `Filed${rule.tag ? ` as #${rule.tag}` : ''} — no reply needed (to ${inboundAddr})`,
       `Subject: ${thread.subject}`,
       `From: ${senderLabel}`,
       '',

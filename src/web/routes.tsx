@@ -21,7 +21,7 @@ import {
   ocSlugTaken, slugAvailability,
 } from '../claim.js'
 import { ocCollectiveInfo, ocDescriptionContains, sendOcVerificationCode, type OcStatus } from '../oc.js'
-import { createRule, deleteRule, listRules, ruleFor } from '../rules.js'
+import { createRule, deleteRule, describeRule, listRules, matchingRule } from '../rules.js'
 import { emailHtmlDocument } from '../sanitize.js'
 import { sendAppEmail } from '../appmail.js'
 import { readBlob, saveBlob } from '../storage.js'
@@ -956,8 +956,8 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   const counterpartFirst = (thread.counterpart_name || thread.counterpart_email || 'the sender').split(' ')[0]
   // reflects the actual From: verified custom domain, else slug@collective.email
   const collectiveAddr = outboundFrom(collective).fromAddress
-  // sender rule for this counterpart (newsletters & co.) — drives HTML display
-  const rule = await ruleFor(collective.id, thread.counterpart_email)
+  // matching rule for this thread (newsletters & co.) — drives HTML display
+  const rule = await matchingRule(collective.id, thread.counterpart_email, thread.subject)
 
   const items: TimelineItem[] = [
     ...msgs.map((m): TimelineItem => ({ kind: 'msg', ts: m.sent_at || m.created_at, msg: m })),
@@ -984,8 +984,8 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
           <div class="thread-top">
             <h1>{thread.subject}</h1>
             <StatusChip status={thread.status} />
-            {rule && !thread.assignee_member_id
-              ? <span class="chip" title={`Filed by the #${rule.tag} rule — no assignment needed`}>⚡ auto-filed</span>
+            {rule?.close && !thread.assignee_member_id
+              ? <span class="chip" title={`Filed by ${rule.tag ? `the #${rule.tag}` : 'a'} rule — no assignment needed`}>⚡ auto-filed</span>
               : <AssigneeChip thread={thread} members={members} />}
             {tags.map((tg) => <span class="chip">#{tg.name}</span>)}
           </div>
@@ -1023,7 +1023,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                     ) : null}
                     <span class="when">{fmtDateTime(g.sent_at)}</span>
                   </div>
-                  {rule && g.direction === 'inbound' && g.body_html ? (
+                  {rule?.close && g.direction === 'inbound' && g.body_html ? (
                     // Rule-filed mail renders its real (sanitized) HTML in a
                     // sandboxed frame: no scripts, opaque to the app, links
                     // open in a new tab.
@@ -1145,8 +1145,8 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                 <Avatar member={assignee} /> <b>{memberName(assignee)}</b>
                 {lastAssignEvent ? <small>{eventText(lastAssignEvent, members)} · {relTime(lastAssignEvent.created_at)}</small> : null}
               </div>
-            ) : rule ? (
-              <p class="fineprint">Filed automatically by the ⚡ #{rule.tag} rule — no assignment needed.</p>
+            ) : rule?.close ? (
+              <p class="fineprint">Filed automatically by {rule.tag ? `the ⚡ #${rule.tag}` : 'a ⚡'} rule — no assignment needed.</p>
             ) : (
               <div class="assign-state unassigned-box">
                 <b>⚠ Nobody has this yet</b>
@@ -1197,25 +1197,34 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               <input class="input small" name="name" placeholder="add-a-tag" />
               <button class="btn small ghost" type="submit">Add</button>
             </form>
+            {member.role === 'admin' ? (
+              rule ? (
+                <p class="fineprint">⚡ A rule already matches this thread ({describeRule(rule).when}). <a href={`${base}/rules`}>Manage rules</a></p>
+              ) : thread.counterpart_email ? (
+                <details class="rule-reveal">
+                  <summary>You can also create a rule for similar messages</summary>
+                  {(() => {
+                    // keep the subject's case; just drop reply/forward prefixes
+                    const bareSubject = thread.subject.replace(/^\s*((re|fwd?|aw)\s*:\s*)+/i, '').trim()
+                    return (
+                      <form method="get" action={`${base}/rules`} class="rule-similar">
+                        <input type="hidden" name="thread" value={String(thread.id)} />
+                        <label class="check-row">
+                          <input type="checkbox" name="from" value={thread.counterpart_email} checked />
+                          <span>from <b>{thread.counterpart_email}</b></span>
+                        </label>
+                        <label class="check-row">
+                          <input type="checkbox" name="subject" value={bareSubject} />
+                          <span>subject contains <b>“{bareSubject}”</b></span>
+                        </label>
+                        <button class="btn small ghost" type="submit">Create rule →</button>
+                      </form>
+                    )
+                  })()}
+                </details>
+              ) : null
+            ) : null}
           </div>
-
-          {member.role === 'admin' && thread.counterpart_email ? (
-            <div class="side-block">
-              <span class="label">Rule</span>
-              {rule ? (
-                <p class="fineprint">⚡ Mail from <b>{rule.match_from}</b> is filed as #{rule.tag} — tagged, closed, never assigned. <a href={`${base}/rules`}>Manage rules</a></p>
-              ) : (<>
-                <p class="fineprint">Always file mail from <b>{thread.counterpart_email}</b>: tagged, closed, never assigned — shown in full HTML.</p>
-                <form method="post" action={`${base}/rules`} class="assign-form">
-                  <input type="hidden" name="from" value={thread.counterpart_email} />
-                  <input type="hidden" name="thread" value={String(thread.id)} />
-                  <input class="input small" name="tag" placeholder="newsletter" list="rule-tags" />
-                  <datalist id="rule-tags"><option value="newsletter" /><option value="updates" /></datalist>
-                  <button class="btn small ghost" type="submit" data-busy="Creating…">⚡ Create rule</button>
-                </form>
-              </>)}
-            </div>
-          ) : null}
 
           <div class="side-block">
             <span class="label">Actions</span>
@@ -1458,31 +1467,58 @@ app.get('/inbox/:addr/rules', async (c) => {
   const { collective, member } = t
   if (member.role !== 'admin') return c.redirect(`/inbox/${collective.slug}`)
   const base = `/inbox/${collective.slug}`
-  const rules = await listRules(collective.id)
+  const [rules, activeList] = await Promise.all([listRules(collective.id), activeMembers(collective.id)])
+  const names = new Map(activeList.map((m) => [m.id, m.name || m.email.split('@')[0]]))
+  // prefill from the thread sidebar's "create a rule for similar messages"
+  const preFrom = String(c.req.query('from') || '')
+  const preSubject = String(c.req.query('subject') || '')
+  const preThread = String(c.req.query('thread') || '')
   return c.html(
     <Shell member={member} collective={collective} title="Rules" active="rules" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
       <div class="page">
         <h2>⚡ Rules</h2>
-        <p class="muted">Mail matching a rule is tagged, closed and never assigned — it stays out of the way but is still forwarded to members (in full HTML) and open for internal notes. Match a full address, or a whole domain with <code>@domain.tld</code>.</p>
+        <p class="muted">When a message matches, the rule tags it, assigns it (or leaves it unassigned), and can close it so it never asks for a reply. Closed mail is still forwarded to members — in full HTML — and stays open for internal notes.</p>
         {rules.length ? (
           <div class="rule-list">
-            {rules.map((r) => (
-              <div class="rule-row">
-                <span class="rule-match"><b>{r.match_from}</b></span>
-                <span>→ <span class="chip">#{r.tag}</span> · closed · unassigned</span>
-                <form method="post" action={`${base}/rules/${r.id}/delete`} class="inline">
-                  <button class="btn small ghost" type="submit" data-confirm={`Delete the rule for ${r.match_from}? Future mail will land in the inbox normally.`}>Delete</button>
-                </form>
-              </div>
-            ))}
+            {rules.map((r) => {
+              const d = describeRule(r, r.assign_member_id ? names.get(r.assign_member_id) : undefined)
+              return (
+                <div class="rule-row">
+                  <span class="rule-match">{d.when}</span>
+                  <span class="rule-then">→ {d.then}</span>
+                  <form method="post" action={`${base}/rules/${r.id}/delete`} class="inline">
+                    <button class="btn small ghost" type="submit" data-confirm={`Delete this rule (${d.when})? Future mail will land in the inbox normally.`}>Delete</button>
+                  </form>
+                </div>
+              )
+            })}
           </div>
         ) : <p class="muted">No rules yet. Create one below, or from any thread's sidebar.</p>}
-        <h3>New rule</h3>
-        <form method="post" action={`${base}/rules`} class="btn-row">
-          <input class="input" name="from" placeholder="update@nws.example.com or @news.example.com" required />
-          <input class="input" name="tag" placeholder="newsletter" list="rule-tags" required />
+
+        <h3 id="new">New rule</h3>
+        <form method="post" action={`${base}/rules`} class="rule-editor">
+          {preThread ? <input type="hidden" name="thread" value={preThread} /> : null}
+          <span class="label">When a message arrives…</span>
+          <label class="lbl" for="rule-from">From (address, or a whole domain like @news.example.com)</label>
+          <input class="input" id="rule-from" name="from" placeholder="update@nws.example.com or @news.example.com" value={preFrom} />
+          <label class="lbl" for="rule-subject">And / or the subject contains</label>
+          <input class="input" id="rule-subject" name="subject" placeholder="weekly digest" value={preSubject} />
+          <p class="fineprint">Fill either or both — both filled means both must match.</p>
+
+          <span class="label">Then…</span>
+          <label class="lbl" for="rule-tag">Tag it</label>
+          <input class="input" id="rule-tag" name="tag" placeholder="newsletter" list="rule-tags" value={preFrom || preSubject ? 'newsletter' : ''} />
           <datalist id="rule-tags"><option value="newsletter" /><option value="updates" /></datalist>
-          <button class="btn small" type="submit" data-busy="Creating…">Create rule</button>
+          <label class="lbl" for="rule-assign">Assign it to</label>
+          <select class="input" id="rule-assign" name="assign">
+            <option value="">Nobody — leave unassigned</option>
+            {activeList.map((m) => <option value={String(m.id)}>{m.name || m.email.split('@')[0]}</option>)}
+          </select>
+          <label class="check-row"><input type="checkbox" name="close" value="1" checked /> Close it — no reply needed (it won't show up as unanswered)</label>
+          <div class="btn-row">
+            <button class="btn small" type="submit" data-busy="Creating…">Create rule</button>
+          </div>
+          <p class="fineprint">The rule also applies immediately to everything already in the inbox that matches.</p>
         </form>
       </div>
     </Shell>,
@@ -1496,9 +1532,21 @@ app.post('/inbox/:addr/rules', async (c) => {
   const body = await c.req.parseBody()
   const threadId = Number(body.thread) || 0
   const back = threadId ? `/inbox/${t.collective.slug}/thread/${threadId}` : `/inbox/${t.collective.slug}/rules`
+  const assignId = Number(body.assign) || null
+  if (assignId) {
+    const tm = await getMember(assignId)
+    if (!tm || tm.collective_id !== t.collective.id || tm.removed_at) return c.notFound()
+  }
   try {
-    const { rule, applied } = await createRule(t.collective, String(body.from || ''), String(body.tag || ''), t.member.id)
-    return c.redirect(back + '?m=' + encodeURIComponent(`⚡ Mail from ${rule.match_from} now files as #${rule.tag}${applied ? ` — ${applied} existing thread${applied === 1 ? '' : 's'} filed too` : ''}.`))
+    const { rule, applied } = await createRule(t.collective, {
+      from: String(body.from || ''),
+      subject: String(body.subject || ''),
+      tag: String(body.tag || ''),
+      assignMemberId: assignId,
+      close: body.close === '1',
+    }, t.member.id)
+    const d = describeRule(rule)
+    return c.redirect(back + '?m=' + encodeURIComponent(`⚡ Rule created: ${d.when} → ${d.then}${applied ? ` — applied to ${applied} existing thread${applied === 1 ? '' : 's'}` : ''}.`))
   } catch (err) {
     return c.redirect(back + '?m=' + encodeURIComponent(err instanceof Error ? err.message : 'That rule could not be created.'))
   }

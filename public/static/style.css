@@ -362,6 +362,27 @@ iframe.msg-frame {
 .rule-row .rule-match { font-family: var(--mono); font-size: 13px; }
 .rule-row form { margin-left: auto; }
 
+/* Rule editor: WHEN … THEN … */
+.rule-editor {
+  display: grid; gap: 8px; max-width: 480px; margin-top: 10px;
+  border: 1.5px solid var(--line); border-radius: 12px; padding: 16px;
+  background: var(--card);
+}
+.rule-editor .label { margin-top: 6px; }
+.rule-editor .fineprint { margin: 0; }
+.check-row { display: flex; align-items: baseline; gap: 8px; font-size: 13.5px; cursor: pointer; }
+.check-row input { accent-color: var(--accent); flex: none; }
+.check-row b { overflow-wrap: anywhere; }
+
+/* thread sidebar: "create a rule for similar messages" reveal */
+.rule-reveal { margin-top: 10px; }
+.rule-reveal summary {
+  cursor: pointer; font-size: 12.5px; color: var(--muted);
+  text-decoration: underline; list-style: none; user-select: none;
+}
+.rule-reveal summary::-webkit-details-marker { display: none; }
+.rule-similar { display: grid; gap: 8px; margin-top: 10px; }
+
 /* "Who answered this?" — unlinked sender decision strip (admins) */
 .link-sender {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px;

@@ -61,11 +61,13 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS rules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     collective_id INTEGER NOT NULL,
-    match_from TEXT NOT NULL,
-    tag TEXT NOT NULL,
+    match_from TEXT,
+    match_subject TEXT,
+    tag TEXT,
+    assign_member_id INTEGER,
+    close INTEGER NOT NULL DEFAULT 1,
     created_by INTEGER,
-    created_at INTEGER NOT NULL,
-    UNIQUE(collective_id, match_from)
+    created_at INTEGER NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS member_aliases (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -194,11 +196,40 @@ function init(): Promise<void> {
       'ALTER TABLE collectives ADD COLUMN activated_at INTEGER',
       'ALTER TABLE login_codes ADD COLUMN consumed_at INTEGER',
       'ALTER TABLE messages ADD COLUMN body_html TEXT',
+      'ALTER TABLE rules ADD COLUMN match_subject TEXT',
+      'ALTER TABLE rules ADD COLUMN assign_member_id INTEGER',
+      'ALTER TABLE rules ADD COLUMN close INTEGER NOT NULL DEFAULT 1',
     ]
     ready = db.batch(SCHEMA, 'write')
       // additive migrations for pre-existing tables; ignore "duplicate column"
       .then(async () => {
         for (const m of migrations) await db.execute(m).catch(() => undefined)
+        // rules v2: the legacy table had UNIQUE(collective_id, match_from),
+        // which blocks several subject-scoped rules on one sender — rebuild it
+        // once (detected by the constraint still being in the table DDL).
+        try {
+          const info = await db.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'rules'")
+          const ddl = String(info.rows[0]?.sql || '')
+          if (ddl.includes('UNIQUE')) {
+            await db.execute('ALTER TABLE rules RENAME TO rules_legacy')
+            await db.execute(`CREATE TABLE rules (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              collective_id INTEGER NOT NULL,
+              match_from TEXT,
+              match_subject TEXT,
+              tag TEXT,
+              assign_member_id INTEGER,
+              close INTEGER NOT NULL DEFAULT 1,
+              created_by INTEGER,
+              created_at INTEGER NOT NULL
+            )`)
+            await db.execute(`INSERT INTO rules (id, collective_id, match_from, match_subject, tag, assign_member_id, close, created_by, created_at)
+              SELECT id, collective_id, match_from, match_subject, tag, assign_member_id, COALESCE(close, 1), created_by, created_at FROM rules_legacy`)
+            await db.execute('DROP TABLE rules_legacy')
+          }
+        } catch (err) {
+          console.error('[db] rules v2 rebuild failed:', err)
+        }
       })
       .then(() => undefined)
   }
