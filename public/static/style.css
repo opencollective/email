@@ -78,6 +78,11 @@ small { color: var(--muted); }
   color: var(--ink); font: inherit; padding: 10px 12px; width: 100%;
 }
 .input.small { padding: 6px 10px; font-size: 13.5px; }
+/* iOS Safari zooms the page whenever a focused field is under 16px */
+@media (max-width: 560px) {
+  .input, textarea, select, .wl-addr input { font-size: 16px; }
+  .input.small { font-size: 16px; padding: 8px 10px; }
+}
 .input:focus, textarea:focus, select:focus, .code-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .code-input {
   border: 1.5px solid var(--line); border-radius: 10px; background: var(--card); color: var(--ink);
@@ -112,6 +117,42 @@ small { color: var(--muted); }
 
 .wordmark .at { color: var(--accent); }
 .auth-card .wordmark { display: inline-block; text-decoration: none; }
+
+/* claim flow progress: 1 address · 2 first admin · 3 invite */
+.flow-steps {
+  display: flex; gap: 6px; list-style: none; margin: 0 0 20px; padding: 0;
+  font-size: 11.5px; color: var(--muted);
+}
+.flow-steps li { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+.flow-steps .n {
+  display: flex; align-items: center; justify-content: center; flex: none;
+  width: 18px; height: 18px; border-radius: 50%; font-size: 10px; font-weight: 700;
+  border: 1.5px solid var(--line); background: var(--card);
+}
+.flow-steps .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow-steps .on { color: var(--ink); font-weight: 600; }
+.flow-steps .on .n { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); }
+.flow-steps .done .n { border-color: var(--accent); color: var(--accent); }
+/* tight screens: keep the label of where you are, drop the others to dots */
+@media (max-width: 420px) {
+  .flow-steps li:not(.on) { flex: none; }
+  .flow-steps li:not(.on) .t { display: none; }
+}
+
+/* the settled address on step 2, with a way back */
+.claimed-addr {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  /* shrinks rather than breaking the address across lines mid-word */
+  font-family: var(--mono); font-size: clamp(12.5px, 3.4vw, 15px); margin: 0 0 10px;
+  border: 1.5px solid var(--line); border-radius: 10px; padding: 10px 14px; background: var(--fill);
+}
+.claimed-addr b { overflow-wrap: anywhere; }
+.edit-link { font-family: system-ui, sans-serif; font-size: 12.5px; color: var(--muted); margin-left: auto; }
+.invite-url {
+  font-size: 12.5px; border: 1.5px dashed var(--line); border-radius: 10px;
+  padding: 10px 12px; margin: 14px 0 4px; overflow-wrap: anywhere;
+}
+.invite-url code { font-family: var(--mono); }
 
 /* collective chooser */
 .chooser { display: grid; gap: 8px; margin: 16px 0; }

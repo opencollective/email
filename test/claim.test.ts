@@ -243,7 +243,7 @@ test('the free trial is self-serve: one click starts one month, and only once', 
     headers: { cookie: `requests_sid=${sid}`, 'content-type': 'application/x-www-form-urlencoded' },
     body: '',
   })
-  assert.match(decodeURIComponent(res.headers.get('location')!), /your free month has started/)
+  assert.match(res.headers.get('location')!, new RegExp(`/claim/${slug}/invite`), 'lands on step 3: invite others')
   const col = (await get<any>('SELECT * FROM collectives WHERE slug = ?', [slug]))!
   assert.equal(col.status, 'active')
   assert.ok(col.trial_ends_at > now() + 29 * 86400 && col.trial_ends_at < now() + 31 * 86400, 'exactly one month')
@@ -258,4 +258,46 @@ test('the free trial is self-serve: one click starts one month, and only once', 
   })
   assert.equal(again.status, 404, 'no longer a pending claim')
   assert.equal((await get<any>('SELECT trial_ends_at FROM collectives WHERE slug = ?', [slug]))!.trial_ends_at, before)
+
+  // step 3 hands over a ready-to-share invite link
+  const invite = await app.request(`/claim/${slug}/invite`, { headers: { cookie: `requests_sid=${sid}` } })
+  assert.equal(invite.status, 200)
+  const html = await invite.text()
+  assert.match(html, /Copy invite link/)
+  const token = (await get<any>('SELECT token FROM invites WHERE collective_id = ?', [col.id]))!.token
+  assert.match(html, new RegExp(`/join/${token}`), 'the real link is on the page')
+  assert.match(html, /Invite others/, 'the progress shows step 3')
+})
+
+test('claiming is two steps: address first, then the first admin (editable address)', async () => {
+  const slug = `twostep${uniq()}`
+
+  // step 1: no address yet
+  const step1 = await app.request('/claim')
+  const h1 = await step1.text()
+  assert.match(h1, /Claim your address/)
+  assert.match(h1, /Claim address/, 'progress shows the three steps')
+  assert.doesNotMatch(h1, /name="email"/, 'step 1 does not ask who you are yet')
+
+  // step 2: the address arrives from the homepage's "Claim it"
+  const step2 = await app.request(`/claim?address=${slug}`)
+  const h2 = await step2.text()
+  assert.match(h2, /the first admin/)
+  assert.match(h2, new RegExp(`${slug}@collective\\.email`), 'the address is shown, not re-typed')
+  assert.match(h2, new RegExp(`href="/claim\\?address=${slug}&amp;edit=1"`), 'with a way back to edit it')
+  assert.match(h2, /name="email"/)
+  assert.doesNotMatch(h2, /id="claim-address"/, 'no address field on step 2')
+
+  // the edit link reopens step 1 with the address filled in
+  const back = await app.request(`/claim?address=${slug}&edit=1`)
+  const hb = await back.text()
+  assert.match(hb, /id="claim-address"/)
+  assert.match(hb, new RegExp(`value="${slug}"`))
+
+  // a taken address bounces back to step 1 instead of stranding you on step 2
+  await createCollective(slug, 'Taken Co')
+  const taken = await app.request(`/claim?address=${slug}`)
+  const ht = await taken.text()
+  assert.match(ht, /id="claim-address"/, 'back on step 1')
+  assert.match(ht, /already taken/)
 })

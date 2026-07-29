@@ -96,9 +96,14 @@ h1, h2, h3 { color: var(--navy); margin: 0; }
 .claim .addr {
   flex: 1; min-width: 260px; display: flex; flex-wrap: wrap; align-items: center;
   border: 1.5px solid var(--line); border-radius: 100px; background: var(--bg);
-  font-family: var(--mono); font-size: clamp(15px, 2.4vw, 18px); box-shadow: var(--shadow);
+  /* never below 16px: iOS Safari zooms the page when a focused input is smaller */
+  font-family: var(--mono); font-size: clamp(16px, 2.4vw, 18px); box-shadow: var(--shadow);
   padding: 0 20px;
 }
+.claim-status { font-size: 13.5px; margin: 10px 0 0; min-height: 20px; line-height: 1.45; }
+.claim-status .ok { color: var(--blue); }
+.claim-status .bad { color: #c04343; }
+.claim-status .warn { color: #b05619; }
 .claim input { border: none; background: none; color: var(--ink); font: inherit; padding: 15px 0; width: 12ch; flex: 1 0 auto; max-width: 100%; }
 .claim input::placeholder { color: var(--muted); }
 .claim input:focus { outline: none; }
@@ -292,6 +297,33 @@ if (hero) {
   hero.addEventListener('blur', () => { hero.value = slug(hero.value); });
   // grow with the slug so the full address stays visible (@domain wraps below)
   hero.addEventListener('input', () => { hero.style.width = Math.max(12, hero.value.length + 1) + 'ch'; });
+
+  // Say straight away whether the address can be had — nobody should tap
+  // through to the next step only to be told it's taken.
+  const status = document.getElementById('hero-status');
+  const submit = document.getElementById('hero-submit');
+  const esc = (s) => { const d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; };
+  let timer;
+  const check = () => {
+    const s = slug(hero.value);
+    submit.disabled = false;
+    if (!s) { status.innerHTML = ''; return; }
+    if (s.length < 6) { status.innerHTML = '<span class="muted">At least 6 characters — letters and numbers only.</span>'; return; }
+    fetch('/claim/oc?slug=' + encodeURIComponent(s)).then((r) => r.json()).then((d) => {
+      if (slug(hero.value) !== s) return; // a newer keystroke won
+      if (d.unavailable) { status.innerHTML = '<span class="bad">' + esc(d.unavailable) + '</span>'; submit.disabled = true; return; }
+      if (d.oc && d.oc.kind === 'contactable') {
+        status.innerHTML = '<span class="ok">🔒 ' + esc(d.oc.name) + ' is on Open Collective — we\\'ll send your code to its admins.</span>';
+      } else if (d.oc && d.oc.kind === 'uncontactable') {
+        status.innerHTML = '<span class="warn">⚠ ' + esc(d.oc.name) + ' exists on Open Collective — one extra step to prove you manage it.</span>';
+      } else {
+        status.innerHTML = '<span class="ok">✓ ' + esc(s) + '@collective.email is available</span>';
+      }
+    }).catch(() => {});
+  };
+  hero.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(check, 400); });
+  hero.addEventListener('blur', () => { clearTimeout(timer); check(); });
+  if (hero.value) check();
 }
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 `
@@ -400,8 +432,9 @@ export const HomePage: FC<{ joined?: boolean; currency?: 'USD' | 'EUR' }> = ({ j
                 <input id="hero-name" name="address" placeholder="yourcollective" aria-label="Your collective's address" minlength={6} maxlength={40} pattern="[a-zA-Z0-9]{6,40}" autocomplete="off" spellcheck={false} required />
                 <span class="domain">@collective.email</span>
               </span>
-              <button class="btn" type="submit">Claim it →</button>
+              <button class="btn" id="hero-submit" type="submit">Claim it →</button>
             </form>
+            <p class="claim-status" id="hero-status" aria-live="polite"></p>
           </header>
 
           <section class="demo">
