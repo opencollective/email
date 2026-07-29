@@ -198,12 +198,12 @@ app.get('/', async (c) => {
   if (memberships.length === 1) return c.redirect(`/inbox/${memberships[0].collective_slug}`)
   if (memberships.length === 0 && isPlatformAdmin(email)) return c.redirect('/admin')
   return c.html(
-    <AuthCard title="Your collectives" flash={c.req.query('m')}>
-      <h1>Your collectives</h1>
+    <AuthCard title="Your collective email addresses" flash={c.req.query('m')}>
+      <h1>Your collective email addresses</h1>
       {memberships.length === 0 ? (
         <p class="muted">
           <b>{email}</b> isn't part of any collective yet. Ask your collective for an invite link,
-          or <a href="/#waitlist">join the waiting list</a> to start your own.
+          or <a href="/claim">claim an address</a> to start your own.
         </p>
       ) : (
         <div class="chooser">
@@ -213,6 +213,10 @@ app.get('/', async (c) => {
               <small>{m.collective_slug}@{cfg.emailDomain}</small>
             </a>
           ))}
+          <a class="chooser-item chooser-new" href="/claim">
+            <b>+ New address</b>
+            <small>claim one for another collective</small>
+          </a>
         </div>
       )}
       {isPlatformAdmin(email) ? <p class="fineprint"><a href="/admin">Platform admin →</a></p> : null}

@@ -109,3 +109,23 @@ test('/mailboxes lists the user\'s collectives with waiting + assigned counts', 
   const anon = await app.request('/mailboxes')
   assert.deepEqual((await anon.json() as any).mailboxes, [])
 })
+
+test('the collectives page lists addresses and offers claiming another', async () => {
+  const { createCollective, run } = await import('../src/db.js')
+  const { createSession } = await import('../src/auth.js')
+  const { now } = await import('../src/util.js')
+  const email = `multi-${Date.now() % 100000}@t.test`
+  for (const name of ['Alpha Co', 'Beta Co']) {
+    const col = await createCollective(`ch${name.slice(0, 2).toLowerCase()}${Date.now() % 100000}`, name)
+    await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [col.id, email, 'M', 'admin', 'every', now()])
+  }
+  const res = await app.request('/', { headers: { cookie: `requests_sid=${await createSession(email)}` } })
+  const html = await res.text()
+  assert.match(html, /Your collective email addresses/)
+  assert.match(html, /Alpha Co/)
+  assert.match(html, /Beta Co/)
+  assert.match(html, /New address/, 'a way to claim another address')
+  assert.match(html, /href="\/claim"/)
+  assert.doesNotMatch(html, /#waitlist/, 'the dead waitlist anchor is gone')
+})
