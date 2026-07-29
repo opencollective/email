@@ -32,6 +32,30 @@ const shell = (title: string, inner: string) => `
   </div>
 </div>`
 
+/** Notifications come from the collective, so the inbox reads like the
+ *  collective's own mail. The address stays on our sending domain: Resend only
+ *  signs domains we control, and the inbound loop guard keys on it — sending
+ *  as a member-facing custom domain would let forwarded copies re-ingest. */
+const notifyFrom = (collective: Collective) =>
+  `${collective.name.replace(/["\\<>]/g, '')} <${collective.slug}@${cfg.emailDomain}>`
+
+/** Thread notifications use the full width of the reading pane: a thin header,
+ *  the message itself, and a thin footer — no nested cards, no wasted margins.
+ *  The client already shows the subject, so the body never repeats it. */
+const threadShell = (collective: Collective, headerRight: string, inner: string) => `
+<div style="font-family:Inter,-apple-system,Segoe UI,Roboto,sans-serif;color:#141414;background:#ffffff">
+  <div style="max-width:720px;margin:0 auto;padding:0 16px">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid #e6e8eb;padding:10px 0 8px;font-size:12px;color:#6b7280">
+      <span style="font-weight:700;color:#0c2d66">${escapeHtml(collective.name)}</span>
+      <span>${headerRight}</span>
+    </div>
+    ${inner}
+    <div style="border-top:1px solid #e6e8eb;margin-top:18px;padding:10px 0 16px;font-size:11px;color:#8a8f98">
+      <a href="${cfg.baseUrl}" style="color:#8a8f98">collective.email</a> · <a href="${cfg.baseUrl}" style="color:#8a8f98">notification settings</a>
+    </div>
+  </div>
+</div>`
+
 // ---------- login code ----------
 
 export async function sendLoginCode(email: string, code: string) {
@@ -112,7 +136,7 @@ export async function notifyInbound(
     // Live badge: rendered by the server when the email is opened, so it
     // shows the CURRENT state (answered/assigned/unclaimed), never a stale one.
     const badgeToken = signToken({ a: 'aimg', th: thread.id }, 60 * 60 * 24 * 90)
-    const assignLine = `<a href="${threadUrl(collective, thread.id)}" style="text-decoration:none"><img src="${cfg.baseUrl}/aimg/${badgeToken}" width="520" height="56" style="display:block;width:100%;max-width:520px;height:auto;border:0;margin:0 0 14px" alt="${assignee ? `Assigned to ${escapeHtml(memberLabel(assignee))} when this was sent` : 'Unassigned when this was sent'} — open the thread for the current status."></a>`
+    const assignLine = `<a href="${threadUrl(collective, thread.id)}" style="text-decoration:none"><img src="${cfg.baseUrl}/aimg/${badgeToken}" width="688" height="74" style="display:block;width:100%;max-width:688px;height:auto;border:0;margin:0 0 14px" alt="${assignee ? `Assigned to ${escapeHtml(memberLabel(assignee))} when this was sent` : 'Unassigned when this was sent'} — open the thread for the current status."></a>`
     const spamUrl = `${cfg.baseUrl}/a/${signToken({ a: 'spam', th: thread.id, by: m.id }, 60 * 60 * 24 * 14)}`
     const noteUrl = `${threadUrl(collective, thread.id)}?pane=note#composer`
 
@@ -120,23 +144,24 @@ export async function notifyInbound(
     // sanitized at ingest) instead of a text preview, and drop the reply /
     // assignment machinery — it's filed, nobody needs to answer it.
     const bodyBlock = rule && message.body_html
-      ? `<div style="border:1px solid #e6e8eb;border-radius:12px;padding:6px;margin-bottom:14px">${message.body_html}</div>`
-      : `<div style="border:1px solid #e6e8eb;border-radius:12px;padding:14px;font-size:14px;white-space:pre-wrap;margin-bottom:14px">${escapeHtml(bodyPreview)}</div>`
+      ? `<div style="margin:14px 0">${message.body_html}</div>`
+      : `<div style="margin:14px 0;font-size:15px;line-height:1.55;white-space:pre-wrap">${escapeHtml(bodyPreview)}</div>`
+    // one line instead of three: who wrote, when — the subject is the email's
+    // own subject, and the collective is the From
+    const meta = `<p style="margin:12px 0 0;font-size:13px;color:#6b7280">From <b style="color:#141414">${escapeHtml(senderLabel)}</b> · ${fmtDateTime(message.sent_at)}</p>`
 
-    const html = shell(collective.name, rule ? `
-      <p style="margin:0 0 4px;font-size:13px;color:#6b7280">Filed${rule.tag ? ` as <b>#${escapeHtml(rule.tag)}</b>` : ' automatically'} · to ${escapeHtml(inboundAddr)} — no reply needed</p>
-      <p style="margin:0 0 2px;font-size:16px;font-weight:700;color:#0c2d66">${escapeHtml(thread.subject)}</p>
-      <p style="margin:0 0 14px;font-size:13px;color:#6b7280">From ${escapeHtml(senderLabel)} · ${fmtDateTime(message.sent_at)}</p>
+    const html = rule
+      ? threadShell(collective, `filed${rule.tag ? ` · #${escapeHtml(rule.tag)}` : ''} — no reply needed`, `
+      ${meta}
       ${bodyBlock}
       ${attHtml}
       ${btn(threadUrl(collective, thread.id), 'Open thread', false)}
-      <p style="margin:14px 0 0;font-size:12px;color:#9aa1ab"><a href="${noteUrl}" style="color:#6b7280">Add a private note</a> · <a href="${spamUrl}" style="color:#6b7280">Mark as spam</a></p>` : `
-      <p style="margin:0 0 4px;font-size:13px;color:#6b7280">New message to ${escapeHtml(inboundAddr)}</p>
-      <p style="margin:0 0 2px;font-size:16px;font-weight:700;color:#0c2d66">${escapeHtml(thread.subject)}</p>
-      <p style="margin:0 0 14px;font-size:13px;color:#6b7280">From ${escapeHtml(senderLabel)} · ${fmtDateTime(message.sent_at)}</p>
-      ${assignLine}
+      <p style="margin:14px 0 0;font-size:12px;color:#9aa1ab"><a href="${noteUrl}" style="color:#6b7280">Add a private note</a> · <a href="${spamUrl}" style="color:#6b7280">Mark as spam</a></p>`)
+      : threadShell(collective, `to ${escapeHtml(inboundAddr)}`, `
+      ${meta}
       ${bodyBlock}
       ${attHtml}
+      ${assignLine}
       <p style="margin:0 0 12px;font-size:14px;color:#141414"><b>Just reply to this email</b> to answer ${escapeHtml(message.from_email || 'the sender')} as ${escapeHtml(sendAddr)} — the thread is assigned to you. If a teammate answers first, we stop your reply and tell you.</p>
       ${(extraActions || []).map((x) => btn(x.url, x.label)).join('')}
       ${btn(assignUrl(thread.id, m.id, m.id, true), 'Assign to me — answer later')}
@@ -169,9 +194,11 @@ export async function notifyInbound(
 
     await sendAppEmail({
       to: m.email,
-      subject: `[${collective.name}] ${thread.subject}`,
+      // the collective is the From now, so the subject needn't repeat its name
+      subject: thread.subject,
       html,
       text,
+      from: notifyFrom(collective),
       replyTo: replyAddress(collective.slug, thread.id, m.id, message.id),
     })
   }
@@ -189,6 +216,7 @@ export async function sendCollisionNotice(collective: Collective, member: Member
   await sendAppEmail({
     to: member.email,
     subject: `Not sent — ${who} already replied: ${thread.subject}`,
+    from: notifyFrom(collective),
     html,
     text: `${who} already replied to "${thread.subject}" — your reply was NOT sent.\n\nYour draft:\n${draft}\n\nOpen the thread: ${threadUrl(collective, thread.id)}`,
   })
@@ -204,6 +232,7 @@ export async function sendReplyFailure(collective: Collective, member: Member, t
   await sendAppEmail({
     to: member.email,
     subject: `⚠️ Not sent: ${thread.subject}`,
+    from: notifyFrom(collective),
     html,
     text: `Your reply to "${thread.subject}" could not be sent.\nReason: ${reason}\n\n${draft ? `Your draft:\n${draft}\n\n` : ''}Reply from the app: ${threadUrl(collective, thread.id)}`,
   })
@@ -216,6 +245,7 @@ export async function sendReplyConfirmation(collective: Collective, member: Memb
   await sendAppEmail({
     to: member.email,
     subject: `Sent ✓ ${thread.subject}`,
+    from: notifyFrom(collective),
     html,
     text: `Your reply to "${thread.subject}" was sent to ${to}.\nOpen the thread: ${threadUrl(collective, thread.id)}`,
   })
@@ -258,7 +288,8 @@ async function sendDigest(collective: Collective, member: Member, threads: Threa
 
   await sendAppEmail({
     to: member.email,
-    subject: `[${collective.name}] ${threads.length} unanswered request${threads.length === 1 ? '' : 's'} — ${period} digest`,
+    subject: `${threads.length} unanswered request${threads.length === 1 ? '' : 's'} — ${period} digest`,
+    from: notifyFrom(collective),
     html,
     text,
   })

@@ -74,6 +74,10 @@ const EUR_COUNTRIES = new Set([
   'LV', 'LT', 'LU', 'MT', 'NL', 'PL', 'PT', 'RO', 'SK', 'SI', 'ES', 'SE', 'CH', 'NO', 'IS', 'LI',
 ])
 
+/** Dollars everywhere by default; euros when the visitor looks European.
+ *  Signals in order of trust: edge-resolved IP country, the browser's own
+ *  time zone (set as a cookie on first load), then accept-language. Nobody is
+ *  ever asked to choose — the charge currency is decided server-side. */
 function visitorCurrency(c: Context): 'USD' | 'EUR' {
   const country = (
     c.req.header('x-vercel-ip-country') ||
@@ -82,6 +86,12 @@ function visitorCurrency(c: Context): 'USD' | 'EUR' {
     ''
   ).toUpperCase()
   if (country) return EUR_COUNTRIES.has(country) ? 'EUR' : 'USD'
+  const tz = getCookie(c, 'tz') || ''
+  // Europe/* covers the euro zone and neighbours; Atlantic/* (Azores, Canaries,
+  // Madeira, Faroe, Reykjavik) is European too. Europe/Istanbul and
+  // Europe/Moscow are not euro users — they fall through to USD.
+  if (/^Europe\//.test(tz) && !/^Europe\/(Istanbul|Moscow|Kirov|Samara|Volgograd|Saratov|Ulyanovsk|Astrakhan|Minsk|Kiev|Kyiv)$/.test(tz)) return 'EUR'
+  if (/^Atlantic\/(Azores|Canary|Madeira|Faeroe|Faroe|Reykjavik)$/.test(tz)) return 'EUR'
   const langs = c.req.header('accept-language') || ''
   for (const m of langs.matchAll(/[a-z]{2,3}-([A-Z]{2})/g)) {
     if (EUR_COUNTRIES.has(m[1])) return 'EUR'
@@ -1977,14 +1987,10 @@ app.get('/inbox/:addr/billing', async (c) => {
                 <label class="level-card"><input type="radio" name="cycle" value="monthly" checked /><span><b>Monthly</b></span></label>
                 <label class="level-card"><input type="radio" name="cycle" value="yearly" /><span><b>Yearly</b><small>2 months free</small></span></label>
               </div>
-              <label class="lbl">Currency</label>
-              <div class="level-cards">
-                <label class="level-card"><input type="radio" name="currency" value="eur" checked={currency === 'eur'} /><span><b>EUR €</b></span></label>
-                <label class="level-card"><input type="radio" name="currency" value="usd" checked={currency === 'usd'} /><span><b>USD $</b></span></label>
-              </div>
               <div class="btn-row">
                 <button class="btn" type="submit" data-busy="Redirecting to Stripe…">Continue to checkout →</button>
               </div>
+              <p class="fineprint">Billed in {currency === 'eur' ? 'euros (€)' : 'US dollars ($)'}.</p>
             </form>
           </section>
         )}
@@ -2002,7 +2008,8 @@ app.post('/inbox/:addr/billing/checkout', async (c) => {
   const body = await c.req.parseBody()
   const plan = ['duo', 'collective', 'pro'].includes(String(body.plan)) ? String(body.plan) : 'collective'
   const cycle = String(body.cycle) === 'yearly' ? 'yearly' as const : 'monthly' as const
-  const currency = String(body.currency) === 'usd' ? 'usd' as const : 'eur' as const
+  // never taken from the form: the visitor doesn't choose, we detect
+  const currency = visitorCurrency(c) === 'EUR' ? 'eur' as const : 'usd' as const
   try {
     const collective = (await getCollective(t.collective.id))!
     const url = await createCheckoutSession(collective, t.member.email, plan, cycle, currency)
@@ -2026,7 +2033,6 @@ const DomainUpsell = (p: { base: string; balance: number; currency: 'eur' | 'usd
         <h2>Subscribe to Pro</h2>
         <form method="post" action={`${p.base}/billing/checkout`} class="btn-row">
           <input type="hidden" name="plan" value="pro" />
-          <input type="hidden" name="currency" value={p.currency} />
           <button class="btn small" name="cycle" value="monthly" type="submit" data-busy="Opening…">{s}100 / month</button>
           <button class="btn small ghost" name="cycle" value="yearly" type="submit" data-busy="Opening…">{s}1,000 / year — 2 months free</button>
         </form>
@@ -2549,7 +2555,6 @@ app.get('/claim/:slug', async (c) => {
             <label class="level-card" style="flex:1"><input type="radio" name="cycle" value="monthly" checked /><span><b>{s}10 / month</b></span></label>
             <label class="level-card" style="flex:1"><input type="radio" name="cycle" value="yearly" /><span><b>{s}100 / year</b><small>save {s}20</small></span></label>
           </div>
-          <input type="hidden" name="currency" value={currency} />
           <button class="btn" type="submit" data-busy="Redirecting to Stripe…">Pay & activate →</button>
         </form>
       </section>
@@ -2591,7 +2596,7 @@ app.post('/claim/:slug/checkout', async (c) => {
   if (!(await stripeUsable())) return c.redirect(`/claim/${t.collective.slug}?m=` + encodeURIComponent('Online payment is not available right now — start with the free trial.'))
   const body = await c.req.parseBody()
   const cycle = String(body.cycle) === 'yearly' ? 'yearly' as const : 'monthly' as const
-  const currency = String(body.currency) === 'usd' ? 'usd' as const : 'eur' as const
+  const currency = visitorCurrency(c) === 'EUR' ? 'eur' as const : 'usd' as const
   try {
     const url = await createCheckoutSession(t.collective, t.member.email, 'collective', cycle, currency)
     return c.redirect(url)

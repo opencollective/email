@@ -1,6 +1,7 @@
 /** @jsxImportSource hono/jsx */
 import type { FC } from 'hono/jsx'
 import { cfg } from '../config.js'
+import { TZ_SCRIPT } from './ui.js'
 
 // Design language borrowed from opencollective.com: white ground, deep navy
 // headings, Open Collective blue, pill buttons, generous whitespace, soft
@@ -352,6 +353,7 @@ export const MarketingPage: FC<{ title: string; description: string; og?: string
         <main class="mkt-page">{p.children}</main>
         <Foot />
       </div>
+      <script dangerouslySetInnerHTML={{ __html: TZ_SCRIPT }} />
     </body>
   </html>
 )
@@ -505,7 +507,7 @@ export const HomePage: FC<{ joined?: boolean; currency?: 'USD' | 'EUR' }> = ({ j
 
           <Foot />
         </div>
-        <script dangerouslySetInnerHTML={{ __html: SCRIPT }} />
+        <script dangerouslySetInnerHTML={{ __html: TZ_SCRIPT + SCRIPT }} />
       </body>
     </html>
   )

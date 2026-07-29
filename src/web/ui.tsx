@@ -5,6 +5,18 @@ import type { Collective, Member, Thread } from '../db.js'
 import { initials, relTime } from '../util.js'
 import { billingState, trialDaysLeft } from '../billing.js'
 
+/** Report this browser's time zone once (~1 year) so prices show in euros for
+ *  European visitors even when the edge can't resolve the IP country. Included
+ *  on every shell — marketing pages are where prices are first seen. */
+export const TZ_SCRIPT = `
+try {
+  var tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+  if (tz && document.cookie.indexOf('tz=') === -1) {
+    document.cookie = 'tz=' + encodeURIComponent(tz) + ';path=/;max-age=31536000;samesite=Lax' + (location.protocol === 'https:' ? ';secure' : '');
+  }
+} catch (e) {}
+`
+
 export const SCRIPT = `
 document.addEventListener('click', (e) => {
   const t = e.target.closest('[data-confirm]');
@@ -234,7 +246,7 @@ export const Page: FC<{ title?: string; flash?: string; children?: Child }> = (p
     <body>
       {props.flash ? <div class="flash">{props.flash}</div> : null}
       {props.children}
-      <script dangerouslySetInnerHTML={{ __html: SCRIPT }} />
+      <script dangerouslySetInnerHTML={{ __html: TZ_SCRIPT + SCRIPT }} />
     </body>
   </html>
 )

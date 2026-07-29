@@ -58,7 +58,7 @@ ogApp.get('/aimg/:token', async (c) => {
   if (!thread) return c.notFound()
   const s = await badgeState(thread)
   const initials = s.who ? s.who.slice(0, 2).toUpperCase() : s.line.startsWith('✓') ? '✓' : '!'
-  // 2x for retina; emails display it at 520×56
+  // rendered large for retina; emails display it at 688×74 (same 9.3 ratio)
   const img = await png(
     h('div', { display: 'flex', width: '100%', height: '100%', alignItems: 'center', gap: 24, padding: '0 30px', backgroundColor: s.bg, border: `3px solid ${s.color}`, borderRadius: 26, fontFamily: 'Inter' },
       h('div', { display: 'flex', width: 62, height: 62, borderRadius: 31, backgroundColor: s.color, color: '#ffffff', alignItems: 'center', justifyContent: 'center', fontSize: 26, fontWeight: 600, flexShrink: 0 }, initials),

@@ -10,6 +10,10 @@ export async function sendAppEmail(opts: {
   html: string
   text: string
   replyTo?: string
+  /** Display From, e.g. `Commons Hub Brussels <commonshub@collective.email>`.
+   *  Must stay on our own sending domain (Resend verification + the inbound
+   *  loop guard both depend on it). */
+  from?: string
 }): Promise<boolean> {
   if (!cfg.resendKey) {
     console.log(`\n[appmail:dev] To: ${opts.to}\n[appmail:dev] Subject: ${opts.subject}${opts.replyTo ? `\n[appmail:dev] Reply-To: ${opts.replyTo}` : ''}\n${opts.text}\n`)
@@ -24,7 +28,7 @@ export async function sendAppEmail(opts: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        from: cfg.resendFrom,
+        from: opts.from || cfg.resendFrom,
         to: [opts.to],
         subject: opts.subject,
         html: opts.html,
