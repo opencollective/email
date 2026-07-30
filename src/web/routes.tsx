@@ -12,7 +12,7 @@ import {
 import {
   checkCode, createSession, destroyEmailSessions, destroySession, emailFromSession, issueCode, type LoginCodeRow,
 } from '../auth.js'
-import { outboundFrom, sendCollectiveReply } from '../outbound.js'
+import { forwardMessage, outboundFrom, sendCollectiveReply, signatureFor } from '../outbound.js'
 import { digestTick, sendOnboarding, trialTick } from '../notify.js'
 import { backupTick } from '../backup.js'
 import { CONTRIBUTE_SLUG, creditBalance, creditsLedger, creditsTick, fileContribution, mintCredits, referralUrl , PRO_MONTH_CREDITS } from '../credits.js'
@@ -973,6 +973,9 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   const collectiveAddr = outboundFrom(collective).fromAddress
   // matching rule for this thread (newsletters & co.) — drives HTML display
   const rule = await matchingRule(collective.id, thread.counterpart_email, thread.subject)
+  // Cc sticks to the thread (everyone keeps being copied) but stays editable
+  const threadCc: string[] = JSON.parse(thread.cc_json || '[]')
+  const signature = signatureFor(collective, member)
 
   const items: TimelineItem[] = [
     ...msgs.map((m): TimelineItem => ({ kind: 'msg', ts: m.sent_at || m.created_at, msg: m })),
@@ -1070,6 +1073,17 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                       <button class="btn small ghost" name="act" value="external" type="submit" data-busy="Saving…">Not a teammate</button>
                     </form>
                   ) : null}
+                  {canSendRole(member.role) ? (
+                    <details class="fwd">
+                      <summary>Forward…</summary>
+                      <form method="post" action={`${base}/thread/${thread.id}/forward`}>
+                        <input type="hidden" name="message_id" value={String(g.id)} />
+                        <input class="input small" type="email" name="to" placeholder="colleague@example.com" required />
+                        <input class="input small" name="note" placeholder="Add a note (optional)" />
+                        <button class="btn small ghost" type="submit" data-busy="Forwarding…">Forward</button>
+                      </form>
+                    </details>
+                  ) : null}
                   {(attsMap.get(g.id) || []).length > 0 ? (
                     <div class="msg-atts">
                       {(attsMap.get(g.id) || []).map((a) =>
@@ -1133,12 +1147,19 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             ) : null}
             {canSendRole(member.role) ? (
             <form method="post" action={`${base}/thread/${thread.id}/reply`} data-pane="reply" enctype="multipart/form-data">
-              <div class="to">From <b>{collectiveAddr}</b> · To <b>{thread.counterpart_email || 'unknown'}</b></div>
-              <textarea name="body" rows={5} placeholder={`Write to ${counterpartFirst}…`} data-draft="reply" required></textarea>
+              <div class="to">
+                <span>To <b>{thread.counterpart_email || 'unknown'}</b></span>
+                <label class="cc-field">Cc
+                  <input class="input small" name="cc" value={threadCc.join(', ')} placeholder="nobody — add emails, comma separated" autocomplete="off" spellcheck={false} />
+                </label>
+              </div>
+              {/* the sign-off is in the text, so it can be edited or deleted before sending */}
+              <textarea name="body" rows={6} placeholder={`Write to ${counterpartFirst}…`} data-draft="reply" data-signature={signature} required>{`\n\n${signature}`}</textarea>
               <div class="actions">
                 <label class="file-label">📎 Attach<input type="file" name="files" multiple class="file-input" /></label>
-                <button class="btn send-btn" type="submit" data-busy="Sending…">Send as {collectiveAddr} ➤</button>
+                <button class="btn send-btn" type="submit" data-busy="Sending…">Send</button>
               </div>
+              <p class="fineprint send-note">Sending to <b>{thread.counterpart_email || 'unknown'}</b> as <b>{collectiveAddr}</b>{threadCc.length ? <> · copying <b>{threadCc.join(', ')}</b></> : null}</p>
             </form>
             ) : null}
             <form method="post" action={`${base}/thread/${thread.id}/note`} data-pane="note" class={canSendRole(member.role) ? 'hidden' : ''}>
@@ -1291,12 +1312,40 @@ app.post('/inbox/:addr/thread/:id/reply', async (c) => {
       contentType: f.type || 'application/octet-stream',
       content: Buffer.from(await f.arrayBuffer()),
     })))
-    await sendCollectiveReply(t.collective, thread.id, String(body.body || ''), t.member, 'web', attachments)
+    const cc = parseEmails(String(body.cc || ''))
+    await sendCollectiveReply(t.collective, thread.id, String(body.body || ''), t.member, 'web', attachments, cc)
+    // the Cc list belongs to the conversation, so the next reply keeps it
+    await run('UPDATE threads SET cc_json = ? WHERE id = ?', [JSON.stringify(cc), thread.id])
     const fresh = (await getThread(thread.id))!
     if (!fresh.assignee_member_id) await setAssignee(fresh, t.member.id, t.member.id, 'claim')
     return c.redirect(`${base}/thread/${thread.id}?m=` + encodeURIComponent('Reply sent ✓'))
   } catch (err) {
     return c.redirect(`${base}/thread/${thread.id}?m=` + encodeURIComponent(`Could not send: ${err instanceof Error ? err.message : 'unknown error'}`))
+  }
+})
+
+/** "a@x.test, b@y.test" → ['a@x.test','b@y.test'] (deduped, invalid dropped). */
+const parseEmails = (raw: string): string[] => [...new Set(
+  raw.split(/[,;\s]+/).map((e) => e.trim().toLowerCase())
+    .filter((e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)),
+)].slice(0, 20)
+
+app.post('/inbox/:addr/thread/:id/forward', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const blocked = senderBlock(c, t)
+  if (blocked) return blocked
+  const thread = await threadOf(c, t)
+  if (!thread) return c.notFound()
+  const base = `/inbox/${t.collective.slug}`
+  const body = await c.req.parseBody()
+  const message = await get<Message>('SELECT * FROM messages WHERE id = ? AND thread_id = ?', [Number(body.message_id), thread.id])
+  if (!message) return c.notFound()
+  try {
+    await forwardMessage(t.collective, message, String(body.to || ''), String(body.note || ''), t.member)
+    return c.redirect(`${base}/thread/${thread.id}?m=` + encodeURIComponent(`Forwarded to ${String(body.to || '').trim()} ✓`))
+  } catch (err) {
+    return c.redirect(`${base}/thread/${thread.id}?m=` + encodeURIComponent(`Could not forward: ${err instanceof Error ? err.message : 'unknown error'}`))
   }
 })
 

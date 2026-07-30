@@ -619,3 +619,81 @@ test('a custom-domain alias counts as the team even without an exact member reco
   assert.equal(site.status, 'needs_reply')
   assert.equal((await threadMessages(site.id))[0].direction, 'inbound')
 })
+
+test('composer: signature is in the body, Cc sticks to the thread, no double sign-off', async () => {
+  const { signatureFor } = await import('../src/outbound.js')
+  const col = await createCollective(`cc${Date.now() % 100000}`, 'Cc Co')
+  const email = `sender-${uniq()}@t.test`
+  const memberId = await addMember(col.id, email)
+  const sid = await createSession(email)
+  await inboundEmail(col.slug)
+  const thread = await lastThread(col.id)
+  const member = (await get<any>('SELECT * FROM members WHERE id = ?', [memberId]))!
+  const signature = signatureFor(col, member)
+
+  // the composer pre-fills the sign-off so it can be seen and edited
+  const page = await app.request(`/inbox/${col.slug}/thread/${thread.id}`, { headers: { cookie: `requests_sid=${sid}` } })
+  const html = await page.text()
+  assert.match(html, new RegExp(signature.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'signature visible in the textarea')
+  assert.match(html, /name="cc"/, 'an editable Cc field')
+
+  // sending with the signature already in the body must not append a second one
+  const res = await app.request(`/inbox/${col.slug}/thread/${thread.id}/reply`, {
+    method: 'POST',
+    headers: { cookie: `requests_sid=${sid}`, 'content-type': 'application/x-www-form-urlencoded' },
+    body: `body=${encodeURIComponent(`Here you go.\n\n${signature}`)}&cc=${encodeURIComponent('boss@x.test, boss@x.test, nope')}`,
+  })
+  assert.equal(res.status, 302)
+  const sent = (await threadMessages(thread.id)).at(-1)!
+  assert.equal(sent.direction, 'outbound')
+  assert.equal(sent.body_text!.match(/for Cc Co/g)?.length, 1, 'signed exactly once')
+  assert.deepEqual(JSON.parse(sent.cc_json || '[]'), ['boss@x.test'], 'deduped, invalid dropped')
+
+  // …and the Cc is remembered on the thread, pre-filled next time
+  const after = (await getThread(thread.id))!
+  assert.deepEqual(JSON.parse(after.cc_json || '[]'), ['boss@x.test'])
+  const page2 = await app.request(`/inbox/${col.slug}/thread/${thread.id}`, { headers: { cookie: `requests_sid=${sid}` } })
+  assert.match(await page2.text(), /name="cc" value="boss@x\.test"/, 'Cc persists but stays editable')
+
+  // clearing it removes everyone
+  await app.request(`/inbox/${col.slug}/thread/${thread.id}/reply`, {
+    method: 'POST',
+    headers: { cookie: `requests_sid=${sid}`, 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'body=Second&cc=',
+  })
+  assert.deepEqual(JSON.parse((await getThread(thread.id))!.cc_json || '[]'), [], 'Cc can always be emptied')
+})
+
+test('any message can be forwarded, without marking the thread answered', async () => {
+  const col = await createCollective(`fw${Date.now() % 100000}`, 'Fwd Co')
+  const email = `fwd-${uniq()}@t.test`
+  await addMember(col.id, email)
+  const sid = await createSession(email)
+  await inboundEmail(col.slug)
+  const thread = await lastThread(col.id)
+  const msg = (await threadMessages(thread.id))[0]
+
+  const page = await app.request(`/inbox/${col.slug}/thread/${thread.id}`, { headers: { cookie: `requests_sid=${sid}` } })
+  assert.match(await page.text(), /Forward…/)
+
+  const res = await app.request(`/inbox/${col.slug}/thread/${thread.id}/forward`, {
+    method: 'POST',
+    headers: { cookie: `requests_sid=${sid}`, 'content-type': 'application/x-www-form-urlencoded' },
+    body: `message_id=${msg.id}&to=${encodeURIComponent('colleague@partner.test')}&note=${encodeURIComponent('Can you take this?')}`,
+  })
+  assert.equal(res.status, 302)
+  assert.match(decodeURIComponent(res.headers.get('location')!), /Forwarded to colleague@partner\.test/)
+  const after = (await getThread(thread.id))!
+  assert.equal(after.status, 'needs_reply', 'forwarding is not answering')
+  const ev = await all<any>("SELECT * FROM events WHERE thread_id = ? AND type = 'forwarded'", [thread.id])
+  assert.equal(ev.length, 1)
+  assert.equal(JSON.parse(ev[0].data_json).to, 'colleague@partner.test')
+
+  // a bad address is refused with a readable message
+  const bad = await app.request(`/inbox/${col.slug}/thread/${thread.id}/forward`, {
+    method: 'POST',
+    headers: { cookie: `requests_sid=${sid}`, 'content-type': 'application/x-www-form-urlencoded' },
+    body: `message_id=${msg.id}&to=notanemail&note=`,
+  })
+  assert.match(decodeURIComponent(bad.headers.get('location')!), /doesn't look right/)
+})

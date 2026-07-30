@@ -673,3 +673,21 @@ iframe.msg-frame {
   margin-top: 14px; display: flex; flex-direction: column; gap: 8px;
 }
 .claim-option h2 { margin: 0; }
+
+/* composer: recipients row with an always-editable Cc */
+.composer .to { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+.cc-field { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 220px; font-size: 12px; color: var(--muted); }
+.cc-field input { flex: 1; min-width: 0; }
+.send-note { margin: 8px 0 0; padding: 0 16px 12px; }
+.send-note b { color: var(--ink); font-weight: 600; }
+
+/* forward one message to someone outside the thread */
+.fwd { margin: 0 16px 12px; }
+.fwd summary {
+  cursor: pointer; display: inline-block; list-style: none; user-select: none;
+  font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+  border: 1.5px dashed var(--line); border-radius: 999px; padding: 2px 9px;
+}
+.fwd summary::-webkit-details-marker { display: none; }
+.fwd form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.fwd input { flex: 1; min-width: 180px; }

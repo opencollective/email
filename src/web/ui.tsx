@@ -67,13 +67,8 @@ document.querySelectorAll('.file-input').forEach((inp) => {
 // Saved per thread+pane on every keystroke, restored on load, cleared only
 // once the server confirms with a success flash.
 const draftKey = (pane) => 'draft:' + location.pathname + ':' + pane;
-document.querySelectorAll('textarea[data-draft]').forEach((t) => {
-  const k = draftKey(t.dataset.draft);
-  try {
-    if (!t.value && localStorage.getItem(k)) t.value = localStorage.getItem(k);
-    t.addEventListener('input', () => localStorage.setItem(k, t.value));
-  } catch {}
-});
+// Clear sent drafts BEFORE restoring — otherwise the just-sent text is put
+// back into the textarea and looks like the send didn't take.
 const flashEl = document.querySelector('.flash');
 if (flashEl) {
   try {
@@ -81,6 +76,21 @@ if (flashEl) {
     if (flashEl.textContent.includes('Note added')) localStorage.removeItem(draftKey('note'));
   } catch {}
 }
+document.querySelectorAll('textarea[data-draft]').forEach((t) => {
+  const k = draftKey(t.dataset.draft);
+  const pristine = t.value; // the server-rendered starting point (e.g. the signature)
+  try {
+    const saved = localStorage.getItem(k);
+    if (saved && saved !== pristine) t.value = saved;
+    t.addEventListener('input', () => {
+      if (t.value === pristine) localStorage.removeItem(k); else localStorage.setItem(k, t.value);
+    });
+  } catch {}
+  // start writing above the signature, not after it
+  if (t.dataset.signature && t.value.trim() === t.dataset.signature.trim()) {
+    t.addEventListener('focus', () => { if (t.selectionStart === t.value.length) t.setSelectionRange(0, 0); }, { once: true });
+  }
+});
 
 // Address inputs grow with the slug so the full address stays visible —
 // the @domain part wraps to its own line when the two no longer fit.
@@ -192,6 +202,7 @@ export function eventText(
       }
     }
     case 'unassigned': return `${a ?? 'Someone'} unassigned ${name(data.from)}`
+    case 'forwarded': return `${a ?? 'Someone'} forwarded a message to ${data.to}`
     case 'status': {
       if (data.to === 'needs_reply' && data.auto) return 'Reopened — new message from the sender'
       if (data.to === 'answered' && data.auto) return 'Marked answered'
@@ -214,7 +225,7 @@ export const Page: FC<{ title?: string; flash?: string; children?: Child }> = (p
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=21" />
+      <link rel="stylesheet" href="/static/style.css?v=22" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script

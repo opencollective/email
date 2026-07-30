@@ -21,6 +21,12 @@ export function outboundFrom(collective: Collective): { fromAddress: string; fro
   return { fromAddress: addr, fromHeader: `${name} <${addr}>` }
 }
 
+/** The sign-off appended to replies. The web composer pre-fills it into the
+ *  textarea so it can be edited or removed before sending — which is why the
+ *  send path only appends it when it isn't already there. */
+export const signatureFor = (collective: Collective, member: Member) =>
+  `— ${member.name || member.email}, for ${collective.name}`
+
 export interface OutAttachment {
   filename: string
   contentType: string
@@ -36,6 +42,7 @@ export async function sendCollectiveReply(
   member: Member,
   via: 'web' | 'email',
   attachments: OutAttachment[] = [],
+  cc: string[] = [],
 ): Promise<Message> {
   const thread = await getThread(threadId)
   if (!thread || thread.collective_id !== collective.id) throw new Error('Thread not found')
@@ -46,7 +53,9 @@ export async function sendCollectiveReply(
 
   let body = text.trim()
   if (!body && attachments.length === 0) throw new Error('Reply is empty.')
-  if (cfg.signReplies) body += `${body ? '\n\n' : ''}— ${member.name || member.email}, for ${collective.name}`
+  const signature = signatureFor(collective, member)
+  // never sign twice: the composer usually sends the signature inside the body
+  if (cfg.signReplies && !body.includes(signature)) body += `${body ? '\n\n' : ''}${signature}`
 
   const { fromAddress, fromHeader } = outboundFrom(collective)
   const subject = thread.subject.match(/^re:/i) ? thread.subject : `Re: ${thread.subject}`
@@ -68,7 +77,7 @@ export async function sendCollectiveReply(
 
   let resendEmailId: string | null = null
   if (!cfg.resendKey) {
-    console.log(`\n[outbound:dev] From: ${fromAddress}\n[outbound:dev] To: ${to}\n[outbound:dev] Subject: ${subject}\n${body}\n[outbound:dev] attachments: ${attachments.map((a) => a.filename).join(', ') || 'none'}${hasImages ? ' (images inline)' : ''}\n`)
+    console.log(`\n[outbound:dev] From: ${fromAddress}\n[outbound:dev] To: ${to}${cc.length ? `\n[outbound:dev] Cc: ${cc.join(', ')}` : ''}\n[outbound:dev] Subject: ${subject}\n${body}\n[outbound:dev] attachments: ${attachments.map((a) => a.filename).join(', ') || 'none'}${hasImages ? ' (images inline)' : ''}\n`)
   } else {
     const headers: Record<string, string> = { 'Message-ID': messageId }
     if (lastIn?.rfc822_message_id) headers['In-Reply-To'] = lastIn.rfc822_message_id
@@ -76,6 +85,7 @@ export async function sendCollectiveReply(
     const payload = (inline: boolean) => JSON.stringify({
       from: fromHeader,
       to: [to],
+      ...(cc.length ? { cc } : {}),
       reply_to: [fromAddress],
       subject,
       text: body,
@@ -106,11 +116,11 @@ export async function sendCollectiveReply(
 
   const ts = now()
   const r = await run(`
-    INSERT INTO messages (thread_id, rfc822_message_id, in_reply_to, direction, from_email, from_name, to_json, body_text, sent_by_member_id, resend_email_id, sent_at, created_at)
-    VALUES (?, ?, ?, 'outbound', ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO messages (thread_id, rfc822_message_id, in_reply_to, direction, from_email, from_name, to_json, cc_json, body_text, sent_by_member_id, resend_email_id, sent_at, created_at)
+    VALUES (?, ?, ?, 'outbound', ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     threadId, messageId, lastIn?.rfc822_message_id ?? null,
-    fromAddress, collective.name, JSON.stringify([to]),
+    fromAddress, collective.name, JSON.stringify([to]), JSON.stringify(cc),
     body, member.id, resendEmailId, ts, ts,
   ])
   for (const [i, a] of attachments.entries()) await storeAttachment(r.lastId, a.filename, a.contentType, a.content, i)
@@ -120,4 +130,52 @@ export async function sendCollectiveReply(
   await addEvent(threadId, member.id, 'replied', { via })
 
   return (await get<Message>('SELECT * FROM messages WHERE id = ?', [r.lastId]))!
+}
+
+/** Forward one message to someone outside the thread (a colleague, a supplier).
+ *  Sent as the collective, quoting the original with its own header, and
+ *  recorded on the thread so the collective can see it went out — without
+ *  flipping the thread to answered: forwarding isn't replying. */
+export async function forwardMessage(
+  collective: Collective,
+  message: Message,
+  to: string,
+  note: string,
+  member: Member,
+): Promise<void> {
+  const thread = await getThread(message.thread_id)
+  if (!thread || thread.collective_id !== collective.id) throw new Error('Thread not found')
+  await assertCanSend(collective)
+  const dest = to.trim().toLowerCase()
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(dest)) throw new Error('That email address doesn\'t look right.')
+
+  const { fromAddress, fromHeader } = outboundFrom(collective)
+  const when = new Date((message.sent_at || now()) * 1000).toUTCString()
+  const quoted = [
+    '---------- Forwarded message ----------',
+    `From: ${message.from_name ? `${message.from_name} <${message.from_email}>` : message.from_email || 'unknown'}`,
+    `Date: ${when}`,
+    `Subject: ${thread.subject}`,
+    `To: ${(JSON.parse(message.to_json || '[]') as string[]).join(', ')}`,
+    '',
+    message.body_text || '',
+  ].join('\n')
+  const body = `${note.trim() ? `${note.trim()}\n\n` : ''}${quoted}`
+  const subject = /^fwd:/i.test(thread.subject) ? thread.subject : `Fwd: ${thread.subject}`
+  const messageId = `<fwd-${message.id}-${crypto.randomBytes(8).toString('hex')}@${cfg.emailDomain}>`
+
+  if (!cfg.resendKey) {
+    console.log(`\n[outbound:dev] FORWARD to ${dest}\n[outbound:dev] Subject: ${subject}\n${body}\n`)
+  } else {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${cfg.resendKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: fromHeader, to: [dest], reply_to: [fromAddress], subject, text: body,
+        headers: { 'Message-ID': messageId },
+      }),
+    })
+    if (!res.ok) throw new Error(`Could not forward (${res.status}): ${(await res.text()).slice(0, 200)}`)
+  }
+  await addEvent(thread.id, member.id, 'forwarded', { to: dest, message_id: message.id })
 }

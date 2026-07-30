@@ -199,6 +199,7 @@ function init(): Promise<void> {
       'ALTER TABLE rules ADD COLUMN match_subject TEXT',
       'ALTER TABLE rules ADD COLUMN assign_member_id INTEGER',
       'ALTER TABLE rules ADD COLUMN close INTEGER NOT NULL DEFAULT 1',
+      'ALTER TABLE threads ADD COLUMN cc_json TEXT',
     ]
     ready = db.batch(SCHEMA, 'write')
       // additive migrations for pre-existing tables; ignore "duplicate column"
@@ -308,6 +309,7 @@ export interface Thread {
   status: 'needs_reply' | 'answered' | 'closed' | 'spam'
   assignee_member_id: number | null
   counterpart_email: string | null
+  cc_json: string | null
   counterpart_name: string | null
   first_message_at: number | null
   last_message_at: number | null
