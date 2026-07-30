@@ -385,11 +385,11 @@ img.avatar-img { object-fit: cover; }
 }
 .msg-head .who b { font-size: 14px; }
 .msg-head .who small { font-family: var(--mono); font-size: 10.5px; display: block; overflow-wrap: anywhere; }
-.msg-head .when { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted); }
-.sentby {
-  font-family: var(--mono); font-size: 10.5px; color: var(--muted);
-  border: 1.5px dashed var(--line); border-radius: 999px; padding: 2px 9px;
-}
+/* right column: when it arrived, who sent it, and the forward affordance */
+.msg-head { position: relative; }
+.msg-meta { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 1px; text-align: right; }
+.msg-head .when { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.sentby { font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
 .msg-body { padding: 14px 16px; font-size: 14.5px; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 72ch; }
 
 /* Sandboxed HTML email display (newsletters & co.) */
@@ -480,10 +480,9 @@ iframe.msg-frame {
 .composer .note-to { background: repeating-linear-gradient(-45deg, var(--hatch) 0 4px, transparent 4px 9px); }
 .composer textarea { border: none; border-radius: 0; resize: vertical; display: block; }
 .composer .actions {
-  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap;
   padding: 10px 16px; border-top: 1.5px solid var(--line-soft); background: var(--fill);
 }
-.composer .actions .send-btn { margin-left: auto; }
 .composer .hint { font-family: var(--mono); font-size: 10.5px; color: var(--muted); flex: 1; min-width: 0; }
 
 /* typing presence */
@@ -678,16 +677,26 @@ iframe.msg-frame {
 .composer .to { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
 .cc-field { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 220px; font-size: 12px; color: var(--muted); }
 .cc-field input { flex: 1; min-width: 0; }
-.send-note { margin: 8px 0 0; padding: 0 16px 12px; }
+.send-stack { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.send-note {
+  margin: 0; display: flex; flex-direction: column; align-items: flex-end;
+  text-align: right; line-height: 1.35; max-width: 100%;
+}
+.send-note span { overflow-wrap: anywhere; }
 .send-note b { color: var(--ink); font-weight: 600; }
 
 /* forward one message to someone outside the thread */
-.fwd { margin: 0 16px 12px; }
+.fwd { flex: none; }
 .fwd summary {
-  cursor: pointer; display: inline-block; list-style: none; user-select: none;
-  font-family: var(--mono); font-size: 10.5px; color: var(--muted);
-  border: 1.5px dashed var(--line); border-radius: 999px; padding: 2px 9px;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  list-style: none; user-select: none; width: 26px; height: 26px; border-radius: 50%;
+  font-size: 14px; color: var(--muted); border: 1.5px solid transparent;
 }
+.fwd summary:hover, .fwd[open] summary { color: var(--ink); border-color: var(--line); background: var(--fill); }
 .fwd summary::-webkit-details-marker { display: none; }
-.fwd form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.fwd form {
+  position: absolute; left: 0; right: 0; top: 100%; z-index: 3;
+  display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px;
+  background: var(--card); border-bottom: 1.5px solid var(--line-soft); box-shadow: var(--shadow);
+}
 .fwd input { flex: 1; min-width: 180px; }

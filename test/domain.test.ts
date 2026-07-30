@@ -157,7 +157,8 @@ test('thread page + reply route reflect the verified custom domain (tenant proje
 
   const page = await app.request(`/inbox/${col.slug}/thread/${th.lastId}`, { headers: { cookie: `requests_sid=${sid}` } })
   const html = await page.text()
-  assert.match(html, /Sending to <b>ann@x\.test<\/b> as <b>hello@ourgroup\.org<\/b>/, 'the composer says who it sends to, and as whom')
+  assert.match(html, /Sending to <b>ann@x\.test<\/b>/, 'the composer says who it sends to')
+  assert.match(html, /as <b>hello@ourgroup\.org<\/b>/, '…and as whom')
   assert.ok(!/as <b>send\d+@/.test(html), 'not the collective.email address once verified')
 
   // and unverified degrades back to the platform address

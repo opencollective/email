@@ -1036,10 +1036,23 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                       <b>{g.direction === 'outbound' ? collective.name : g.from_name || g.from_email}</b>
                       <small>{g.from_email} → {JSON.parse(g.to_json || '[]').join(', ')}</small>
                     </span>
-                    {g.direction === 'outbound' && g.sent_by_member_id ? (
-                      <span class="sentby">✎ sent by {memberName(members.get(g.sent_by_member_id))} · members only</span>
+                    <span class="msg-meta">
+                      <span class="when">{fmtDateTime(g.sent_at)}</span>
+                      {g.direction === 'outbound' && g.sent_by_member_id ? (
+                        <small class="sentby">sent by {memberName(members.get(g.sent_by_member_id))}</small>
+                      ) : null}
+                    </span>
+                    {canSendRole(member.role) ? (
+                      <details class="fwd">
+                        <summary title="Forward" aria-label="Forward this message">↪</summary>
+                        <form method="post" action={`${base}/thread/${thread.id}/forward`}>
+                          <input type="hidden" name="message_id" value={String(g.id)} />
+                          <input class="input small" type="email" name="to" placeholder="colleague@example.com" required />
+                          <input class="input small" name="note" placeholder="Add a note (optional)" />
+                          <button class="btn small ghost" type="submit" data-busy="Forwarding…">Forward</button>
+                        </form>
+                      </details>
                     ) : null}
-                    <span class="when">{fmtDateTime(g.sent_at)}</span>
                   </div>
                   {rule?.close && g.direction === 'inbound' && g.body_html ? (
                     // Rule-filed mail renders its real (sanitized) HTML in a
@@ -1072,17 +1085,6 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                       <button class="btn small" name="act" value="link" type="submit" data-busy="Linking…">It's them — link</button>
                       <button class="btn small ghost" name="act" value="external" type="submit" data-busy="Saving…">Not a teammate</button>
                     </form>
-                  ) : null}
-                  {canSendRole(member.role) ? (
-                    <details class="fwd">
-                      <summary>Forward…</summary>
-                      <form method="post" action={`${base}/thread/${thread.id}/forward`}>
-                        <input type="hidden" name="message_id" value={String(g.id)} />
-                        <input class="input small" type="email" name="to" placeholder="colleague@example.com" required />
-                        <input class="input small" name="note" placeholder="Add a note (optional)" />
-                        <button class="btn small ghost" type="submit" data-busy="Forwarding…">Forward</button>
-                      </form>
-                    </details>
                   ) : null}
                   {(attsMap.get(g.id) || []).length > 0 ? (
                     <div class="msg-atts">
@@ -1157,9 +1159,15 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               <textarea name="body" rows={6} placeholder={`Write to ${counterpartFirst}…`} data-draft="reply" data-signature={signature} required>{`\n\n${signature}`}</textarea>
               <div class="actions">
                 <label class="file-label">📎 Attach<input type="file" name="files" multiple class="file-input" /></label>
-                <button class="btn send-btn" type="submit" data-busy="Sending…">Send</button>
+                <span class="send-stack">
+                  <button class="btn send-btn" type="submit" data-busy="Sending…">Send</button>
+                  <span class="fineprint send-note">
+                    <span>Sending to <b>{thread.counterpart_email || 'unknown'}</b></span>
+                    <span>as <b>{collectiveAddr}</b></span>
+                    {threadCc.length ? <span>copying <b>{threadCc.join(', ')}</b></span> : null}
+                  </span>
+                </span>
               </div>
-              <p class="fineprint send-note">Sending to <b>{thread.counterpart_email || 'unknown'}</b> as <b>{collectiveAddr}</b>{threadCc.length ? <> · copying <b>{threadCc.join(', ')}</b></> : null}</p>
             </form>
             ) : null}
             <form method="post" action={`${base}/thread/${thread.id}/note`} data-pane="note" class={canSendRole(member.role) ? 'hidden' : ''}>
