@@ -167,7 +167,13 @@ export async function ingestInbound(
 
   const { team, member } = isForwardTest ? { team: false, member: undefined } : await teamSender(collective, from.address)
 
-  let thread = await findThread(collective, parsed, from.address)
+  // Who this message is really "with": for a teammate's own mail that's the
+  // outsider they wrote to, never the teammate. Threading has to use that,
+  // otherwise a reply whose References we never saw (they answered from their
+  // mailbox, quoting a copy that never passed through us) opens a duplicate
+  // thread beside the customer's original.
+  const ext = team ? await externalRecipient(collective, [...tos, ...ccs]) : undefined
+  let thread = await findThread(collective, parsed, (team ? ext?.address : from.address) || from.address)
 
   // A teammate writing from their own mailbox (the copy reaches us through the
   // group/forward) is the team side of the conversation, not a new customer:
@@ -180,10 +186,7 @@ export async function ingestInbound(
   //   "unclaimed" in the inbox
   let counterpart = from
   let teamAnswer = team && !!thread
-  if (!thread && team && isReply) {
-    const ext = await externalRecipient(collective, [...tos, ...ccs])
-    if (ext) { counterpart = ext; teamAnswer = true }
-  }
+  if (!thread && team && isReply && ext) { counterpart = ext; teamAnswer = true }
 
   // Sender rules: newsletters & co. get tagged and filed — closed, never
   // assigned — but still forwarded to members (in HTML) so they can read them.

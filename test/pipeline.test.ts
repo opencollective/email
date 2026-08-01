@@ -697,3 +697,43 @@ test('any message can be forwarded, without marking the thread answered', async 
   })
   assert.match(decodeURIComponent(bad.headers.get('location')!), /doesn't look right/)
 })
+
+test("a teammate's reply lands on the customer's thread even when we never saw the quoted mail", async () => {
+  const { ingestInbound } = await import('../src/ingest.js')
+  const col = await createCollective(`thr${Date.now() % 100000}`, 'Thread Co')
+  await run("UPDATE collectives SET plan = 'pro', custom_domain = 'thrco.test', custom_local = 'hello', domain_status = 'verified' WHERE id = ?", [col.id])
+  const pro = (await get<any>('SELECT * FROM collectives WHERE id = ?', [col.id]))!
+  const miriam = await addMember(col.id, 'miriam@thrco.test')
+
+  // the customer writes in
+  await ingestInbound(pro, await simpleParser([
+    'From: Thomas <thomas@customer.test>',
+    'To: hello@thrco.test',
+    'Subject: Venue Usage 24 Of October',
+    `Message-ID: <cust-${uniq()}@customer.test>`,
+    '', 'Can we use the venue?',
+  ].join('\r\n')))
+  const thread = await lastThread(col.id)
+
+  // Miriam answers from her own mailbox, quoting the copy SHE received (a
+  // Message-ID we never stored), cc'ing the collective
+  await ingestInbound(pro, await simpleParser([
+    'From: Miriam Dean <miriam@thrco.test>',
+    'To: thomas@customer.test',
+    'Cc: hello@thrco.test',
+    'Subject: Re: Venue Usage 24 Of October',
+    `Message-ID: <m-${uniq()}@thrco.test>`,
+    `In-Reply-To: <0102019f-unknown-${uniq()}@eu-west-1.amazonses.com>`,
+    '', 'Hello Thomas, we would be delighted to host you.',
+  ].join('\r\n')))
+
+  const threads = await all<Thread>('SELECT * FROM threads WHERE collective_id = ? ORDER BY id', [col.id])
+  assert.equal(threads.length, 1, 'no duplicate thread beside the customer conversation')
+  const msgs = await threadMessages(thread.id)
+  assert.equal(msgs.length, 2)
+  assert.equal(msgs[1].direction, 'outbound')
+  assert.equal(msgs[1].sent_by_member_id, miriam)
+  const after = (await getThread(thread.id))!
+  assert.equal(after.status, 'answered')
+  assert.equal(after.counterpart_email, 'thomas@customer.test', 'still the customer, not the teammate')
+})
