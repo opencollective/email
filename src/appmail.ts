@@ -2,6 +2,19 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { cfg } from './config.js'
 
+export interface AppMail {
+  to: string
+  subject: string
+  html: string
+  text: string
+  replyTo?: string
+  from?: string
+}
+
+/** Test seam: capture outgoing app mail instead of hitting the network. */
+let observer: ((mail: AppMail) => void) | null = null
+export function __observeAppMail(fn: ((mail: AppMail) => void) | null) { observer = fn }
+
 /** Send an app email (login codes, notifications, digests) via Resend.
  *  Without RESEND_API_KEY the email is printed to stdout — handy in dev. */
 export async function sendAppEmail(opts: {
@@ -15,6 +28,7 @@ export async function sendAppEmail(opts: {
    *  loop guard both depend on it). */
   from?: string
 }): Promise<boolean> {
+  observer?.(opts)
   if (!cfg.resendKey) {
     console.log(`\n[appmail:dev] To: ${opts.to}\n[appmail:dev] Subject: ${opts.subject}${opts.replyTo ? `\n[appmail:dev] Reply-To: ${opts.replyTo}` : ''}\n${opts.text}\n`)
     try { fs.writeFileSync(path.join(cfg.dataDir, 'last-email.html'), opts.html) } catch { /* dev nicety only */ }

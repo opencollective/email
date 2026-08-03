@@ -737,3 +737,44 @@ test("a teammate's reply lands on the customer's thread even when we never saw t
   assert.equal(after.status, 'answered')
   assert.equal(after.counterpart_email, 'thomas@customer.test', 'still the customer, not the teammate')
 })
+
+test('notifications come "from" the person who wrote, on our own sending domain', async () => {
+  const { __observeAppMail } = await import('../src/appmail.js')
+  const col = await createCollective(`vf${Date.now() % 100000}`, 'Commons Hub')
+  await addMember(col.id, `watcher-${uniq()}@t.test`)
+
+  const sent: any[] = []
+  __observeAppMail((m) => sent.push(m))
+  try {
+    await inboundEmail(col.slug, { from: 'Marie Vandenberghe <marie@sender.test>' })
+    const notif = sent.find((m) => m.subject.includes('Booking'))
+    assert.ok(notif, 'a notification went out')
+    assert.equal(notif.from, `Marie Vandenberghe via Commons Hub <${col.slug}@collective.email>`)
+    // the address must stay ours: we sign it, and the loop guard keys on it
+    assert.ok(!notif.from.includes('<marie@sender.test>'), 'never sends AS the sender')
+    assert.match(notif.replyTo, /^\S+@collective\.email$/, 'replies still route back to us')
+
+    // no display name on the sender → fall back to the address' local part
+    sent.length = 0
+    await inboundEmail(col.slug, {
+      from: 'contact@agency.test',
+      subject: 'No name here',
+      message_id: `<nn-${uniq()}@agency.test>`,
+    })
+    const second = sent.find((m) => m.subject.includes('No name'))
+    assert.equal(second.from, `contact via Commons Hub <${col.slug}@collective.email>`)
+
+    // a name that would break the header is defanged, not passed through
+    sent.length = 0
+    await inboundEmail(col.slug, {
+      from: '"Evil <boss@phish.test>" <real@agency.test>',
+      subject: 'Header safety',
+      message_id: `<hs-${uniq()}@agency.test>`,
+    })
+    const third = sent.find((m) => m.subject.includes('Header safety'))
+    assert.ok(!third.from.includes('phish.test>'), 'no injected angle brackets')
+    assert.match(third.from, new RegExp(`<${col.slug}@collective\\.email>$`), 'still our address')
+  } finally {
+    __observeAppMail(null)
+  }
+})

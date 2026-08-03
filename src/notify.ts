@@ -32,12 +32,23 @@ const shell = (title: string, inner: string) => `
   </div>
 </div>`
 
-/** Notifications come from the collective, so the inbox reads like the
- *  collective's own mail. The address stays on our sending domain: Resend only
- *  signs domains we control, and the inbound loop guard keys on it — sending
- *  as a member-facing custom domain would let forwarded copies re-ingest. */
-const notifyFrom = (collective: Collective) =>
-  `${collective.name.replace(/["\\<>]/g, '')} <${collective.slug}@${cfg.emailDomain}>`
+/** Who a notification appears to come from.
+ *
+ *  The address always stays on our own sending domain — that is not a choice:
+ *  we generate these emails rather than relaying them, so we could never carry
+ *  a DKIM signature for gmail.com (or any sender's domain), SPF and DKIM would
+ *  both fail alignment, and Gmail would file us as spam. The inbound loop guard
+ *  keys on our domain too.
+ *
+ *  So we do what Google Groups does when it can't keep the original From: put
+ *  the person in the display name — "Marie Dupont via Commons Hub" — which is
+ *  what makes a list scannable at a glance, and keep authentication intact. */
+const notifyFrom = (collective: Collective, sender?: { name?: string | null; email?: string | null }) => {
+  const clean = (v: string) => v.replace(/["\\<>\n\r]/g, '').trim()
+  const who = sender ? clean(sender.name || (sender.email || '').split('@')[0] || '') : ''
+  const label = who ? `${who} via ${clean(collective.name)}` : clean(collective.name)
+  return `${label.slice(0, 78)} <${collective.slug}@${cfg.emailDomain}>`
+}
 
 /** Thread notifications use the full width of the reading pane: a thin header,
  *  the message itself, and a thin footer — no nested cards, no wasted margins.
@@ -198,7 +209,7 @@ export async function notifyInbound(
       subject: thread.subject,
       html,
       text,
-      from: notifyFrom(collective),
+      from: notifyFrom(collective, { name: message.from_name, email: message.from_email }),
       replyTo: replyAddress(collective.slug, thread.id, m.id, message.id),
     })
   }
