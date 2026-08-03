@@ -5,7 +5,8 @@ import {
 } from './db.js'
 import { sendAppEmail } from './appmail.js'
 import { outboundFrom } from './outbound.js'
-import { escapeHtml, excerpt, fmtDateTime, replyAddress, signToken, splitQuotedTail, waitingFor } from './util.js'
+import { escapeHtml, excerpt, fmtDateTime, signToken, splitQuotedTail, waitingFor } from './util.js'
+import { mintReplyAddress } from './reply-tokens.js'
 
 const threadUrl = (c: Collective, id: number) => `${cfg.baseUrl}/inbox/${c.slug}/thread/${id}`
 const inboxUrl = (c: Collective) => `${cfg.baseUrl}/inbox/${c.slug}`
@@ -230,7 +231,8 @@ export async function notifyInbound(
       html,
       text,
       from: notifyFrom(collective, { name: message.from_name, email: message.from_email }),
-      replyTo: replyAddress(collective.slug, thread.id, m.id, message.id),
+      // the compose window then shows "Rūta … via hello@… " instead of a token
+      replyTo: `${notifyFrom(collective, { name: message.from_name, email: message.from_email }).split(' <')[0]} <${await mintReplyAddress(collective.slug, message.from_email, thread.id, m.id, message.id)}>`,
     })
   }
 }

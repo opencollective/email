@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 import { simpleParser, type ParsedMail } from 'mailparser'
 import { cfg } from './config.js'
 import { getCollectiveByCustomDomain, getCollectiveBySlug, run } from './db.js'
-import { parseReplyAddress } from './util.js'
+import { resolveReplyAddress } from './reply-tokens.js'
 import { handleEmailReply, ingestInbound } from './ingest.js'
 import { verifyStripeSignature } from './stripe.js'
 import { billingState, canReceive } from './billing.js'
@@ -132,7 +132,7 @@ webhooks.post('/webhooks/resend', async (c) => {
 
   // 1. Member replying to a notification? (signed +r. address)
   for (const addr of candidates) {
-    const ref = parseReplyAddress(addr)
+    const ref = await resolveReplyAddress(addr)
     if (ref) {
       await handleEmailReply(parsed, ref)
       return c.json({ ok: true, handled: 'member_reply' })

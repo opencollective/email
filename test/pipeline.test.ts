@@ -752,7 +752,8 @@ test('notifications come "from" the person who wrote, on our own sending domain'
     assert.equal(notif.from, `Marie Vandenberghe via ${col.slug}@collective.email <${col.slug}@collective.email>`)
     // the address must stay ours: we sign it, and the loop guard keys on it
     assert.ok(!notif.from.includes('<marie@sender.test>'), 'never sends AS the sender')
-    assert.match(notif.replyTo, /^\S+@collective\.email$/, 'replies still route back to us')
+    assert.match(notif.replyTo, new RegExp(`^Marie Vandenberghe via ${col.slug}@collective\\.email <`), 'Reply-To reads like a person, routes to us')
+    assert.match(notif.replyTo, /<\w+\+marie\.[a-z0-9]{10}@collective\.email>$/, 'short friendly token, not a number dump')
 
     // no display name on the sender → fall back to the address' local part
     sent.length = 0
@@ -895,4 +896,45 @@ test('a one-member collective gets every new thread assigned automatically', asy
   await addMember(col2.id, `b-${uniq()}@t.test`)
   await inboundEmail(col2.slug, { from: 'Someone <someone2@x.test>' })
   assert.equal((await lastThread(col2.id)).assignee_member_id, null)
+})
+
+test('the friendly reply address round-trips: replying to it sends as the collective', async () => {
+  const { __observeAppMail } = await import('../src/appmail.js')
+  const col = await createCollective(`fr${Date.now() % 100000}`, 'Friendly Co')
+  const memberId = await addMember(col.id, 'member@personal.test')
+  const sent: any[] = []
+  __observeAppMail((m) => sent.push(m))
+  try {
+    await inboundEmail(col.slug)
+    const replyAddr = (sent[0].replyTo as string).match(/<([^>]+)>/)![1]
+    assert.match(replyAddr, new RegExp(`^${col.slug}\\+marie\\.[a-z0-9]{10}@collective\\.email$`))
+
+    const thread = await lastThread(col.id)
+    const { body } = await webhook({
+      email_id: `test-${uniq()}`,
+      from: 'member@personal.test',
+      to: [replyAddr],
+      subject: 'Re: Booking',
+      message_id: `<fr-${uniq()}@personal.test>`,
+      text: 'On our way!',
+    })
+    assert.equal(body.handled, 'member_reply')
+    const msgs = await threadMessages(thread.id)
+    assert.equal(msgs.at(-1)!.direction, 'outbound')
+    assert.equal(msgs.at(-1)!.sent_by_member_id, memberId)
+
+    // an expired token stops working
+    await run('UPDATE reply_tokens SET expires_at = 1 WHERE slug = ?', [col.slug])
+    const { body: expired } = await webhook({
+      email_id: `test-${uniq()}`,
+      from: 'member@personal.test',
+      to: [replyAddr],
+      subject: 'Re: Booking again',
+      message_id: `<fr2-${uniq()}@personal.test>`,
+      text: 'Too late',
+    })
+    assert.notEqual(expired.handled, 'member_reply', 'expired reply token is not honored')
+  } finally {
+    __observeAppMail(null)
+  }
 })

@@ -69,6 +69,15 @@ const SCHEMA = [
     created_by INTEGER,
     created_at INTEGER NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS reply_tokens (
+    token TEXT PRIMARY KEY,
+    slug TEXT NOT NULL,
+    thread_id INTEGER NOT NULL,
+    member_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS member_mutes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     collective_id INTEGER NOT NULL,
