@@ -195,6 +195,7 @@ export function eventText(
       const to = name(data.to)
       switch (data.reason) {
         case 'auto_sender': return `Automatically assigned to ${to} based on previous emails from this sender`
+        case 'solo': return `Assigned to ${to} — the only member`
         case 'email_reply': return `Assigned to ${to} — replied via email notification`
         case 'one_click': return a === to ? `${to} claimed this from a notification email` : `${a} assigned this to ${to} from a notification email`
         case 'claim': return `${a} claimed this thread`

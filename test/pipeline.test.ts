@@ -869,11 +869,30 @@ test('notification header: From line, To line, small badge with a change link', 
   try {
     await inboundEmail(col.slug, { from: 'Marie Vandenberghe <marie@sender.test>' })
     const html = sent[0].html as string
-    assert.match(html, /From<\/span> <b>Marie Vandenberghe<\/b> <span[^>]*>&lt;marie@sender\.test&gt;/)
-    assert.match(html, new RegExp(`To ${col.slug}@collective\\.email`))
+    assert.match(html, /From:<\/span> <b>Marie Vandenberghe<\/b> <span[^>]*>&lt;marie@sender\.test&gt;/)
+    assert.match(html, new RegExp(`To: ${col.slug}@collective\\.email`))
     assert.match(html, /width="278" height="30"/, 'badge is ~30px tall')
     assert.match(html, /change →/)
+    assert.match(html, /border-bottom:1px solid #e6e8eb/, 'a rule separates header from body')
+    assert.doesNotMatch(html, />Header Co<\/span>/, 'no redundant collective/date bar')
   } finally {
     __observeAppMail(null)
   }
+})
+
+test('a one-member collective gets every new thread assigned automatically', async () => {
+  const col = await createCollective(`solo${Date.now() % 100000}`, 'Solo Co')
+  const onlyId = await addMember(col.id, `only-${uniq()}@t.test`)
+  await inboundEmail(col.slug, { from: 'Someone <someone@x.test>' })
+  const thread = await lastThread(col.id)
+  assert.equal(thread.assignee_member_id, onlyId, 'no claiming ceremony when alone')
+  const ev = await get<any>("SELECT data_json FROM events WHERE thread_id = ? AND type = 'assigned'", [thread.id])
+  assert.match(ev!.data_json, /solo/)
+
+  // two members → back to normal claiming
+  const col2 = await createCollective(`duo${Date.now() % 100000}`, 'Duo Co')
+  await addMember(col2.id, `a-${uniq()}@t.test`)
+  await addMember(col2.id, `b-${uniq()}@t.test`)
+  await inboundEmail(col2.slug, { from: 'Someone <someone2@x.test>' })
+  assert.equal((await lastThread(col2.id)).assignee_member_id, null)
 })

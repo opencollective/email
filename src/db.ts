@@ -506,7 +506,7 @@ export async function setAssignee(
   thread: Thread,
   targetMemberId: number | null,
   actorMemberId: number | null,
-  reason: 'manual' | 'claim' | 'auto_sender' | 'email_reply' | 'one_click',
+  reason: 'manual' | 'claim' | 'auto_sender' | 'email_reply' | 'one_click' | 'solo',
 ) {
   if (thread.assignee_member_id === targetMemberId) return
   await run('UPDATE threads SET assignee_member_id = ?, updated_at = ? WHERE id = ?', [targetMemberId, now(), thread.id])

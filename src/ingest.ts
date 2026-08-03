@@ -1,7 +1,7 @@
 import type { AddressObject, ParsedMail } from 'mailparser'
 import { cfg } from './config.js'
 import {
-  addEvent, addTag, all, get, getCollective, getMember, getMemberIn, getThread, run, setAssignee, setStatus, storeAttachment,
+  activeMembers, addEvent, addTag, all, get, getCollective, getMember, getMemberIn, getThread, run, setAssignee, setStatus, storeAttachment,
   suggestedAssigneeFor, type Collective, type Member, type Message, type Thread,
 } from './db.js'
 import { htmlToText, normalizeSubject, now, stripQuotedReply } from './util.js'
@@ -260,6 +260,15 @@ export async function ingestInbound(
   if (isNewThread && from.address && !team && !rule) {
     const suggested = await suggestedAssigneeFor(collective.id, from.address, thread.id)
     if (suggested) await setAssignee((await getThread(thread.id))!, suggested, null, 'auto_sender')
+  }
+
+  // One-member collectives: every thread is theirs, no claiming ceremony
+  if (isNewThread && !team && !rule?.close && !answer) {
+    const fresh = (await getThread(thread.id))!
+    if (!fresh.assignee_member_id) {
+      const active = await activeMembers(collective.id)
+      if (active.length === 1) await setAssignee(fresh, active[0].id, null, 'solo')
+    }
   }
 
   if (!isAutoSubmitted(parsed) && !isForwardTest && !answer) {
