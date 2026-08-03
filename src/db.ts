@@ -69,6 +69,14 @@ const SCHEMA = [
     created_by INTEGER,
     created_at INTEGER NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS member_mutes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    collective_id INTEGER NOT NULL,
+    member_id INTEGER NOT NULL,
+    match_from TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE(collective_id, member_id, match_from)
+  )`,
   `CREATE TABLE IF NOT EXISTS member_aliases (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     collective_id INTEGER NOT NULL,

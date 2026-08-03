@@ -27,7 +27,7 @@ import { sendAppEmail } from '../appmail.js'
 import { readBlob, saveBlob } from '../storage.js'
 import { createCheckoutSession, createPortalSession, stripeUsable } from '../stripe.js'
 import { billingState, canSend, planLimits, repliesThisMonth, trialDaysLeft, GRACE_DAYS } from '../billing.js'
-import { escapeHtml, excerpt, fmtDateTime, now, randomToken, relTime, slugify, splitQuotedTail, verifyToken, waitingFor } from '../util.js'
+import { escapeHtml, excerpt, fmtDateTime, now, randomToken, relTime, signToken, slugify, splitQuotedTail, verifyToken, waitingFor } from '../util.js'
 import { AssigneeChip, AuthCard, Avatar, eventText, Shell, StatusChip, TimeAgo } from './ui.js'
 import { HomePage } from './home.js'
 import { AboutPage, DocsPage, FaqPage } from './pages.js'
@@ -503,12 +503,40 @@ app.post('/join/:token', async (c) => {
 
 app.get('/a/:token', async (c) => {
   const payload = verifyToken(c.req.param('token'))
-  if (!payload || !['assign', 'spam', 'approve', 'approvepro', 'credits'].includes(payload.a)) {
+  if (!payload || !['assign', 'spam', 'approve', 'approvepro', 'credits', 'mute', 'unmute'].includes(payload.a)) {
     return c.html(
       <AuthCard title="Link expired">
         <h1>This link has expired</h1>
         <p class="muted">Action links in notification emails are valid for 14 days. Open the app instead.</p>
         <a class="btn" href="/">Open collective.email</a>
+      </AuthCard>,
+    )
+  }
+  if (payload.a === 'mute' || payload.a === 'unmute') {
+    const target = await getCollective(Number(payload.c))
+    const mutedMember = await getMember(Number(payload.m))
+    const sender = String(payload.f || '').toLowerCase().trim()
+    if (!target || !mutedMember || mutedMember.collective_id !== target.id || !sender) return c.redirect('/')
+    if (payload.a === 'mute') {
+      await run('INSERT OR IGNORE INTO member_mutes (collective_id, member_id, match_from, created_at) VALUES (?, ?, ?, ?)',
+        [target.id, mutedMember.id, sender, now()])
+      const undo = `${cfg.baseUrl}/a/${signToken({ a: 'unmute', c: target.id, m: mutedMember.id, f: sender }, 60 * 60 * 24 * 90)}`
+      return c.html(
+        <AuthCard title="Muted">
+          <h1>✓ You won't get emails from {sender} anymore</h1>
+          <p class="muted">{target.slug}@{cfg.emailDomain} still receives everything they send — their messages stay in the shared inbox for the whole collective, you just won't be emailed about them. Manage this any time under Notifications.</p>
+          <div class="btn-row">
+            <a class="btn ghost" href={undo}>Undo</a>
+            <a class="btn" href={`/inbox/${target.slug}/notifications`}>Notification settings</a>
+          </div>
+        </AuthCard>,
+      )
+    }
+    await run('DELETE FROM member_mutes WHERE collective_id = ? AND member_id = ? AND match_from = ?', [target.id, mutedMember.id, sender])
+    return c.html(
+      <AuthCard title="Unmuted">
+        <h1>✓ You'll get emails from {sender} again</h1>
+        <a class="btn" href={`/inbox/${target.slug}/notifications`}>Notification settings</a>
       </AuthCard>,
     )
   }
@@ -1806,6 +1834,9 @@ app.get('/inbox/:addr/notifications', async (c) => {
   if (t instanceof Response) return t
   const { collective, member } = t
   const base = `/inbox/${collective.slug}`
+  const mutes = await all<{ id: number; match_from: string }>(
+    'SELECT id, match_from FROM member_mutes WHERE collective_id = ? AND member_id = ? ORDER BY match_from',
+    [collective.id, member.id])
   return c.html(
     <Shell member={member} collective={collective} title="Notifications" active="notifications" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
       <div class="page">
@@ -1827,9 +1858,33 @@ app.get('/inbox/:addr/notifications', async (c) => {
           </form>
           <p class="fineprint">Whatever the level, you're always notified immediately on threads assigned to you. Notification emails can be answered directly: replying sends your answer to the original sender as {collective.slug}@{cfg.emailDomain} and assigns the thread to you.</p>
         </section>
+
+        {mutes.length ? (
+          <section class="card">
+            <h2>Muted senders</h2>
+            <p class="muted">You're not emailed when these senders write in — their messages still arrive in the shared inbox for everyone.</p>
+            {mutes.map((mu) => (
+              <form method="post" action={`${base}/notifications/unmute`} class="mute-row">
+                <input type="hidden" name="id" value={String(mu.id)} />
+                <span class="mute-addr">{mu.match_from}</span>
+                <button class="btn small ghost" type="submit" data-busy="Unmuting…">Unmute</button>
+              </form>
+            ))}
+          </section>
+        ) : null}
       </div>
     </Shell>,
   )
+})
+
+app.post('/inbox/:addr/notifications/unmute', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const body = await c.req.parseBody()
+  // scoped to the signed-in member: nobody can unmute for someone else
+  await run('DELETE FROM member_mutes WHERE id = ? AND collective_id = ? AND member_id = ?',
+    [Number(body.id), t.collective.id, t.member.id])
+  return c.redirect(`/inbox/${t.collective.slug}/notifications?m=` + encodeURIComponent('Unmuted.'))
 })
 
 app.post('/inbox/:addr/notifications', async (c) => {

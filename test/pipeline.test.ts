@@ -792,3 +792,88 @@ test('notifications come "from" the person who wrote, on our own sending domain'
     __observeAppMail(null)
   }
 })
+
+test('one-click mute: only that member stops hearing from the sender; inbox unaffected', async () => {
+  const { __observeAppMail } = await import('../src/appmail.js')
+  const { signToken } = await import('../src/util.js')
+  const col = await createCollective(`mu${Date.now() % 100000}`, 'Mute Co')
+  const aliceId = await addMember(col.id, `alice-${uniq()}@t.test`)
+  const bobEmail = `bob-${uniq()}@t.test`
+  await addMember(col.id, bobEmail)
+
+  const sent: any[] = []
+  __observeAppMail((m) => sent.push(m))
+  try {
+    // the footer of a notification carries the one-click mute
+    await inboundEmail(col.slug, { from: 'Noisy <noisy@vendor.test>' })
+    const first = sent.find((m) => m.to.startsWith('alice'))
+    assert.match(first.html, /Stop receiving emails from noisy@vendor\.test/)
+
+    // Alice clicks it
+    const token = signToken({ a: 'mute', c: col.id, m: aliceId, f: 'noisy@vendor.test' }, 3600)
+    const res = await app.request(`/a/${token}`)
+    assert.match(await res.text(), /won&#39;t get emails from noisy@vendor\.test/)
+
+    // next email from that sender: Bob is notified, Alice is not,
+    // and the message still lands in the shared inbox
+    sent.length = 0
+    await inboundEmail(col.slug, {
+      from: 'Noisy <noisy@vendor.test>',
+      subject: 'Another one',
+      message_id: `<n2-${uniq()}@vendor.test>`,
+    })
+    assert.ok(sent.some((m) => m.to === bobEmail), 'Bob still notified')
+    assert.ok(!sent.some((m) => m.to.startsWith('alice')), 'Alice muted')
+    const thread = await lastThread(col.id)
+    assert.equal(thread.subject, 'Another one', 'the collective still receives everything')
+
+    // a different sender still reaches Alice
+    sent.length = 0
+    await inboundEmail(col.slug, {
+      from: 'Fresh <fresh@elsewhere.test>',
+      subject: 'Different sender',
+      message_id: `<f-${uniq()}@elsewhere.test>`,
+    })
+    assert.ok(sent.some((m) => m.to.startsWith('alice')), 'mute is per-sender, not global')
+
+    // unmute via the management page
+    const sid = await createSession((await get<any>('SELECT email FROM members WHERE id = ?', [aliceId]))!.email)
+    const page = await app.request(`/inbox/${col.slug}/notifications`, { headers: { cookie: `requests_sid=${sid}` } })
+    const html = await page.text()
+    assert.match(html, /Muted senders/)
+    assert.match(html, /noisy@vendor\.test/)
+    const muteId = (await get<any>('SELECT id FROM member_mutes WHERE member_id = ?', [aliceId]))!.id
+    await app.request(`/inbox/${col.slug}/notifications/unmute`, {
+      method: 'POST',
+      headers: { cookie: `requests_sid=${sid}`, 'content-type': 'application/x-www-form-urlencoded' },
+      body: `id=${muteId}`,
+    })
+    sent.length = 0
+    await inboundEmail(col.slug, {
+      from: 'Noisy <noisy@vendor.test>',
+      subject: 'Back again',
+      message_id: `<n3-${uniq()}@vendor.test>`,
+    })
+    assert.ok(sent.some((m) => m.to.startsWith('alice')), 'unmuted — notifications resume')
+  } finally {
+    __observeAppMail(null)
+  }
+})
+
+test('notification header: From line, To line, small badge with a change link', async () => {
+  const { __observeAppMail } = await import('../src/appmail.js')
+  const col = await createCollective(`hd${Date.now() % 100000}`, 'Header Co')
+  await addMember(col.id, `h-${uniq()}@t.test`)
+  const sent: any[] = []
+  __observeAppMail((m) => sent.push(m))
+  try {
+    await inboundEmail(col.slug, { from: 'Marie Vandenberghe <marie@sender.test>' })
+    const html = sent[0].html as string
+    assert.match(html, /From<\/span> <b>Marie Vandenberghe<\/b> <span[^>]*>&lt;marie@sender\.test&gt;/)
+    assert.match(html, new RegExp(`To ${col.slug}@collective\\.email`))
+    assert.match(html, /width="278" height="30"/, 'badge is ~30px tall')
+    assert.match(html, /change →/)
+  } finally {
+    __observeAppMail(null)
+  }
+})

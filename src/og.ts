@@ -61,8 +61,9 @@ ogApp.get('/aimg/:token', async (c) => {
   // rendered large for retina; emails display it at 688×74 (same 9.3 ratio)
   const img = await png(
     h('div', { display: 'flex', width: '100%', height: '100%', alignItems: 'center', gap: 24, padding: '0 30px', backgroundColor: s.bg, border: `3px solid ${s.color}`, borderRadius: 26, fontFamily: 'Inter' },
-      h('div', { display: 'flex', width: 62, height: 62, borderRadius: 31, backgroundColor: s.color, color: '#ffffff', alignItems: 'center', justifyContent: 'center', fontSize: 26, fontWeight: 600, flexShrink: 0 }, initials),
-      h('div', { display: 'flex', fontSize: 31, fontWeight: 600, color: s.color }, s.line.replace(/^✓ /, ''))),
+      h('div', { display: 'flex', width: 60, height: 60, borderRadius: 30, backgroundColor: s.color, color: '#ffffff', alignItems: 'center', justifyContent: 'center', fontSize: 26, fontWeight: 600, flexShrink: 0 }, initials),
+      // displayed at ~30px height in emails now — bigger type stays readable
+      h('div', { display: 'flex', fontSize: 40, fontWeight: 600, color: s.color }, s.line.replace(/^✓ /, ''))),
     1040, 112,
   )
   c.header('Content-Type', 'image/png')

@@ -60,7 +60,7 @@ export const receivingAddress = (c: Collective) =>
 /** Thread notifications use the full width of the reading pane: a thin header,
  *  the message itself, and a thin footer — no nested cards, no wasted margins.
  *  The client already shows the subject, so the body never repeats it. */
-const threadShell = (collective: Collective, headerRight: string, inner: string) => `
+const threadShell = (collective: Collective, headerRight: string, inner: string, footerLinks?: string) => `
 <div style="font-family:Inter,-apple-system,Segoe UI,Roboto,sans-serif;color:#141414;background:#ffffff">
   <div style="max-width:720px;margin:0 auto;padding:0 16px">
     <div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid #e6e8eb;padding:10px 0 8px;font-size:12px;color:#6b7280">
@@ -69,7 +69,7 @@ const threadShell = (collective: Collective, headerRight: string, inner: string)
     </div>
     ${inner}
     <div style="border-top:1px solid #e6e8eb;margin-top:18px;padding:10px 0 16px;font-size:11px;color:#8a8f98">
-      <a href="${cfg.baseUrl}" style="color:#8a8f98">collective.email</a> · <a href="${cfg.baseUrl}" style="color:#8a8f98">notification settings</a>
+      ${footerLinks ? `${footerLinks} · ` : ''}<a href="${inboxUrl(collective)}/notifications" style="color:#8a8f98">notification settings</a> · <a href="${cfg.baseUrl}" style="color:#8a8f98">collective.email</a>
     </div>
   </div>
 </div>`
@@ -128,8 +128,13 @@ export async function notifyInbound(
 ) {
   const members = await activeMembers(collective.id)
   const assigneeId = thread.assignee_member_id
+  // per-member mutes: the collective still receives and stores everything —
+  // this only silences the direct notification for members who asked
+  const muted = new Set((await all<{ member_id: number }>(
+    'SELECT member_id FROM member_mutes WHERE collective_id = ? AND match_from = ?',
+    [collective.id, (message.from_email || '').toLowerCase()])).map((r) => r.member_id))
   const recipients = members.filter(
-    (m) => m.role !== 'reader' && (m.notify_level === 'every' || m.id === assigneeId) && m.email !== message.from_email?.toLowerCase(),
+    (m) => m.role !== 'reader' && !muted.has(m.id) && (m.notify_level === 'every' || m.id === assigneeId) && m.email !== message.from_email?.toLowerCase(),
   )
   if (recipients.length === 0) return
 
@@ -153,9 +158,18 @@ export async function notifyInbound(
     // Live badge: rendered by the server when the email is opened, so it
     // shows the CURRENT state (answered/assigned/unclaimed), never a stale one.
     const badgeToken = signToken({ a: 'aimg', th: thread.id }, 60 * 60 * 24 * 90)
-    const assignLine = `<a href="${threadUrl(collective, thread.id)}" style="text-decoration:none"><img src="${cfg.baseUrl}/aimg/${badgeToken}" width="688" height="74" style="display:block;width:100%;max-width:688px;height:auto;border:0;margin:0 0 14px" alt="${assignee ? `Assigned to ${escapeHtml(memberLabel(assignee))} when this was sent` : 'Unassigned when this was sent'} — open the thread for the current status."></a>`
+    const assignLine = `<p style="margin:0 0 4px"><a href="${threadUrl(collective, thread.id)}" style="text-decoration:none"><img src="${cfg.baseUrl}/aimg/${badgeToken}" width="278" height="30" style="vertical-align:middle;border:0;max-width:80%" alt="${assignee ? `Assigned to ${escapeHtml(memberLabel(assignee))} when this was sent` : 'Unassigned when this was sent'}"></a> <a href="${threadUrl(collective, thread.id)}" style="font-size:12px;color:#6b7280;vertical-align:middle;margin-left:6px">change →</a></p>`
     const spamUrl = `${cfg.baseUrl}/a/${signToken({ a: 'spam', th: thread.id, by: m.id }, 60 * 60 * 24 * 14)}`
     const noteUrl = `${threadUrl(collective, thread.id)}?pane=note#composer`
+    // one-click, member-scoped: only this member stops hearing from this sender
+    const muteUrl = message.from_email
+      ? `${cfg.baseUrl}/a/${signToken({ a: 'mute', c: collective.id, m: m.id, f: message.from_email.toLowerCase() }, 60 * 60 * 24 * 90)}`
+      : null
+    const footerLinks = muteUrl
+      ? `<a href="${muteUrl}" style="color:#8a8f98">Stop receiving emails from ${escapeHtml(message.from_email!)}</a>`
+      : undefined
+    const fromLine = `<p style="margin:12px 0 2px;font-size:14px"><span style="color:#6b7280">From</span> <b>${escapeHtml(message.from_name || (message.from_email || 'unknown').split('@')[0])}</b> <span style="color:#6b7280">&lt;${escapeHtml(message.from_email || 'unknown')}&gt;</span></p>`
+    const toLine = `<p style="margin:0 0 10px;font-size:13px;color:#6b7280">To ${escapeHtml(inboundAddr)}</p>`
 
     // Rule-filed mail (newsletters, updates): forward the real HTML (already
     // sanitized at ingest) instead of a text preview, and drop the reply /
@@ -173,19 +187,20 @@ export async function notifyInbound(
       ${bodyBlock}
       ${attHtml}
       ${btn(threadUrl(collective, thread.id), 'Open thread', false)}
-      <p style="margin:14px 0 0;font-size:12px;color:#9aa1ab"><a href="${noteUrl}" style="color:#6b7280">Add a private note</a> · <a href="${spamUrl}" style="color:#6b7280">Mark as spam</a></p>`)
-      : threadShell(collective, `to ${escapeHtml(inboundAddr)}`, `
-      ${meta}
+      <p style="margin:14px 0 0;font-size:12px;color:#9aa1ab"><a href="${noteUrl}" style="color:#6b7280">Add a private note</a> · <a href="${spamUrl}" style="color:#6b7280">Mark as spam</a></p>`, footerLinks)
+      : threadShell(collective, fmtDateTime(message.sent_at), `
+      ${fromLine}
+      ${toLine}
+      ${assignLine}
       ${bodyBlock}
       ${attHtml}
-      ${assignLine}
       <p style="margin:0 0 12px;font-size:14px;color:#141414"><b>Just reply to this email</b> to answer ${escapeHtml(message.from_email || 'the sender')} as ${escapeHtml(sendAddr)} — the thread is assigned to you. If a teammate answers first, we stop your reply and tell you.</p>
       ${(extraActions || []).map((x) => btn(x.url, x.label)).join('')}
       ${btn(assignUrl(thread.id, m.id, m.id, true), 'Assign to me — answer later')}
       ${btn(threadUrl(collective, thread.id), 'Open thread', false)}
       ${others.length ? `<p style="margin:14px 0 6px;font-size:12px;font-weight:700;letter-spacing:0.5px;color:#6b7280">OR ASSIGN IT TO (ONE CLICK):</p>
       <p style="margin:0;line-height:2.1">${others.slice(0, 12).map((o) => `<a href="${assignUrl(thread.id, o.id, m.id)}" style="display:inline-block;border:1.5px solid #d3d6da;border-radius:100px;padding:4px 14px;margin:0 6px 6px 0;font-size:13px;color:#0c2d66;text-decoration:none;font-weight:600">${escapeHtml(memberLabel(o))}</a>`).join('')}</p>` : ''}
-      <p style="margin:14px 0 0;font-size:12px;color:#9aa1ab"><a href="${noteUrl}" style="color:#6b7280">Add a private note</a> · <a href="${spamUrl}" style="color:#6b7280">Mark as spam</a></p>`)
+      <p style="margin:14px 0 0;font-size:12px;color:#9aa1ab"><a href="${noteUrl}" style="color:#6b7280">Add a private note</a> · <a href="${spamUrl}" style="color:#6b7280">Mark as spam</a></p>`, footerLinks)
 
     const text = rule ? [
       `Filed${rule.tag ? ` as #${rule.tag}` : ''} — no reply needed (to ${inboundAddr})`,
