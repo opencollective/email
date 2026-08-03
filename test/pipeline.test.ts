@@ -749,7 +749,7 @@ test('notifications come "from" the person who wrote, on our own sending domain'
     await inboundEmail(col.slug, { from: 'Marie Vandenberghe <marie@sender.test>' })
     const notif = sent.find((m) => m.subject.includes('Booking'))
     assert.ok(notif, 'a notification went out')
-    assert.equal(notif.from, `Marie Vandenberghe via Commons Hub <${col.slug}@collective.email>`)
+    assert.equal(notif.from, `Marie Vandenberghe via ${col.slug}@collective.email <${col.slug}@collective.email>`)
     // the address must stay ours: we sign it, and the loop guard keys on it
     assert.ok(!notif.from.includes('<marie@sender.test>'), 'never sends AS the sender')
     assert.match(notif.replyTo, /^\S+@collective\.email$/, 'replies still route back to us')
@@ -762,7 +762,7 @@ test('notifications come "from" the person who wrote, on our own sending domain'
       message_id: `<nn-${uniq()}@agency.test>`,
     })
     const second = sent.find((m) => m.subject.includes('No name'))
-    assert.equal(second.from, `contact via Commons Hub <${col.slug}@collective.email>`)
+    assert.equal(second.from, `contact via ${col.slug}@collective.email <${col.slug}@collective.email>`)
 
     // a name that would break the header is defanged, not passed through
     sent.length = 0
@@ -774,6 +774,20 @@ test('notifications come "from" the person who wrote, on our own sending domain'
     const third = sent.find((m) => m.subject.includes('Header safety'))
     assert.ok(!third.from.includes('phish.test>'), 'no injected angle brackets')
     assert.match(third.from, new RegExp(`<${col.slug}@collective\\.email>$`), 'still our address')
+    // a Pro collective shows the address people actually write to
+    sent.length = 0
+    await run("UPDATE collectives SET plan = 'pro', custom_domain = 'commonshub.brussels', custom_local = 'hello', domain_status = 'verified' WHERE id = ?", [col.id])
+    const pro = (await get<any>('SELECT * FROM collectives WHERE id = ?', [col.id]))!
+    const { ingestInbound } = await import('../src/ingest.js')
+    await ingestInbound(pro, await simpleParser([
+      'From: Marie Vandenberghe <marie@sender.test>',
+      'To: hello@commonshub.brussels',
+      'Subject: Custom domain notification',
+      `Message-ID: <cd-${uniq()}@sender.test>`,
+      '', 'hello',
+    ].join('\r\n')))
+    const custom = sent.find((m) => m.subject.includes('Custom domain'))
+    assert.equal(custom.from, `Marie Vandenberghe via hello@commonshub.brussels <${col.slug}@collective.email>`)
   } finally {
     __observeAppMail(null)
   }

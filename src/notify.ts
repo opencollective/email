@@ -46,9 +46,16 @@ const shell = (title: string, inner: string) => `
 const notifyFrom = (collective: Collective, sender?: { name?: string | null; email?: string | null }) => {
   const clean = (v: string) => v.replace(/["\\<>\n\r]/g, '').trim()
   const who = sender ? clean(sender.name || (sender.email || '').split('@')[0] || '') : ''
-  const label = who ? `${who} via ${clean(collective.name)}` : clean(collective.name)
+  // "via <the address they wrote to>" — the same shape a group uses, and it
+  // says which inbox this landed in when someone reads several of them
+  const label = who ? `${who} via ${receivingAddress(collective)}` : clean(collective.name)
   return `${label.slice(0, 78)} <${collective.slug}@${cfg.emailDomain}>`
 }
+
+/** The address the outside world writes to: the custom one for Pro domains,
+ *  otherwise slug@collective.email. */
+export const receivingAddress = (c: Collective) =>
+  c.custom_domain && c.custom_local ? `${c.custom_local}@${c.custom_domain}` : `${c.slug}@${cfg.emailDomain}`
 
 /** Thread notifications use the full width of the reading pane: a thin header,
  *  the message itself, and a thin footer — no nested cards, no wasted margins.
@@ -129,8 +136,7 @@ export async function notifyInbound(
   const senderLabel = message.from_name ? `${message.from_name} <${message.from_email}>` : message.from_email || 'unknown sender'
   // What the collective actually receives and sends as — the custom address
   // for Pro domains, slug@ otherwise (outboundFrom degrades until verified).
-  const inboundAddr = collective.custom_domain && collective.custom_local
-    ? `${collective.custom_local}@${collective.custom_domain}` : `${collective.slug}@${cfg.emailDomain}`
+  const inboundAddr = receivingAddress(collective)
   const { fromAddress: sendAddr } = outboundFrom(collective)
   const assignee = assigneeId ? members.find((m) => m.id === assigneeId) : undefined
   // the quoted tail is noise in a notification — the thread has the history
