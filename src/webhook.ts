@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 import { simpleParser, type ParsedMail } from 'mailparser'
 import { cfg } from './config.js'
 import { getCollectiveByCustomDomain, getCollectiveBySlug, run } from './db.js'
-import { resolveReplyAddress } from './reply-tokens.js'
+import { resolveReplyAddress, viaSlug } from './reply-tokens.js'
 import { handleEmailReply, ingestInbound } from './ingest.js'
 import { verifyStripeSignature } from './stripe.js'
 import { billingState, canReceive } from './billing.js'
@@ -139,11 +139,13 @@ webhooks.post('/webhooks/resend', async (c) => {
     }
   }
 
-  // 2. Route to collectives by local part (before any +tag)
+  // 2. Route to collectives by local part (before any +tag). A reply address
+  // whose token expired still lands in the inbox via its -via-<slug> suffix.
   const seen = new Set<number>()
   let routed = 0
   for (const addr of candidates) {
-    const slug = addr.split('@')[0].split('+')[0]
+    const local = addr.split('@')[0].split('+')[0]
+    const slug = viaSlug(local) ?? local
     const collective = await getCollectiveBySlug(slug)
     if (!collective || collective.status !== 'active' || seen.has(collective.id)) continue
     if (!canReceive(billingState(collective))) continue // trial + grace over: address released
