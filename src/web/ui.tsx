@@ -17,112 +17,6 @@ try {
 } catch (e) {}
 `
 
-/** @mention autocomplete for the internal-note composer.
- *
- *  Deliberately hand-rolled: this app server-renders hono/jsx and ships no
- *  client framework or bundler, so a React combobox (react-aria TokenField,
- *  shadcn) would mean adding React + a build step for one textarea. It is also
- *  only an input helper — the server resolves the mentions from the note text
- *  itself, so a note typed with JS off still notifies the right people.
- *
- *  The popup is fixed-positioned off document.body because .composer clips its
- *  overflow; it anchors to the textarea rather than the caret (caret geometry
- *  in a textarea needs a mirror element, which is not worth it here). */
-const MENTION_SCRIPT = `
-(function () {
-  var ta = document.querySelector('textarea[data-mentions]');
-  if (!ta) return;
-  var people = [];
-  try { people = JSON.parse(ta.dataset.mentions || '[]'); } catch (e) { return; }
-  if (!people.length) return;
-
-  var pop = document.createElement('div');
-  pop.className = 'mention-pop';
-  pop.hidden = true;
-  pop.setAttribute('role', 'listbox');
-  document.body.appendChild(pop);
-
-  var matches = [], idx = 0, at = -1, suppress = false;
-  var esc = function (s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; };
-  var close = function () { pop.hidden = true; matches = []; at = -1; };
-
-  function draw() {
-    pop.innerHTML = matches.map(function (p, i) {
-      return '<div class="mp-item' + (i === idx ? ' on' : '') + '" data-i="' + i + '" role="option">' +
-        '<b>' + esc(p.n) + '</b><small>' + esc(p.e) + '</small></div>';
-    }).join('');
-    var r = ta.getBoundingClientRect();
-    pop.style.left = Math.round(r.left) + 'px';
-    pop.style.width = Math.min(320, Math.round(r.width)) + 'px';
-    pop.hidden = false;
-    var h = pop.offsetHeight;
-    // below the box, unless the viewport is tight and there is room above
-    pop.style.top = (window.innerHeight - r.bottom < h + 12 && r.top > h + 12)
-      ? Math.round(r.top - h - 4) + 'px' : Math.round(r.bottom + 4) + 'px';
-  }
-
-  // what the caret is sitting on: an '@' starting a word, plus what follows it
-  // (spaces allowed, so "@Marie Du" keeps filtering on the full name)
-  var QUERY = /(^|[^\\p{L}\\p{N}])@([\\p{L}\\p{N}][\\p{L}\\p{N}. '’-]{0,39}|)$/u;
-
-  function refresh() {
-    if (suppress) { suppress = false; return; }
-    var caret = ta.selectionStart;
-    if (caret !== ta.selectionEnd) return close();
-    var m = QUERY.exec(ta.value.slice(0, caret));
-    if (!m) return close();
-    var q = m[2].toLowerCase();
-    at = caret - m[2].length - 1;
-    matches = people.filter(function (p) {
-      if (!q) return true;
-      var n = (p.n || '').toLowerCase();
-      return n.indexOf(q) === 0 || (p.e || '').toLowerCase().indexOf(q) === 0 ||
-        n.split(/\\s+/).some(function (w) { return w.indexOf(q) === 0; });
-    }).slice(0, 6);
-    if (!matches.length) return close();
-    idx = 0;
-    draw();
-  }
-
-  function pick(i) {
-    var p = matches[i];
-    if (!p) return;
-    var before = ta.value.slice(0, at), after = ta.value.slice(ta.selectionStart);
-    var ins = '@' + p.n + ' ';
-    ta.value = before + ins + after;
-    var caret = before.length + ins.length;
-    close();
-    ta.focus();
-    ta.setSelectionRange(caret, caret);
-    // let the draft saver and the typing beacon see the change, without
-    // re-opening the popup on the name we just completed
-    suppress = true;
-    ta.dispatchEvent(new Event('input', { bubbles: true }));
-  }
-
-  ta.addEventListener('input', refresh);
-  ta.addEventListener('click', refresh);
-  ta.addEventListener('keyup', function (e) { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') refresh(); });
-  ta.addEventListener('blur', function () { setTimeout(close, 150); });
-  ta.addEventListener('keydown', function (e) {
-    if (pop.hidden || !matches.length) return;
-    if (e.key === 'ArrowDown') { e.preventDefault(); idx = (idx + 1) % matches.length; draw(); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); idx = (idx - 1 + matches.length) % matches.length; draw(); }
-    else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); pick(idx); }
-    else if (e.key === 'Escape') { e.preventDefault(); close(); }
-  });
-  // mousedown, not click: the textarea must not blur before we read the pick
-  pop.addEventListener('mousedown', function (e) {
-    var it = e.target.closest('.mp-item');
-    if (!it) return;
-    e.preventDefault();
-    pick(Number(it.dataset.i));
-  });
-  window.addEventListener('resize', close);
-  window.addEventListener('scroll', close, true);
-})();
-`
-
 export const SCRIPT = `
 document.addEventListener('click', (e) => {
   const t = e.target.closest('[data-confirm]');
@@ -259,7 +153,7 @@ if (typingEl) {
 }
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
-` + MENTION_SCRIPT
+`
 
 export const Avatar: FC<{ member?: Member | null; empty?: boolean }> = ({ member, empty }) => {
   if (empty || !member) return <span class="avatar empty" title="Unassigned">–</span>
@@ -323,7 +217,10 @@ export function eventText(
   }
 }
 
-export const Page: FC<{ title?: string; flash?: string; children?: Child }> = (props) => (
+/** Pages opt into a client bundle by name — only the thread page pays for the
+ *  note editor. `defer` keeps it after the inline SCRIPT, so a draft is already
+ *  restored into the textarea by the time the island reads it. */
+export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">
     <head>
       <meta charset="utf-8" />
@@ -332,7 +229,7 @@ export const Page: FC<{ title?: string; flash?: string; children?: Child }> = (p
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=25" />
+      <link rel="stylesheet" href="/static/style.css?v=26" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script
@@ -365,6 +262,7 @@ export const Page: FC<{ title?: string; flash?: string; children?: Child }> = (p
       {props.flash ? <div class="flash">{props.flash}</div> : null}
       {props.children}
       <script dangerouslySetInnerHTML={{ __html: TZ_SCRIPT + SCRIPT }} />
+      {props.bundle ? <script defer src={`/static/${props.bundle}?v=1`}></script> : null}
     </body>
   </html>
 )
@@ -397,6 +295,7 @@ export const Shell: FC<{
   title?: string
   active: string
   flash?: string
+  bundle?: string
   sidebar?: Child
   children?: Child
 }> = (props) => {
@@ -414,7 +313,7 @@ export const Shell: FC<{
     </a>
   )
   return (
-    <Page title={props.title ? `${props.title} · ${props.collective.name}` : props.collective.name} flash={props.flash}>
+    <Page title={props.title ? `${props.title} · ${props.collective.name}` : props.collective.name} flash={props.flash} bundle={props.bundle}>
       <div class="app">
         {/* desktop sidebar */}
         <aside class="side">

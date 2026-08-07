@@ -14,7 +14,7 @@ import {
 } from '../auth.js'
 import { forwardMessage, outboundFrom, sendCollectiveReply, signatureFor } from '../outbound.js'
 import { digestTick, notifyMention, sendOnboarding, trialTick } from '../notify.js'
-import { mentionedMembers, noteParts } from '../mentions.js'
+import { mentionedMembers, mentionLabels, noteParts } from '../mentions.js'
 import { backupTick } from '../backup.js'
 import { CONTRIBUTE_SLUG, creditBalance, creditsLedger, creditsTick, fileContribution, mintCredits, referralUrl , PRO_MONTH_CREDITS } from '../credits.js'
 import {
@@ -1027,7 +1027,8 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   }
 
   return c.html(
-    <Shell member={member} collective={collective} active="inbox" flash={c.req.query('m')} sidebar={
+    <Shell member={member} collective={collective} active="inbox" flash={c.req.query('m')}
+      bundle={member.role === 'reader' ? undefined : 'composer.js'} sidebar={
       <nav class="nav"><a class="nav-item" href={`${base}`}>← Back to inbox</a></nav>
     }>
       <div class="thread-wrap">
@@ -1214,7 +1215,12 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               <textarea
                 name="body" rows={4} placeholder="Add context, ask a teammate, leave a note… type @ to pull someone in"
                 data-draft="note" required
-                data-mentions={JSON.stringify(activeList.map((m) => ({ n: memberName(m), e: m.email })))}
+                data-mentions={JSON.stringify({
+                  people: activeList.map((m) => ({ id: m.id, name: memberName(m), email: m.email })),
+                  // the matching *rules* (unique first names, login names) stay
+                  // server-side; the editor only replays the derived labels
+                  labels: mentionLabels(activeList).map((c) => [c.label, c.member.id]),
+                })}
               ></textarea>
               <div class="actions">
                 <button class="btn send-btn" type="submit" data-busy="Saving…">Add internal note</button>
