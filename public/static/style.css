@@ -463,6 +463,28 @@ iframe.msg-frame {
 .note-head { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; font-size: 13px; }
 .note-head .when { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
 .note p { margin: 0; white-space: pre-wrap; }
+.note-mine { border-style: solid; border-color: var(--accent); }
+.mention-chip { border-color: var(--accent); color: var(--accent); font-weight: 700; }
+.mention {
+  color: var(--accent); font-weight: 600; border-radius: 4px;
+  padding: 0 3px; margin: 0 -1px; cursor: default;
+}
+.mention-me { background: var(--accent); color: var(--accent-ink); }
+
+/* @mention autocomplete (internal notes) */
+.mention-pop {
+  position: fixed; z-index: 60; max-height: 240px; overflow-y: auto;
+  background: var(--card); border: 1.5px solid var(--line); border-radius: 10px;
+  box-shadow: var(--shadow); padding: 4px;
+}
+.mention-pop[hidden] { display: none; }
+.mp-item {
+  display: flex; align-items: baseline; gap: 8px; padding: 6px 9px;
+  border-radius: 7px; font-size: 13.5px; cursor: pointer;
+}
+.mp-item small { color: var(--muted); font-size: 11px; margin-left: auto; }
+.mp-item.on { background: var(--accent); color: var(--accent-ink); }
+.mp-item.on small { color: var(--accent-ink); opacity: 0.75; }
 .event { font-family: var(--mono); font-size: 12px; color: var(--muted); }
 
 .composer { margin: 22px 24px 0; border: 1.5px solid var(--accent); border-radius: 10px; overflow: hidden; background: var(--card); }

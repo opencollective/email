@@ -7,6 +7,7 @@ import { sendAppEmail } from './appmail.js'
 import { outboundFrom } from './outbound.js'
 import { escapeHtml, excerpt, fmtDateTime, signToken, splitQuotedTail, waitingFor } from './util.js'
 import { mintReplyAddress } from './reply-tokens.js'
+import { noteParts } from './mentions.js'
 
 const threadUrl = (c: Collective, id: number) => `${cfg.baseUrl}/inbox/${c.slug}/thread/${id}`
 const inboxUrl = (c: Collective) => `${cfg.baseUrl}/inbox/${c.slug}`
@@ -233,6 +234,72 @@ export async function notifyInbound(
       from: notifyFrom(collective, { name: message.from_name, email: message.from_email }),
       // the compose window then shows "Rūta … via hello@… " instead of a token
       replyTo: `${notifyFrom(collective, { name: message.from_name, email: message.from_email }).split(' <')[0]} <${await mintReplyAddress(collective.slug, message.from_email, thread.id, m.id, message.id)}>`,
+    })
+  }
+}
+
+// ---------- @mention in an internal note ----------
+
+/** Someone was named in an internal note — tell them now.
+ *
+ *  A mention is addressed at a person, so it ignores notify_level: choosing the
+ *  daily digest means "don't tell me about every email", not "don't tell me when
+ *  a teammate asks me a question". Readers get it too — they can open the thread
+ *  even if they can't answer in it.
+ *
+ *  Reply-To is the author's own address, NOT a reply token: a token would send
+ *  the answer onward to the outside sender, and "@marie can you check this?"
+ *  must never be one careless reply away from landing in the customer's inbox. */
+export async function notifyMention(
+  collective: Collective,
+  thread: Thread,
+  author: Member,
+  mentioned: Member[],
+  noteBody: string,
+) {
+  const url = threadUrl(collective, thread.id)
+  const authorName = memberLabel(author)
+  const counterpart = thread.counterpart_name || thread.counterpart_email || 'the sender'
+  const roster = await activeMembers(collective.id)
+
+  for (const m of mentioned) {
+    // the note as written, with the handles picked out — and the reader's own
+    // name standing out, so a long note shows at a glance where they come in
+    const bodyHtml = noteParts(noteBody, roster).map((p) =>
+      'mention' in p
+        ? `<b style="color:${p.member.id === m.id ? '#0c2d66' : '#1869f5'};${p.member.id === m.id ? 'background:#e4edfd;border-radius:4px;padding:0 3px' : ''}">${escapeHtml(p.mention)}</b>`
+        : escapeHtml(p.text)).join('')
+    const others = mentioned.filter((o) => o.id !== m.id)
+    const alsoLine = others.length
+      ? `<p style="margin:0 0 10px;font-size:12px;color:#6b7280">Also mentioned: ${others.map((o) => escapeHtml(memberLabel(o))).join(', ')}</p>`
+      : ''
+    const html = threadShell(collective, `
+      <div style="border-bottom:1px solid #e6e8eb;padding-bottom:10px;margin-bottom:14px">
+        <p style="margin:0 0 2px;font-size:14px"><b>${escapeHtml(authorName)}</b> mentioned you in an internal note</p>
+        <p style="margin:0;font-size:13px;color:#6b7280">on “${escapeHtml(thread.subject)}” · with ${escapeHtml(counterpart)}</p>
+      </div>
+      <div style="border-left:3px dashed #d3d6da;padding-left:14px;margin:14px 0;font-size:15px;line-height:1.55;white-space:pre-wrap">${bodyHtml}</div>
+      ${alsoLine}
+      <p style="margin:0 0 10px;font-size:12px;color:#6b7280">Internal — ${escapeHtml(counterpart)} never sees this note. Answer in the thread so the whole team keeps the context.</p>
+      ${quietBtn(`${url}?pane=note#composer`, 'Reply in the thread')}
+      ${quietBtn(url, 'Open thread')}`)
+
+    const text = [
+      `${authorName} mentioned you in an internal note on "${thread.subject}" (with ${counterpart}):`,
+      '',
+      noteBody,
+      '',
+      others.length ? `Also mentioned: ${others.map(memberLabel).join(', ')}` : '',
+      `Reply in the thread: ${url}?pane=note#composer`,
+    ].filter(Boolean).join('\n')
+
+    await sendAppEmail({
+      to: m.email,
+      subject: `${authorName} mentioned you — ${thread.subject}`,
+      html,
+      text,
+      from: notifyFrom(collective, { name: author.name, email: author.email }),
+      replyTo: author.email,
     })
   }
 }

@@ -13,7 +13,8 @@ import {
   checkCode, createSession, destroyEmailSessions, destroySession, emailFromSession, issueCode, type LoginCodeRow,
 } from '../auth.js'
 import { forwardMessage, outboundFrom, sendCollectiveReply, signatureFor } from '../outbound.js'
-import { digestTick, sendOnboarding, trialTick } from '../notify.js'
+import { digestTick, notifyMention, sendOnboarding, trialTick } from '../notify.js'
+import { mentionedMembers, noteParts } from '../mentions.js'
 import { backupTick } from '../backup.js'
 import { CONTRIBUTE_SLUG, creditBalance, creditsLedger, creditsTick, fileContribution, mintCredits, referralUrl , PRO_MONTH_CREDITS } from '../credits.js'
 import {
@@ -985,12 +986,16 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
     { sql: 'SELECT * FROM events WHERE thread_id = ? ORDER BY created_at', args: [thread.id] },
     { sql: 'SELECT t.id, t.name FROM tags t JOIN thread_tags tt ON tt.tag_id = t.id WHERE tt.thread_id = ? ORDER BY t.name', args: [thread.id] },
     { sql: 'SELECT * FROM members WHERE collective_id = ?', args: [collective.id] },
+    { sql: 'SELECT nm.note_id, nm.member_id FROM note_mentions nm JOIN notes n ON n.id = nm.note_id WHERE n.thread_id = ?', args: [thread.id] },
   ])
   const msgs = batch[0] as Message[]
   const notes = batch[1] as { id: number; member_id: number; body: string; created_at: number }[]
   const allEvents = batch[2] as { actor_member_id: number | null; type: string; data_json: string | null; created_at: number }[]
   const tags = batch[3] as { id: number; name: string }[]
   const members = new Map((batch[4] as Member[]).map((m) => [m.id, m]))
+  // notes that named *you* — worth a marker when you land on a long thread
+  const mentionsMe = new Set((batch[5] as { note_id: number; member_id: number }[])
+    .filter((r) => r.member_id === member.id).map((r) => r.note_id))
   const attsMap = await attachmentsByMessage(msgs.map((m) => m.id))
   const events = allEvents.filter((e) => e.type !== 'replied')
   const lastAssignEvent = [...allEvents].reverse().find((e) => e.type === 'assigned' || e.type === 'unassigned')
@@ -1043,13 +1048,19 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                   <span class="internal-tag">⌁ Internal — not visible to {counterpartFirst}</span>
                   {g.map((item) =>
                     item.kind === 'note' ? (
-                      <div class="note">
+                      <div class={`note${mentionsMe.has(item.id) ? ' note-mine' : ''}`}>
                         <div class="note-head">
                           <Avatar member={members.get(item.member_id)} />
                           <b>{memberName(members.get(item.member_id))}</b>
+                          {mentionsMe.has(item.id) ? <span class="chip mention-chip">@ mentions you</span> : null}
                           <span class="when">{fmtDateTime(item.ts)}</span>
                         </div>
-                        <p>{item.body}</p>
+                        <p>
+                          {noteParts(item.body, activeList).map((p) =>
+                            'mention' in p
+                              ? <span class={`mention${p.member.id === member.id ? ' mention-me' : ''}`} title={p.member.email}>{p.mention}</span>
+                              : p.text)}
+                        </p>
                       </div>
                     ) : item.kind === 'event' ? (
                       <div class="event">{eventText(item.ev, members)} · {relTime(item.ts)}</div>
@@ -1200,9 +1211,14 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             ) : null}
             <form method="post" action={`${base}/thread/${thread.id}/note`} data-pane="note" class={canSendRole(member.role) ? 'hidden' : ''}>
               <div class="to note-to">⌁ Only members of {collective.name} will see this</div>
-              <textarea name="body" rows={4} placeholder="Add context, ask a teammate, leave a note…" data-draft="note" required></textarea>
+              <textarea
+                name="body" rows={4} placeholder="Add context, ask a teammate, leave a note… type @ to pull someone in"
+                data-draft="note" required
+                data-mentions={JSON.stringify(activeList.map((m) => ({ n: memberName(m), e: m.email })))}
+              ></textarea>
               <div class="actions">
                 <button class="btn send-btn" type="submit" data-busy="Saving…">Add internal note</button>
+                <span class="hint">@mention a member to email them this note right away.</span>
               </div>
             </form>
           </div>
@@ -1393,12 +1409,31 @@ app.post('/inbox/:addr/thread/:id/note', async (c) => {
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
   const body = await c.req.parseBody()
-  const text = String(body.body || '').trim()
+  const text = String(body.body || '').trim().slice(0, 10000)
+  let flash = 'Note added ✓'
   if (text) {
-    await run('INSERT INTO notes (thread_id, member_id, body, created_at) VALUES (?, ?, ?, ?)',
-      [thread.id, t.member.id, text.slice(0, 10000), now()])
+    // resolve @mentions against the current roster — mentioning yourself is a
+    // no-op, you already know
+    const roster = await activeMembers(t.collective.id)
+    const mentioned = mentionedMembers(text, roster).filter((m) => m.id !== t.member.id)
+    const { lastId } = await run('INSERT INTO notes (thread_id, member_id, body, created_at) VALUES (?, ?, ?, ?)',
+      [thread.id, t.member.id, text, now()])
+    for (const m of mentioned) {
+      await run('INSERT OR IGNORE INTO note_mentions (note_id, member_id, created_at) VALUES (?, ?, ?)',
+        [lastId, m.id, now()])
+    }
+    if (mentioned.length) {
+      // the note is already saved — a mail failure must not cost the writing
+      try {
+        await notifyMention(t.collective, thread, t.member, mentioned, text)
+        flash = `Note added ✓ — notified ${mentioned.map(memberName).join(', ')}`
+      } catch (err) {
+        console.error('[mention] notification failed:', err)
+        flash = 'Note added ✓ — but the mention email could not be sent'
+      }
+    }
   }
-  return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}?m=` + encodeURIComponent('Note added ✓'))
+  return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}?m=` + encodeURIComponent(flash))
 })
 
 // ---------- typing presence ("X is drafting a response…") ----------

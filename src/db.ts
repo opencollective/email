@@ -146,6 +146,13 @@ const SCHEMA = [
     body TEXT NOT NULL,
     created_at INTEGER NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS note_mentions (
+    note_id INTEGER NOT NULL,
+    member_id INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (note_id, member_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_note_mentions_member ON note_mentions(member_id)`,
   `CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     thread_id INTEGER NOT NULL,
