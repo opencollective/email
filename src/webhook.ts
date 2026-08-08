@@ -2,7 +2,7 @@ import crypto from 'node:crypto'
 import { Hono } from 'hono'
 import { simpleParser, type ParsedMail } from 'mailparser'
 import { cfg } from './config.js'
-import { getCollectiveByCustomDomain, getCollectiveBySlug, run } from './db.js'
+import { getCollectiveByAnySlug, getCollectiveByCustomDomain, run } from './db.js'
 import { resolveReplyAddress, viaSlug } from './reply-tokens.js'
 import { handleEmailNote, handleEmailReply, ingestInbound } from './ingest.js'
 import { verifyStripeSignature } from './stripe.js'
@@ -151,7 +151,9 @@ webhooks.post('/webhooks/resend', async (c) => {
   for (const addr of candidates) {
     const local = addr.split('@')[0].split('+')[0]
     const slug = viaSlug(local) ?? local
-    const collective = await getCollectiveBySlug(slug)
+    // a renamed collective still answers to its old address — mail is not
+    // something you can ask the sender to send again
+    const collective = (await getCollectiveByAnySlug(slug))?.collective
     if (!collective || collective.status !== 'active' || seen.has(collective.id)) continue
     if (!canReceive(billingState(collective))) continue // trial + grace over: address released
     seen.add(collective.id)

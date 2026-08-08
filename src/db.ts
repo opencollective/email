@@ -185,6 +185,15 @@ const SCHEMA = [
     created_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_credits_collective ON credits_ledger(collective_id)`,
+  // Every address a collective has ever had. Kept forever: mail sent to the old
+  // one still has to arrive, and nobody else may claim it afterwards — a
+  // reassigned address would deliver a stranger's mail to the wrong inbox.
+  `CREATE TABLE IF NOT EXISTS former_slugs (
+    slug TEXT PRIMARY KEY,
+    collective_id INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_former_slugs_collective ON former_slugs(collective_id)`,
   `CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)`,
   `CREATE TABLE IF NOT EXISTS waitlist (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -406,6 +415,39 @@ export const getCollective = (id: number) =>
 export const getCollectiveBySlug = (slug: string) =>
   get<Collective>('SELECT * FROM collectives WHERE slug = ?', [slug.toLowerCase().trim()])
 
+/** The collective that owns a slug today, or that used to — so mail and links
+ *  addressed to a former name still find their way home. */
+export async function getCollectiveByAnySlug(slug: string): Promise<{ collective: Collective; former: boolean } | undefined> {
+  const clean = slug.toLowerCase().trim()
+  const current = await getCollectiveBySlug(clean)
+  if (current) return { collective: current, former: false }
+  const row = await get<{ collective_id: number }>('SELECT collective_id FROM former_slugs WHERE slug = ?', [clean])
+  if (!row) return undefined
+  const collective = await getCollective(row.collective_id)
+  return collective ? { collective, former: true } : undefined
+}
+
+/** Is this slug spoken for — now or in the past — by someone else? */
+export async function slugTakenByOther(slug: string, collectiveId?: number): Promise<boolean> {
+  const found = await getCollectiveByAnySlug(slug)
+  return Boolean(found && found.collective.id !== collectiveId)
+}
+
+/** Move a collective to a new address, remembering the old one. */
+export async function renameCollectiveSlug(collective: Collective, newSlug: string): Promise<void> {
+  const clean = newSlug.toLowerCase().trim()
+  if (clean === collective.slug) return
+  await run('INSERT OR IGNORE INTO former_slugs (slug, collective_id, created_at) VALUES (?, ?, ?)',
+    [collective.slug, collective.id, now()])
+  // moving back to a name we used before: it stops being "former"
+  await run('DELETE FROM former_slugs WHERE slug = ? AND collective_id = ?', [clean, collective.id])
+  await run('UPDATE collectives SET slug = ? WHERE id = ?', [clean, collective.id])
+}
+
+export const formerSlugsOf = (collectiveId: number) =>
+  all<{ slug: string; created_at: number }>(
+    'SELECT slug, created_at FROM former_slugs WHERE collective_id = ? ORDER BY created_at DESC', [collectiveId])
+
 export const allCollectives = () =>
   all<Collective>('SELECT * FROM collectives ORDER BY created_at DESC')
 
@@ -423,7 +465,9 @@ export async function createCollective(
   const clean = slug.toLowerCase().trim()
   if (!/^[a-z0-9][a-z0-9-]{1,39}$/.test(clean)) throw new Error('Address must be 2–40 chars: letters, numbers, dashes.')
   if (RESERVED_SLUGS.has(clean)) throw new Error(`"${clean}" is reserved.`)
-  if (await getCollectiveBySlug(clean)) throw new Error(`${clean}@${cfg.emailDomain} is already taken.`)
+  // ...including an address some collective used to have: it still routes to
+  // them, so handing it out would deliver their mail to a stranger
+  if (await getCollectiveByAnySlug(clean)) throw new Error(`${clean}@${cfg.emailDomain} is already taken.`)
   const status = opts.status ?? 'active'
   const r = await run('INSERT INTO collectives (slug, name, status, plan, trial_ends_at, activated_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
     [clean, name.trim() || clean, status, plan, opts.trial === false ? null : now() + 60 * 86400, status === 'active' ? now() : null, now()])

@@ -306,11 +306,24 @@ body.drawer-open { overflow: hidden; }
 .modal {
   border: 1.5px solid var(--line); border-radius: 14px; background: var(--card); color: var(--ink);
   padding: 20px; max-width: 380px; width: calc(100vw - 40px); box-shadow: var(--shadow);
-  margin: auto;
+  margin: auto; max-height: calc(100dvh - 40px); overflow-y: auto;
+}
+.confirm-phrase { margin: -2px 0 2px; }
+.confirm-phrase code {
+  font-family: var(--mono); font-size: 12.5px; background: var(--fill);
+  border: 1px solid var(--line); border-radius: 5px; padding: 2px 6px; overflow-wrap: anywhere;
 }
 .modal::backdrop { background: rgba(10, 12, 16, 0.45); }
 .modal h2 { margin-bottom: 12px; }
 .modal-form { display: grid; gap: 8px; }
+/* consequences of an irreversible change, spelled out rather than hinted at */
+.warn-list {
+  margin: 0 0 16px; padding: 12px 14px 12px 30px; font-size: 13.5px; line-height: 1.5;
+  background: var(--warn-bg); border: 1.5px solid var(--warn); border-radius: 10px;
+  color: var(--ink); display: grid; gap: 7px;
+}
+.warn-list li::marker { color: var(--warn); }
+.modal .wl-addr { margin-bottom: 4px; }
 
 .avatar {
   width: 26px; height: 26px;

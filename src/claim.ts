@@ -1,6 +1,6 @@
 import { simpleParser } from 'mailparser'
 import { cfg } from './config.js'
-import { getCollectiveBySlug, getMemberIn, run, type Collective } from './db.js'
+import { get, getCollectiveBySlug, getMemberIn, run, type Collective } from './db.js'
 import { hmac, now, signToken } from './util.js'
 import { kvGet, kvSet } from './db.js'
 import { ingestInbound } from './ingest.js'
@@ -52,6 +52,11 @@ export async function slugAvailability(slug: string): Promise<string | null> {
   if (invalid) return invalid
   const free = await releaseStalePending(slug)
   if (!free) return `${slug} is already taken.`
+  // An address a collective used to have keeps routing to them forever, so it
+  // can never be handed to someone else — their mail would land in this inbox.
+  if (await get<{ slug: string }>('SELECT slug FROM former_slugs WHERE slug = ?', [slug])) {
+    return `${slug} is already taken.`
+  }
   return null
 }
 

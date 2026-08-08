@@ -4,8 +4,9 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import type { Context } from 'hono'
 import { cfg } from '../config.js'
 import {
-  activeMembers, addTag, all, allCollectives, attachmentsByMessage, batchAll, createCollective, get, getCollective,
-  getCollectiveBySlug, getMember, getMemberIn, getThread, kvGet, kvSet, lastMessageByThread, memberMap,
+  activeMembers, addTag, all, allCollectives, attachmentsByMessage, batchAll, createCollective, formerSlugsOf, get, getCollective,
+  getCollectiveByAnySlug, getCollectiveBySlug, getMember, getMemberIn, getThread, kvGet, kvSet, lastMessageByThread, memberMap,
+  renameCollectiveSlug, slugTakenByOther,
   membershipsByEmail, removeTag, run, setAssignee, setStatus, tagsByThread, threadMessages, threadTags,
   type Attachment, type Collective, type Invite, type Member, type Message, type Thread,
 } from '../db.js'
@@ -20,7 +21,7 @@ import { backupTick } from '../backup.js'
 import { CONTRIBUTE_SLUG, creditBalance, creditsLedger, creditsTick, fileContribution, mintCredits, referralUrl , PRO_MONTH_CREDITS } from '../credits.js'
 import {
   approveApplication, checkDiscountCode, checkOcOwnershipCode, discountCodeFor, fileApplication, fileProApplication,
-  issueOcOwnershipCode, ocSlugTaken, slugAvailability,
+  issueOcOwnershipCode, ocSlugTaken, slugAvailability, validateClaimSlug,
 } from '../claim.js'
 import { ocCollectiveInfo, ocDescriptionContains, sendOcVerificationCode, type OcStatus } from '../oc.js'
 import { createRule, deleteRule, describeRule, listRules, matchingRule } from '../rules.js'
@@ -135,6 +136,14 @@ async function tenant(c: Context<Env>): Promise<{ collective: Collective; member
     FROM collectives c LEFT JOIN members m ON m.collective_id = c.id AND m.email = ?
     WHERE c.slug = ?
   `, [email, slug]) : undefined
+  if (!row && slug) {
+    // an old address in an email someone sent months ago still has to work:
+    // send them to the same page under the current name
+    const moved = await getCollectiveByAnySlug(slug)
+    if (moved?.former) {
+      return c.redirect(c.req.path.replace(`/inbox/${slug}`, `/inbox/${moved.collective.slug}`) + (new URL(c.req.url).search || ''))
+    }
+  }
   if (!row || row.c_status !== 'active') return c.notFound()
   const collective: Collective = {
     id: row.c_id, slug: row.c_slug, name: row.c_name, status: row.c_status, plan: row.c_plan, created_at: row.c_created_at,
@@ -1594,6 +1603,7 @@ const BackNav = ({ base }: { base: string }) => (
  *  onboarding emails that are already in people's inboxes. */
 const SETTINGS_TABS = [
   { key: 'settings', label: 'General', path: '/settings' },
+  { key: 'data', label: 'Data', path: '/data' },
   { key: 'domain', label: 'Your domain', path: '/domain' },
   { key: 'billing', label: 'Billing', path: '/billing' },
 ] as const
@@ -1615,6 +1625,7 @@ app.get('/inbox/:addr/settings', async (c) => {
   const collective = (await getCollective(t.collective.id))!
   const addr = receivingAddress(collective)
   const onOwnDomain = Boolean(collective.custom_domain && collective.custom_local)
+  const former = await formerSlugsOf(collective.id)
 
   return c.html(
     <Shell member={member} collective={collective} title="Settings" active="settings" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
@@ -1637,18 +1648,106 @@ app.get('/inbox/:addr/settings', async (c) => {
 
         <section class="card">
           <h2>Address</h2>
-          <p class="muted">
-            Where your mail arrives. It is fixed — people, forwarding rules and mailing lists already
-            point at it, so renaming it would silently drop mail.
-          </p>
+          <p class="muted">Where your mail arrives, and the web address of this inbox.</p>
           <p><code class="invite-url">{addr}</code></p>
+          {former.length ? (
+            <p class="fineprint">Also still receiving at {former.map((f, i) => (
+              <>{i ? ', ' : ''}<b>{f.slug}@{cfg.emailDomain}</b></>
+            ))} — mail sent there keeps arriving here.</p>
+          ) : null}
           {onOwnDomain
             ? <p class="fineprint">Your own domain is set up. <a href={`${base}/domain`}>Manage it →</a></p>
             : <p class="fineprint">Want mail at your own domain instead? <a href={`${base}/domain`}>Set one up →</a></p>}
+          <div class="btn-row">
+            <button class="btn small ghost danger-btn" type="button" data-dialog="#rename-modal">Change address…</button>
+          </div>
+        </section>
+
+        {/* Changing the address is the one setting here that reaches outside the
+            app — into other people's contact lists and forwarding rules — so it
+            asks you to type the current address, GitHub-style, before it moves. */}
+        <dialog id="rename-modal" class="modal">
+          <h2>Change {collective.name}'s address?</h2>
+          <p class="muted">The address is how the outside world reaches you. Changing it means:</p>
+          <ul class="warn-list">
+            <li><b>{addr}</b> stops being your address. Everyone who has it — senders, mailing lists, forwarding rules, contact forms on your website — is still pointing at the old one.</li>
+            <li>Links in emails we already sent will redirect, and <b>mail to the old address keeps arriving here</b>, so nothing is lost. But the old address is retired for good: it can never be given to another collective.</li>
+            <li>Replies you send from now on come from the new address, so people will see a name they don't recognise yet.</li>
+            <li>Any unredeemed discount codes for the old address stop working.</li>
+          </ul>
+          <form method="post" action={`${base}/settings/address`} class="modal-form" data-confirm-text={addr}>
+            <label class="lbl">New address</label>
+            <span class="wl-addr">
+              <input name="slug" value={collective.slug} minlength={6} maxlength={40} pattern="[a-z0-9]{6,40}" autocomplete="off" spellcheck={false} required />
+              <span class="domain">@{cfg.emailDomain}</span>
+            </span>
+            {/* the address goes outside the label: .lbl uppercases, and the
+                phrase has to be typed exactly as it is written */}
+            <label class="lbl">Type the current address to confirm</label>
+            <p class="confirm-phrase"><code>{addr}</code></p>
+            <input class="input" name="confirm" autocomplete="off" spellcheck={false} required />
+            <div class="btn-row">
+              <button class="btn danger-btn" type="submit" data-busy="Moving…" disabled>I understand — change the address</button>
+              <button class="btn ghost" type="button" data-close>Cancel</button>
+            </div>
+          </form>
+        </dialog>
+      </div>
+    </Shell>,
+  )
+})
+
+/** Data lives on its own page: an archive is a different kind of decision from
+ *  a subscription, and people look for it when they are considering leaving. */
+app.get('/inbox/:addr/data', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const { collective, member } = t
+  const base = `/inbox/${collective.slug}`
+  if (member.role !== 'admin') return c.redirect(base)
+  return c.html(
+    <Shell member={member} collective={collective} title="Data" active="data" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
+      <div class="page">
+        <h1>Data</h1>
+        <SettingsNav base={base} on="data" />
+        <section class="card">
+          <h2>Download everything</h2>
+          <p class="muted">Everything your collective ever received or wrote — download it any time. The archive unzips into a folder with a browsable offline inbox (<code style="font-size:12px">inbox.html</code>), the raw data as JSON, and every attachment.</p>
+          <a class="btn small ghost" href={`${base}/export`} download>⬇ Download archive (.zip)</a>
+        </section>
+        <section class="card">
+          <h2>Where it lives</h2>
+          <p class="muted">Your mail is stored in the EU (Dublin) and backed up nightly. Internal notes, assignments and attachments are included in the archive — it is the whole record, not a summary. No lock-in games.</p>
         </section>
       </div>
     </Shell>,
   )
+})
+
+/** Move the collective to a new address. Guarded by typing the current one. */
+app.post('/inbox/:addr/settings/address', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const base = `/inbox/${t.collective.slug}`
+  if (t.member.role !== 'admin') return c.redirect(base)
+  const collective = (await getCollective(t.collective.id))!
+  const body = await c.req.parseBody()
+  const slug = slugify(String(body.slug || ''))
+  const back = (msg: string) => c.redirect(`${base}/settings?m=` + encodeURIComponent(msg))
+
+  // the typed confirmation is checked server-side too — the disabled button is
+  // only a UI courtesy
+  if (String(body.confirm || '').trim().toLowerCase() !== receivingAddress(collective).toLowerCase()) {
+    return back("The confirmation didn't match — the address was not changed.")
+  }
+  if (slug === collective.slug) return c.redirect(`${base}/settings`)
+  const invalid = validateClaimSlug(slug)
+  if (invalid) return back(invalid)
+  if (await slugTakenByOther(slug, collective.id)) return back(`${slug}@${cfg.emailDomain} is already taken.`)
+
+  await renameCollectiveSlug(collective, slug)
+  return c.redirect(`/inbox/${slug}/settings?m=` + encodeURIComponent(
+    `Address changed to ${slug}@${cfg.emailDomain} ✓ — mail to ${collective.slug}@${cfg.emailDomain} still arrives here.`))
 })
 
 app.post('/inbox/:addr/settings', async (c) => {
@@ -2164,12 +2263,6 @@ app.get('/inbox/:addr/billing', async (c) => {
               ))}
             </div>
           ) : null}
-        </section>
-
-        <section class="card">
-          <h2>Your data</h2>
-          <p class="muted">Everything your collective ever received or wrote — download it any time. The archive unzips into a folder with a browsable offline inbox (<code style="font-size:12px">inbox.html</code>), the raw data as JSON, and every attachment.</p>
-          <a class="btn small ghost" href={`${base}/export`} download>⬇ Download archive (.zip)</a>
         </section>
 
         {!(await stripeUsable()) ? (

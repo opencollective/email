@@ -152,6 +152,19 @@ if (typingEl) {
   setInterval(poll, 12000);
 }
 
+// Type-to-confirm (GitHub style): a form marked data-confirm-text keeps its
+// submit disabled until the exact phrase is typed. The server checks it too —
+// this only makes the consequence impossible to click past by accident.
+document.querySelectorAll('form[data-confirm-text]').forEach((form) => {
+  const want = form.getAttribute('data-confirm-text').trim().toLowerCase();
+  const field = form.querySelector('input[name="confirm"]');
+  const go = form.querySelector('button[type="submit"]');
+  if (!field || !go) return;
+  const sync = () => { go.disabled = field.value.trim().toLowerCase() !== want; };
+  field.addEventListener('input', sync);
+  sync();
+});
+
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 `
 
@@ -229,7 +242,7 @@ export const Page: FC<{ title?: string; flash?: string; bundle?: string; childre
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=28" />
+      <link rel="stylesheet" href="/static/style.css?v=29" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script

@@ -7,6 +7,7 @@ import { createSession } from '../src/auth.js'
 import { now } from '../src/util.js'
 import { findMentions, mentionedMembers, noteParts } from '../src/mentions.js'
 import { resolveReplyAddress } from '../src/reply-tokens.js'
+import { slugAvailability } from '../src/claim.js'
 import { __observeAppMail, type AppMail } from '../src/appmail.js'
 
 let seq = 0
@@ -347,4 +348,68 @@ test('renaming is refused for empty names and for non-admins', async () => {
   // and the settings page itself is admin-only
   const page = await app.request(`/inbox/${fx.slug}/settings`, { headers: { cookie: `requests_sid=${memberSid}` } })
   assert.equal(page.status, 302)
+})
+
+// ---------- changing the address ----------
+
+const rename = (slug: string, sid: string, to: string, confirm: string) =>
+  app.request(`/inbox/${slug}/settings/address`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: `requests_sid=${sid}` },
+    body: new URLSearchParams({ slug: to, confirm }),
+  })
+
+test('changing the address keeps the old one working, and retires it for good', async () => {
+  const fx = await fixture()
+  const oldSlug = fx.slug
+  const newSlug = `moved${uniq()}`
+
+  const res = await rename(oldSlug, fx.sid, newSlug, `${oldSlug}@collective.email`)
+  assert.equal(res.status, 302)
+  assert.match(res.headers.get('location')!, new RegExp(`^/inbox/${newSlug}/settings`))
+
+  // mail to the old address still lands in the same inbox
+  const routed = await app.request('/webhooks/resend', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'email.received', data: {
+      email_id: `moved-${uniq()}`, from: 'Outsider <old-contact@outside.test>',
+      to: [`${oldSlug}@collective.email`], subject: 'Sent to the old address',
+      message_id: `<old-${uniq()}@outside.test>`, text: 'Does this still reach you?',
+    } }),
+  })
+  assert.equal((await routed.json()).routed, 1, 'the old address still delivers')
+  const landed = await get<{ subject: string }>(
+    'SELECT subject FROM threads WHERE collective_id = ? ORDER BY id DESC LIMIT 1', [fx.collective.id])
+  assert.equal(landed!.subject, 'Sent to the old address')
+
+  // links in already-sent emails redirect instead of 404ing
+  const oldLink = await app.request(`/inbox/${oldSlug}/thread/${fx.threadId}`, { headers: { cookie: `requests_sid=${fx.sid}` } })
+  assert.equal(oldLink.status, 302)
+  assert.equal(oldLink.headers.get('location'), `/inbox/${newSlug}/thread/${fx.threadId}`)
+
+  // and nobody else can ever claim the old address — by any route
+  assert.match((await slugAvailability(oldSlug))!, /already taken/)
+  await assert.rejects(createCollective(oldSlug, 'Squatter'), /already taken/,
+    'not even the admin path can hand out a retired address')
+})
+
+test('the address only changes when the confirmation matches', async () => {
+  const fx = await fixture()
+  const res = await rename(fx.slug, fx.sid, `other${uniq()}`, 'not-the-address@collective.email')
+  assert.match(decodeURIComponent(res.headers.get('location')!), /confirmation didn't match/)
+  assert.equal((await get<{ slug: string }>('SELECT slug FROM collectives WHERE id = ?', [fx.collective.id]))!.slug, fx.slug)
+})
+
+test('the address cannot be moved onto a taken or invalid one, or by a non-admin', async () => {
+  const fx = await fixture()
+  const other = await createCollective(`taken${uniq()}`, 'Someone Else')
+  const confirm = `${fx.slug}@collective.email`
+
+  assert.match(decodeURIComponent((await rename(fx.slug, fx.sid, other.slug, confirm)).headers.get('location')!), /already taken/)
+  assert.match(decodeURIComponent((await rename(fx.slug, fx.sid, 'ab', confirm)).headers.get('location')!), /6–40 characters/)
+
+  const memberSid = await createSession(fx.target.email) // not an admin
+  await rename(fx.slug, memberSid, `hostile${uniq()}`, confirm)
+  assert.equal((await get<{ slug: string }>('SELECT slug FROM collectives WHERE id = ?', [fx.collective.id]))!.slug, fx.slug)
 })
