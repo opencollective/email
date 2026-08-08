@@ -471,6 +471,18 @@ iframe.msg-frame {
 }
 .mention-me { background: var(--accent); color: var(--accent-ink); }
 
+/* settings sub-navigation (General / Your domain / Billing) */
+.subnav {
+  display: flex; gap: 4px; flex-wrap: wrap; margin: -6px 0 2px;
+  border-bottom: 1.5px solid var(--line-soft); padding-bottom: 0;
+}
+.subnav-item {
+  padding: 7px 13px; font-size: 13.5px; font-weight: 600; color: var(--muted);
+  text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -1.5px;
+}
+.subnav-item:hover { color: var(--ink); }
+.subnav-item.on { color: var(--ink); border-bottom-color: var(--accent); }
+
 /* note editor (React island — ProseMirror) */
 .note-editor .note-input {
   padding: 11px 16px; min-height: 96px; font-size: 15px; line-height: 1.5;

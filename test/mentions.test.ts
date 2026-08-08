@@ -303,3 +303,48 @@ test('mentioning yourself does not send you an email', async () => {
     __observeAppMail(null)
   }
 })
+
+// ---------- settings: renaming the collective ----------
+
+test('an admin can rename the collective; the address is untouched', async () => {
+  const fx = await fixture()
+  const res = await app.request(`/inbox/${fx.slug}/settings`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: `requests_sid=${fx.sid}` },
+    body: new URLSearchParams({ name: '  Commons   Hub  Brussels  ' }),
+  })
+  assert.equal(res.status, 302)
+  assert.match(decodeURIComponent(res.headers.get('location') || ''), /Renamed to Commons Hub Brussels/)
+  const c = (await get<{ name: string; slug: string }>('SELECT name, slug FROM collectives WHERE id = ?', [fx.collective.id]))!
+  assert.equal(c.name, 'Commons Hub Brussels', 'trimmed, inner whitespace collapsed')
+  assert.equal(c.slug, fx.slug, 'the address never moves')
+
+  // the new name is what notifications now say they are from
+  const page = await app.request(`/inbox/${fx.slug}/settings`, { headers: { cookie: `requests_sid=${fx.sid}` } })
+  assert.match(await page.text(), /Commons Hub Brussels/)
+})
+
+test('renaming is refused for empty names and for non-admins', async () => {
+  const fx = await fixture()
+  const before = fx.collective.name
+
+  const empty = await app.request(`/inbox/${fx.slug}/settings`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: `requests_sid=${fx.sid}` },
+    body: new URLSearchParams({ name: '   ' }),
+  })
+  assert.match(decodeURIComponent(empty.headers.get('location') || ''), /cannot be empty/)
+
+  const memberSid = await createSession(fx.target.email) // role 'member', not admin
+  const denied = await app.request(`/inbox/${fx.slug}/settings`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: `requests_sid=${memberSid}` },
+    body: new URLSearchParams({ name: 'Hostile Takeover' }),
+  })
+  assert.equal(denied.headers.get('location'), `/inbox/${fx.slug}`)
+  assert.equal((await get<{ name: string }>('SELECT name FROM collectives WHERE id = ?', [fx.collective.id]))!.name, before)
+
+  // and the settings page itself is admin-only
+  const page = await app.request(`/inbox/${fx.slug}/settings`, { headers: { cookie: `requests_sid=${memberSid}` } })
+  assert.equal(page.status, 302)
+})

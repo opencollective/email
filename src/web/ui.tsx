@@ -229,7 +229,7 @@ export const Page: FC<{ title?: string; flash?: string; bundle?: string; childre
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=26" />
+      <link rel="stylesheet" href="/static/style.css?v=27" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script
@@ -284,8 +284,10 @@ const Menu: FC<{ base: string; active: string; isAdmin: boolean }> = ({ base, ac
     <a class={`nav-item ${active === 'members' ? 'active' : ''}`} href={`${base}/members`}>☺ Members</a>
     <a class={`nav-item ${active === 'notifications' ? 'active' : ''}`} href={`${base}/notifications`}>🔔 Notifications</a>
     {isAdmin ? <a class={`nav-item ${active === 'rules' ? 'active' : ''}`} href={`${base}/rules`}>⚡ Rules</a> : null}
-    {isAdmin ? <a class={`nav-item ${active === 'domain' ? 'active' : ''}`} href={`${base}/domain`}>🌐 Your domain</a> : null}
-    {isAdmin ? <a class={`nav-item ${active === 'billing' ? 'active' : ''}`} href={`${base}/billing`}>💳 Billing</a> : null}
+    {/* one entry for the three admin config pages: name, domain, billing */}
+    {isAdmin ? (
+      <a class={`nav-item ${['settings', 'domain', 'billing'].includes(active) ? 'active' : ''}`} href={`${base}/settings`}>⚙ Settings</a>
+    ) : null}
   </nav>
 )
 

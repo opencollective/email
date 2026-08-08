@@ -13,7 +13,7 @@ import {
   checkCode, createSession, destroyEmailSessions, destroySession, emailFromSession, issueCode, type LoginCodeRow,
 } from '../auth.js'
 import { forwardMessage, outboundFrom, sendCollectiveReply, signatureFor } from '../outbound.js'
-import { digestTick, sendOnboarding, trialTick } from '../notify.js'
+import { digestTick, receivingAddress, sendOnboarding, trialTick } from '../notify.js'
 import { mentionLabels, noteParts } from '../mentions.js'
 import { addNote } from '../notes.js'
 import { backupTick } from '../backup.js'
@@ -1587,6 +1587,83 @@ const BackNav = ({ base }: { base: string }) => (
   <nav class="nav"><a class="nav-item" href={base}>← Back to inbox</a></nav>
 )
 
+// ---------- settings ----------
+
+/** Settings is one place in the menu and three pages underneath. Domain and
+ *  Billing keep their own URLs — they are linked from trial, credit and
+ *  onboarding emails that are already in people's inboxes. */
+const SETTINGS_TABS = [
+  { key: 'settings', label: 'General', path: '/settings' },
+  { key: 'domain', label: 'Your domain', path: '/domain' },
+  { key: 'billing', label: 'Billing', path: '/billing' },
+] as const
+
+const SettingsNav = ({ base, on }: { base: string; on: string }) => (
+  <nav class="subnav">
+    {SETTINGS_TABS.map((t) => (
+      <a class={`subnav-item ${t.key === on ? 'on' : ''}`} href={`${base}${t.path}`}>{t.label}</a>
+    ))}
+  </nav>
+)
+
+app.get('/inbox/:addr/settings', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const { member } = t
+  const base = `/inbox/${t.collective.slug}`
+  if (member.role !== 'admin') return c.redirect(base)
+  const collective = (await getCollective(t.collective.id))!
+  const addr = receivingAddress(collective)
+  const onOwnDomain = Boolean(collective.custom_domain && collective.custom_local)
+
+  return c.html(
+    <Shell member={member} collective={collective} title="Settings" active="settings" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
+      <div class="page">
+        <h1>Settings</h1>
+        <SettingsNav base={base} on="settings" />
+
+        <section class="card">
+          <h2>Name</h2>
+          <p class="muted">
+            What your people see in the sidebar, in the digests, and on every notification we send
+            on your behalf — “Marie Dupont via {collective.name}”. Changing it takes effect immediately;
+            it does not affect your address or anything already delivered.
+          </p>
+          <form method="post" action={`${base}/settings`} class="btn-row" style="flex-wrap:wrap">
+            <input class="input" name="name" value={collective.name} maxlength={80} required style="max-width:340px" />
+            <button class="btn" type="submit" data-busy="Saving…">Save</button>
+          </form>
+        </section>
+
+        <section class="card">
+          <h2>Address</h2>
+          <p class="muted">
+            Where your mail arrives. It is fixed — people, forwarding rules and mailing lists already
+            point at it, so renaming it would silently drop mail.
+          </p>
+          <p><code class="invite-url">{addr}</code></p>
+          {onOwnDomain
+            ? <p class="fineprint">Your own domain is set up. <a href={`${base}/domain`}>Manage it →</a></p>
+            : <p class="fineprint">Want mail at your own domain instead? <a href={`${base}/domain`}>Set one up →</a></p>}
+        </section>
+      </div>
+    </Shell>,
+  )
+})
+
+app.post('/inbox/:addr/settings', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const base = `/inbox/${t.collective.slug}`
+  if (t.member.role !== 'admin') return c.redirect(base)
+  const body = await c.req.parseBody()
+  const name = String(body.name || '').trim().replace(/\s+/g, ' ').slice(0, 80)
+  if (!name) return c.redirect(`${base}/settings?m=` + encodeURIComponent('A name cannot be empty.'))
+  if (name === t.collective.name) return c.redirect(`${base}/settings`)
+  await run('UPDATE collectives SET name = ? WHERE id = ?', [name, t.collective.id])
+  return c.redirect(`${base}/settings?m=` + encodeURIComponent(`Renamed to ${name} ✓`))
+})
+
 // ---------- rules ----------
 
 app.get('/inbox/:addr/rules', async (c) => {
@@ -2054,6 +2131,7 @@ app.get('/inbox/:addr/billing', async (c) => {
     <Shell member={member} collective={collective} title="Billing" active="billing" flash={flash} sidebar={<BackNav base={base} />}>
       <div class="page">
         <h1>Billing</h1>
+        <SettingsNav base={base} on="billing" />
         <section class="card">
           <h2>{plan.label} plan</h2>
           <p class="muted">{plan.price(sym)}</p>
@@ -2171,6 +2249,7 @@ const DomainUpsell = (p: { base: string; balance: number; currency: 'eur' | 'usd
   return (
     <div class="page">
       <h1>Your own domain</h1>
+      <SettingsNav base={p.base} on="domain" />
       <p class="muted">Receive and answer as <b>hello@yourcollective.org</b> — same shared inbox, your identity. This is the Pro plan ({s}100 a month). Like everything here: pay, use a code, spend credits, or contribute.</p>
 
       {p.canPay ? (
@@ -2232,6 +2311,7 @@ app.get('/inbox/:addr/domain', async (c) => {
     <Shell member={member} collective={collective} title="Your domain" active="domain" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
       <div class="page">
         <h1>Your own domain</h1>
+        <SettingsNav base={base} on="domain" />
         {!customAddr ? (
           <section class="card">
             <h2>Which address should reach this inbox?</h2>
