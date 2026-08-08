@@ -6,6 +6,7 @@ import { all, createCollective, get, run, type Member } from '../src/db.js'
 import { createSession } from '../src/auth.js'
 import { now } from '../src/util.js'
 import { findMentions, mentionedMembers, noteParts } from '../src/mentions.js'
+import { resolveReplyAddress } from '../src/reply-tokens.js'
 import { __observeAppMail, type AppMail } from '../src/appmail.js'
 
 let seq = 0
@@ -133,7 +134,21 @@ test('posting a note with @mention emails the mentioned member and records it', 
     assert.match(mail.text, /can you confirm the room is free\?/)
     // a link to the full thread, and never a reply token pointed at the sender
     assert.match(mail.html, new RegExp(`/inbox/${slug}/thread/${threadId}`))
-    assert.equal(mail.replyTo, authorEmail, 'replies go to the author, never onward to the outside sender')
+    // the header names the thread, links it, and says who it came from
+    assert.match(mail.html, new RegExp(`mentioned you in an internal note about <a href="[^"]*/inbox/${slug}/thread/${threadId}"[^>]*>Booking the big room</a> from Outside Sender\\.`))
+    // one way in, not two
+    assert.equal((mail.html.match(/Open thread/g) || []).length, 1)
+    assert.doesNotMatch(mail.html, /Reply in the thread/)
+    assert.match(mail.html, /Just reply to this email/)
+
+    // replying goes to a note-kind address — never onward to the outside sender
+    const addr = /<([^>]+)>$/.exec(mail.replyTo!)![1]
+    assert.match(addr, new RegExp(`^note-via-${slug}\\+[a-z0-9]{10}@collective\\.email$`))
+    const ref = await resolveReplyAddress(addr)
+    assert.equal(ref?.kind, 'note')
+    assert.equal(ref?.memberId, target.id, 'the token identifies the recipient')
+    assert.notEqual(ref?.authorMemberId, null)
+    assert.notEqual(addr, authorEmail)
 
     const rows = await all<{ member_id: number }>(
       'SELECT nm.member_id FROM note_mentions nm JOIN notes n ON n.id = nm.note_id WHERE n.thread_id = ?', [threadId])
@@ -157,6 +172,124 @@ test('a note without mentions emails nobody', async () => {
   } finally {
     __observeAppMail(null)
   }
+})
+
+// ---------- replying to a mention email files another internal note ----------
+
+const webhook = (data: Record<string, unknown>) =>
+  app.request('/webhooks/resend', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'email.received', data }),
+  })
+
+/** Post a mention note, and hand back the address its notification asks you to reply to. */
+async function mentionAndGetReplyAddress(fx: Awaited<ReturnType<typeof fixture>>, body: string) {
+  const sent: AppMail[] = []
+  __observeAppMail((m) => sent.push(m))
+  try {
+    await postNote(fx.slug, fx.threadId, fx.sid, body)
+  } finally {
+    __observeAppMail(null)
+  }
+  const mail = sent.find((m) => m.to === fx.target.email)!
+  return /<([^>]+)>$/.exec(mail.replyTo!)![1]
+}
+
+test('replying to a mention email adds an internal note that starts with @author', async () => {
+  const fx = await fixture()
+  const addr = await mentionAndGetReplyAddress(fx, '@Marie Dupont can you confirm the room?')
+
+  const sent: AppMail[] = []
+  __observeAppMail((m) => sent.push(m))
+  try {
+    const res = await webhook({
+      email_id: `note-${uniq()}`,
+      from: `Marie Dupont <${fx.target.email}>`,
+      to: [addr],
+      subject: `Re: Xavier Damman mentioned you — Booking the big room`,
+      message_id: `<reply-${uniq()}@example.org>`,
+      text: 'Yes, the 12th is free — I will pencil them in.\n\nOn Fri, Xavier wrote:\n> can you confirm the room?',
+    })
+    assert.equal((await res.json()).handled, 'member_note')
+  } finally {
+    __observeAppMail(null)
+  }
+
+  const notes = await all<{ member_id: number; body: string }>(
+    'SELECT * FROM notes WHERE thread_id = ? ORDER BY id', [fx.threadId])
+  assert.equal(notes.length, 2, 'the reply became a second note')
+  const reply = notes[1]
+  assert.equal(reply.member_id, fx.target.id, 'authored by whoever replied')
+  assert.equal(reply.body, '@Xavier Damman Yes, the 12th is free — I will pencil them in.',
+    'opens with the person being answered, quoted tail dropped')
+
+  // and that @author round-trips: the original author is notified back
+  const back = sent.find((m) => m.to === fx.authorEmail)
+  assert.ok(back, 'the member who mentioned them is notified of the answer')
+  assert.match(back.subject, /Marie Dupont mentioned you/)
+
+  // nothing was ever sent to the outside sender
+  const outbound = await all('SELECT * FROM messages WHERE thread_id = ? AND direction = ?', [fx.threadId, 'outbound'])
+  assert.equal(outbound.length, 0, 'a note reply never emails the counterpart')
+  assert.equal(sent.some((m) => m.to === 'sender@outside.test'), false)
+})
+
+test('a forwarded mention email cannot be used to post as someone else', async () => {
+  const fx = await fixture()
+  const addr = await mentionAndGetReplyAddress(fx, '@Marie Dupont have a look?')
+  const before = (await all('SELECT * FROM notes WHERE thread_id = ?', [fx.threadId])).length
+
+  const res = await webhook({
+    email_id: `fwd-${uniq()}`,
+    from: 'Random Stranger <stranger@elsewhere.test>',
+    to: [addr],
+    subject: 'Fwd: mentioned you',
+    message_id: `<fwd-${uniq()}@elsewhere.test>`,
+    text: 'I am not Marie.',
+  })
+  assert.equal((await res.json()).handled, 'member_note')
+  assert.equal((await all('SELECT * FROM notes WHERE thread_id = ?', [fx.threadId])).length, before,
+    'the note was not written')
+})
+
+test('a member replying from a linked second address is still attributed to them', async () => {
+  // the common real case: the notification goes to a +tag, the mail client
+  // sends from the bare address
+  const fx = await fixture()
+  const addr = await mentionAndGetReplyAddress(fx, '@Marie Dupont thoughts?')
+  const second = `marie-personal-${uniq()}@gmail.test`
+  await run('INSERT INTO member_aliases (collective_id, member_id, email, created_at) VALUES (?, ?, ?, ?)',
+    [fx.collective.id, fx.target.id, second, now()])
+
+  await webhook({
+    email_id: `alias-${uniq()}`,
+    from: `Marie Dupont <${second}>`,
+    to: [addr],
+    subject: 'Re: mentioned you',
+    message_id: `<alias-${uniq()}@gmail.test>`,
+    text: 'Looks good to me.',
+  })
+  const notes = await all<{ member_id: number; body: string }>(
+    'SELECT * FROM notes WHERE thread_id = ? ORDER BY id', [fx.threadId])
+  assert.equal(notes.length, 2)
+  assert.equal(notes[1].member_id, fx.target.id)
+  assert.equal(notes[1].body, '@Xavier Damman Looks good to me.')
+})
+
+test('an autoresponder bouncing off a mention email writes nothing', async () => {
+  const fx = await fixture()
+  const addr = await mentionAndGetReplyAddress(fx, '@Marie Dupont quick one')
+  const before = (await all('SELECT * FROM notes WHERE thread_id = ?', [fx.threadId])).length
+  await webhook({
+    email_id: `ooo-${uniq()}`,
+    from: `Marie Dupont <${fx.target.email}>`,
+    to: [addr],
+    subject: 'Automatic reply: mentioned you',
+    message_id: `<ooo-${uniq()}@example.org>`,
+    text: 'I am on holiday until September.',
+  })
+  assert.equal((await all('SELECT * FROM notes WHERE thread_id = ?', [fx.threadId])).length, before)
 })
 
 test('mentioning yourself does not send you an email', async () => {

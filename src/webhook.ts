@@ -4,7 +4,7 @@ import { simpleParser, type ParsedMail } from 'mailparser'
 import { cfg } from './config.js'
 import { getCollectiveByCustomDomain, getCollectiveBySlug, run } from './db.js'
 import { resolveReplyAddress, viaSlug } from './reply-tokens.js'
-import { handleEmailReply, ingestInbound } from './ingest.js'
+import { handleEmailNote, handleEmailReply, ingestInbound } from './ingest.js'
 import { verifyStripeSignature } from './stripe.js'
 import { billingState, canReceive } from './billing.js'
 
@@ -130,10 +130,15 @@ webhooks.post('/webhooks/resend', async (c) => {
   ].map((a) => a.toLowerCase().trim()).filter(Boolean))]
   const candidates = allAddrs.filter((a) => a.endsWith(`@${cfg.emailDomain}`))
 
-  // 1. Member replying to a notification? (signed +r. address)
+  // 1. Member replying to a notification? The token says what the reply does:
+  // answer the outside sender, or file an internal note.
   for (const addr of candidates) {
     const ref = await resolveReplyAddress(addr)
     if (ref) {
+      if (ref.kind === 'note') {
+        await handleEmailNote(parsed, ref)
+        return c.json({ ok: true, handled: 'member_note' })
+      }
       await handleEmailReply(parsed, ref)
       return c.json({ ok: true, handled: 'member_reply' })
     }

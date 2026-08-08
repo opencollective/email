@@ -13,8 +13,9 @@ import {
   checkCode, createSession, destroyEmailSessions, destroySession, emailFromSession, issueCode, type LoginCodeRow,
 } from '../auth.js'
 import { forwardMessage, outboundFrom, sendCollectiveReply, signatureFor } from '../outbound.js'
-import { digestTick, notifyMention, sendOnboarding, trialTick } from '../notify.js'
-import { mentionedMembers, mentionLabels, noteParts } from '../mentions.js'
+import { digestTick, sendOnboarding, trialTick } from '../notify.js'
+import { mentionLabels, noteParts } from '../mentions.js'
+import { addNote } from '../notes.js'
 import { backupTick } from '../backup.js'
 import { CONTRIBUTE_SLUG, creditBalance, creditsLedger, creditsTick, fileContribution, mintCredits, referralUrl , PRO_MONTH_CREDITS } from '../credits.js'
 import {
@@ -1415,28 +1416,14 @@ app.post('/inbox/:addr/thread/:id/note', async (c) => {
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
   const body = await c.req.parseBody()
-  const text = String(body.body || '').trim().slice(0, 10000)
+  const text = String(body.body || '').trim()
   let flash = 'Note added ✓'
   if (text) {
-    // resolve @mentions against the current roster — mentioning yourself is a
-    // no-op, you already know
-    const roster = await activeMembers(t.collective.id)
-    const mentioned = mentionedMembers(text, roster).filter((m) => m.id !== t.member.id)
-    const { lastId } = await run('INSERT INTO notes (thread_id, member_id, body, created_at) VALUES (?, ?, ?, ?)',
-      [thread.id, t.member.id, text, now()])
-    for (const m of mentioned) {
-      await run('INSERT OR IGNORE INTO note_mentions (note_id, member_id, created_at) VALUES (?, ?, ?)',
-        [lastId, m.id, now()])
-    }
+    const { mentioned, notified } = await addNote(t.collective, thread, t.member, text)
     if (mentioned.length) {
-      // the note is already saved — a mail failure must not cost the writing
-      try {
-        await notifyMention(t.collective, thread, t.member, mentioned, text)
-        flash = `Note added ✓ — notified ${mentioned.map(memberName).join(', ')}`
-      } catch (err) {
-        console.error('[mention] notification failed:', err)
-        flash = 'Note added ✓ — but the mention email could not be sent'
-      }
+      flash = notified
+        ? `Note added ✓ — notified ${mentioned.map(memberName).join(', ')}`
+        : 'Note added ✓ — but the mention email could not be sent'
     }
   }
   return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}?m=` + encodeURIComponent(flash))

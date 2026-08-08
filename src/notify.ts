@@ -6,7 +6,7 @@ import {
 import { sendAppEmail } from './appmail.js'
 import { outboundFrom } from './outbound.js'
 import { escapeHtml, excerpt, fmtDateTime, signToken, splitQuotedTail, waitingFor } from './util.js'
-import { mintReplyAddress } from './reply-tokens.js'
+import { mintNoteReplyAddress, mintReplyAddress } from './reply-tokens.js'
 import { noteParts } from './mentions.js'
 
 const threadUrl = (c: Collective, id: number) => `${cfg.baseUrl}/inbox/${c.slug}/thread/${id}`
@@ -45,8 +45,10 @@ const shell = (title: string, inner: string) => `
  *  So we do what Google Groups does when it can't keep the original From: put
  *  the person in the display name — "Marie Dupont via Commons Hub" — which is
  *  what makes a list scannable at a glance, and keep authentication intact. */
+/** Strip what would break a quoted display name in a From/Reply-To header. */
+const clean = (v: string) => v.replace(/["\\<>\n\r]/g, '').trim()
+
 const notifyFrom = (collective: Collective, sender?: { name?: string | null; email?: string | null }) => {
-  const clean = (v: string) => v.replace(/["\\<>\n\r]/g, '').trim()
   const who = sender ? clean(sender.name || (sender.email || '').split('@')[0] || '') : ''
   // "via <the address they wrote to>" — the same shape a group uses, and it
   // says which inbox this landed in when someone reads several of them
@@ -247,9 +249,10 @@ export async function notifyInbound(
  *  a teammate asks me a question". Readers get it too — they can open the thread
  *  even if they can't answer in it.
  *
- *  Reply-To is the author's own address, NOT a reply token: a token would send
- *  the answer onward to the outside sender, and "@marie can you check this?"
- *  must never be one careless reply away from landing in the customer's inbox. */
+ *  Reply-To is a note-kind token, so answering by email files another internal
+ *  note (opening with @author, which notifies them back) instead of mailing the
+ *  outside sender. The distinction is enforced in the token row, not in the
+ *  wording: there is no path from this address to the customer's inbox. */
 export async function notifyMention(
   collective: Collective,
   thread: Thread,
@@ -275,22 +278,22 @@ export async function notifyMention(
       : ''
     const html = threadShell(collective, `
       <div style="border-bottom:1px solid #e6e8eb;padding-bottom:10px;margin-bottom:14px">
-        <p style="margin:0 0 2px;font-size:14px"><b>${escapeHtml(authorName)}</b> mentioned you in an internal note</p>
-        <p style="margin:0;font-size:13px;color:#6b7280">on “${escapeHtml(thread.subject)}” · with ${escapeHtml(counterpart)}</p>
+        <p style="margin:0;font-size:14px;line-height:1.5"><b>${escapeHtml(authorName)}</b> mentioned you in an internal note about <a href="${url}" style="color:#0c2d66;font-weight:600">${escapeHtml(thread.subject)}</a> from ${escapeHtml(counterpart)}.</p>
       </div>
       <div style="border-left:3px dashed #d3d6da;padding-left:14px;margin:14px 0;font-size:15px;line-height:1.55;white-space:pre-wrap">${bodyHtml}</div>
       ${alsoLine}
-      <p style="margin:0 0 10px;font-size:12px;color:#6b7280">Internal — ${escapeHtml(counterpart)} never sees this note. Answer in the thread so the whole team keeps the context.</p>
-      ${quietBtn(`${url}?pane=note#composer`, 'Reply in the thread')}
+      <p style="margin:0 0 12px;font-size:13px;color:#6b7280"><b style="color:#141414">Just reply to this email</b> to answer ${escapeHtml(authorName)}. Your reply is added to this thread as another internal note — only members of ${escapeHtml(collective.name)} can see it, and ${escapeHtml(counterpart)} never does.</p>
       ${quietBtn(url, 'Open thread')}`)
 
     const text = [
-      `${authorName} mentioned you in an internal note on "${thread.subject}" (with ${counterpart}):`,
+      `${authorName} mentioned you in an internal note about "${thread.subject}" from ${counterpart}.`,
       '',
       noteBody,
       '',
       others.length ? `Also mentioned: ${others.map(memberLabel).join(', ')}` : '',
-      `Reply in the thread: ${url}?pane=note#composer`,
+      `Just reply to this email to answer ${authorName} — your reply is added to the thread as another internal note, visible only to members of ${collective.name}. ${counterpart} never sees it.`,
+      '',
+      `Open thread: ${url}`,
     ].filter(Boolean).join('\n')
 
     await sendAppEmail({
@@ -299,7 +302,9 @@ export async function notifyMention(
       html,
       text,
       from: notifyFrom(collective, { name: author.name, email: author.email }),
-      replyTo: author.email,
+      // a note-kind address: replying files an internal note, and cannot reach
+      // the outside sender even by accident
+      replyTo: `${clean(`${authorName} · internal note`)} <${await mintNoteReplyAddress(collective.slug, thread.id, m.id, author.id)}>`,
     })
   }
 }

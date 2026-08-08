@@ -75,6 +75,8 @@ const SCHEMA = [
     thread_id INTEGER NOT NULL,
     member_id INTEGER NOT NULL,
     message_id INTEGER NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'reply',
+    author_member_id INTEGER,
     expires_at INTEGER NOT NULL,
     created_at INTEGER NOT NULL
   )`,
@@ -224,6 +226,8 @@ function init(): Promise<void> {
       'ALTER TABLE rules ADD COLUMN assign_member_id INTEGER',
       'ALTER TABLE rules ADD COLUMN close INTEGER NOT NULL DEFAULT 1',
       'ALTER TABLE threads ADD COLUMN cc_json TEXT',
+      "ALTER TABLE reply_tokens ADD COLUMN kind TEXT NOT NULL DEFAULT 'reply'",
+      'ALTER TABLE reply_tokens ADD COLUMN author_member_id INTEGER',
     ]
     ready = db.batch(SCHEMA, 'write')
       // additive migrations for pre-existing tables; ignore "duplicate column"

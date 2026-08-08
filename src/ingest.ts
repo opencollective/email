@@ -10,6 +10,8 @@ import { sanitizeEmailHtml } from './sanitize.js'
 import { notifyInbound, sendCollisionNotice, sendReplyConfirmation, sendReplyFailure } from './notify.js'
 import { sendCollectiveReply } from './outbound.js'
 import { kvGet, kvSet } from './db.js'
+import { addNote } from './notes.js'
+import type { ReplyRef } from './reply-tokens.js'
 
 /** Best-effort plain text from a parsed email; HTML-only mail (e.g. Apple Mail
  *  with inline images) has no text part at all. `dropQuotes` also removes the
@@ -283,6 +285,61 @@ export async function ingestInbound(
 }
 
 // ---------- member reply-by-email (notification Reply-To) ----------
+
+/** Someone answered a "X mentioned you" email. Their reply becomes another
+ *  internal note on the thread, opening with @X so the person who pulled them
+ *  in is notified back — the same loop as answering in the browser.
+ *
+ *  This path can only ever write a note: the token is kind='note', and nothing
+ *  here touches sendCollectiveReply. That is what makes replying safe to
+ *  encourage — the outside sender cannot be reached from this address. */
+export async function handleEmailNote(parsed: ParsedMail, ref: ReplyRef) {
+  const recipient = await getMember(ref.memberId)
+  const thread = await getThread(ref.threadId)
+  if (!recipient || !thread) return
+  const collective = await getCollective(thread.collective_id)
+  if (!collective || collective.slug !== ref.slug) return
+  if (isAutoSubmitted(parsed)) return
+
+  // The note is attributed to whoever actually wrote it, so the From has to
+  // belong to this collective: the token proves access to the thread, the
+  // address says who is speaking. A forwarded notification therefore can't let
+  // a stranger post in someone's name — and a member who replies from a second
+  // address (a +tag, a personal account an admin linked) still lands correctly.
+  const from = addrList(parsed.from)[0]?.address || ''
+  const { member: matched } = await teamSender(collective, from)
+  const writer = matched && !matched.removed_at ? matched
+    : from === recipient.email.toLowerCase() && !recipient.removed_at ? recipient
+      : null
+  if (!writer) {
+    console.log(`[ingest] note reply on thread ${thread.id} from ${from || 'unknown'} — not a member, ignored`)
+    return
+  }
+
+  if (writer.role === 'reader') {
+    await sendReplyFailure(collective, writer, thread,
+      'You have read access to this collective, so you cannot add internal notes. Ask an admin to let you comment.',
+      plainText(parsed, true))
+    return
+  }
+
+  if (parsed.messageId) {
+    const dedupeKey = `handled:${parsed.messageId}`
+    if (await kvGet(dedupeKey)) return
+    await kvSet(dedupeKey, String(now()))
+  }
+
+  const body = plainText(parsed, true).trim()
+  if (!body) return // an empty reply is nothing to file
+
+  // open with the person being answered, so they are notified back
+  const mentionedBy = ref.authorMemberId ? await getMember(ref.authorMemberId) : undefined
+  const lead = mentionedBy && !mentionedBy.removed_at && mentionedBy.id !== writer.id
+    ? `@${mentionedBy.name || mentionedBy.email.split('@')[0]} `
+    : ''
+  const { mentioned } = await addNote(collective, thread, writer, `${lead}${body}`)
+  console.log(`[ingest] ${writer.email} added a note by email on thread ${thread.id}${mentioned.length ? ` (notified ${mentioned.length})` : ''}`)
+}
 
 export async function handleEmailReply(
   parsed: ParsedMail,
