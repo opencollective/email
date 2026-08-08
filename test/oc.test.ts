@@ -60,21 +60,74 @@ test('live check: none / contactable / uncontactable', async () => {
   assert.equal(r.oc.token, undefined, 'no random token — the proof is the public address in the description')
 })
 
+/** Which step a rendered page is: the heading gives it away. */
+const stepOf = (html: string) => /Who&#39;s the first admin\?|Who's the first admin\?/.test(html) ? 2
+  : /Claim your address/.test(html) ? 1 : 0
+
+test('a name taken on Open Collective stays on step 1, never reaching "first admin"', async () => {
+  const slug = uniq()
+  fake.accounts[slug] = { name: 'Commons Hub', contactForm: 'ACTIVE', admins: ['Xavier'] }
+  const html = await (await app.request(`/claim?address=${slug}`)).text()
+  assert.equal(stepOf(html), 1, 'still claiming the address')
+  assert.match(html, /already claimed on Open Collective/i)
+  assert.match(html, /one of its admins, we can send a confirmation code/i)
+  assert.match(html, /Type another name to claim a different address/i)
+  assert.equal(fake.sent.length, 0)
+})
+
+test('an uncontactable name also stays on step 1 until the description proves it', async () => {
+  const slug = uniq()
+  fake.accounts[slug] = { name: 'Quiet Co', contactForm: 'UNSUPPORTED', admins: ['Ana'], description: 'We do good things.' }
+  let html = await (await app.request(`/claim?address=${slug}`)).text()
+  assert.equal(stepOf(html), 1)
+  assert.match(html, /advertise it there anyway|add <code>/i)
+
+  // verifying too early keeps you on step 1
+  let res = await claim('/claim/oc-verify', { address: slug })
+  html = await res.text()
+  assert.equal(stepOf(html), 1)
+  assert.match(html, /find that line/i)
+
+  // once the description advertises the address, step 2 opens
+  fake.accounts[slug].description = `We do good things. Reach us at ${slug}@collective.email!`
+  res = await claim('/claim/oc-verify', { address: slug })
+  assert.equal(res.status, 302)
+  const next = res.headers.get('location')!
+  assert.match(next, /[?&]p=/, 'carries a proof to step 2')
+  html = await (await app.request(next)).text()
+  assert.equal(stepOf(html), 2, 'now asking who the first admin is')
+  assert.doesNotMatch(html, /advertise it there anyway/i, 'and not asking for the proof again')
+})
+
 test('claiming a contactable collective never messages its admins unasked', async () => {
   const slug = uniq()
   fake.accounts[slug] = { name: 'Commons Hub', contactForm: 'ACTIVE', admins: ['Xavier'] }
   const mail = `${slug}@personal.test`
 
-  // submitting step 2 only offers the option — a name someone typed by mistake
-  // must never put a message in a stranger's inbox
-  const res = await claim('/claim', { address: slug, name: 'X', email: mail })
-  const html = await res.text()
-  assert.match(html, /already claimed on Open Collective/i)
-  assert.match(html, /one of its admins, we can send your code/i)
-  assert.match(html, /pick another address/i)
+  // step 2 is only reachable by saying it's yours, and even then submitting it
+  // just offers the option — a name typed by mistake never messages a stranger
+  const html = await (await app.request(`/claim?address=${slug}&oc=admin`)).text()
+  assert.equal(stepOf(html), 2)
   assert.match(html, /formaction="\/claim\/oc-send"/, 'sending is its own explicit action')
+
+  const res = await claim('/claim', { address: slug, name: 'X', email: mail })
+  assert.match(await res.text(), /already claimed on Open Collective|claimed on Open Collective/i)
   assert.equal(fake.sent.length, 0, 'nothing sent to Open Collective')
   assert.equal(await get<any>('SELECT id FROM login_codes WHERE email = ?', [mail]), undefined, 'no code issued')
+})
+
+test('a step-1 proof cannot be reused for a different address', async () => {
+  const mine = uniq(), theirs = uniq()
+  fake.accounts[mine] = { name: 'Mine', contactForm: 'UNSUPPORTED', admins: ['Ana'], description: `Reach us at ${mine}@collective.email` }
+  fake.accounts[theirs] = { name: 'Theirs', contactForm: 'UNSUPPORTED', admins: ['Bo'], description: 'Nothing here.' }
+  const proof = new URL((await claim('/claim/oc-verify', { address: mine })).headers.get('location')!, 'http://x').searchParams.get('p')!
+
+  const html = await (await app.request(`/claim?address=${theirs}&p=${encodeURIComponent(proof)}`)).text()
+  assert.equal(stepOf(html), 1, 'someone else\'s proof unlocks nothing')
+
+  const mail = `${theirs}@personal.test`
+  await claim('/claim', { address: theirs, name: 'X', email: mail, proof })
+  assert.equal(await get<any>('SELECT id FROM login_codes WHERE email = ?', [mail]), undefined, 'and issues no code')
 })
 
 test('the explicit "send to its admins" button delivers the code through OC', async () => {
@@ -105,20 +158,18 @@ test('an uncontactable collective cannot be claimed until the description token 
   const mail = `${slug}@personal.test`
   fake.accounts[slug] = { name: 'Quiet Co', contactForm: 'UNSUPPORTED', admins: ['Xavier'], description: 'We do good things.' }
 
-  // plain submit → no code, form comes back asking for the description proof
+  // submitting step 2 without a proof → no code, bounced back to step 1
   let res = await claim('/claim', { address: slug, name: 'X', email: mail })
-  let html = await res.text()
-  assert.match(html, /advertise it there anyway/i)
+  assert.match(await res.text(), /advertise it there anyway|add <code>/i)
   assert.equal(await get<any>('SELECT id FROM login_codes WHERE email = ?', [mail]), undefined, 'no code issued')
 
-  // verify before adding the token → still refused
-  res = await claim('/claim/oc-verify', { address: slug, name: 'X', email: mail })
-  assert.match(await res.text(), /find that line/i)
-  assert.equal(await get<any>('SELECT id FROM login_codes WHERE email = ?', [mail]), undefined)
-
-  // add the token to the description → verify passes, code goes to the personal email
+  // add the address to the description → step 1 passes and hands over a proof
   fake.accounts[slug].description = `We do good things. Reach us at ${slug}@collective.email!`
-  res = await claim('/claim/oc-verify', { address: slug, name: 'X', email: mail })
+  res = await claim('/claim/oc-verify', { address: slug })
+  const proof = new URL(res.headers.get('location')!, 'http://x').searchParams.get('p')!
+
+  // now the ordinary claim goes through, to the personal email
+  res = await claim('/claim', { address: slug, name: 'X', email: mail, proof })
   assert.match(await res.text(), /check your inbox/i)
   const row = await get<any>('SELECT claim_slug FROM login_codes WHERE email = ?', [mail])
   assert.equal(row.claim_slug, slug)
