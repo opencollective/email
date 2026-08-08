@@ -60,18 +60,44 @@ test('live check: none / contactable / uncontactable', async () => {
   assert.equal(r.oc.token, undefined, 'no random token — the proof is the public address in the description')
 })
 
-test('claiming a contactable collective sends the code via OC, not to the personal email', async () => {
+test('claiming a contactable collective never messages its admins unasked', async () => {
   const slug = uniq()
   fake.accounts[slug] = { name: 'Commons Hub', contactForm: 'ACTIVE', admins: ['Xavier'] }
   const mail = `${slug}@personal.test`
+
+  // submitting step 2 only offers the option — a name someone typed by mistake
+  // must never put a message in a stranger's inbox
   const res = await claim('/claim', { address: slug, name: 'X', email: mail })
   const html = await res.text()
-  assert.match(html, /we sent a 6-digit code to its admins/i)
+  assert.match(html, /already claimed on Open Collective/i)
+  assert.match(html, /one of its admins, we can send your code/i)
+  assert.match(html, /pick another address/i)
+  assert.match(html, /formaction="\/claim\/oc-send"/, 'sending is its own explicit action')
+  assert.equal(fake.sent.length, 0, 'nothing sent to Open Collective')
+  assert.equal(await get<any>('SELECT id FROM login_codes WHERE email = ?', [mail]), undefined, 'no code issued')
+})
+
+test('the explicit "send to its admins" button delivers the code through OC', async () => {
+  const slug = uniq()
+  fake.accounts[slug] = { name: 'Commons Hub', contactForm: 'ACTIVE', admins: ['Xavier'] }
+  const mail = `${slug}@personal.test`
+  const res = await claim('/claim/oc-send', { address: slug, name: 'X', email: mail })
+  assert.match(await res.text(), /we sent a 6-digit code to its admins/i)
   assert.equal(fake.sent.length, 1, 'code delivered through the OC contact form')
   assert.match(fake.sent[0].message, /\b\d{6}\b/, 'the message carries a 6-digit code')
   // the code is stored under the personal email (login identity)
   const row = await get<any>('SELECT claim_slug FROM login_codes WHERE email = ?', [mail])
   assert.equal(row.claim_slug, slug)
+})
+
+test('oc-send re-checks and will not message a collective that stopped being contactable', async () => {
+  const slug = uniq()
+  fake.accounts[slug] = { name: 'Quiet Co', contactForm: 'UNSUPPORTED', admins: ['Xavier'] }
+  const mail = `${slug}@personal.test`
+  const res = await claim('/claim/oc-send', { address: slug, name: 'X', email: mail })
+  assert.match(await res.text(), /advertise it there anyway/i, 'falls back to the description proof')
+  assert.equal(fake.sent.length, 0)
+  assert.equal(await get<any>('SELECT id FROM login_codes WHERE email = ?', [mail]), undefined)
 })
 
 test('an uncontactable collective cannot be claimed until the description token is present', async () => {

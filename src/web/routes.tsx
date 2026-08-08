@@ -2634,22 +2634,29 @@ const AdminForm = (p: {
   oc?: { kind: 'contactable' | 'uncontactable'; name: string; admins?: string[] }
 }) => {
   const uncontactable = p.oc?.kind === 'uncontactable'
+  const contactable = p.oc?.kind === 'contactable'
   const claimAddr = `${p.address}@${cfg.emailDomain}`
   return (
     <AuthCard title="Set the first admin" flash={p.error}>
       <Steps current={2} />
-      <h1>Who's the first admin?</h1>
+      {/* what step 1 settled — sits with that step, and reads as its result
+          rather than as the answer to the question below */}
       <p class="claimed-addr">
+        <span class="tick" aria-hidden="true">✓</span>
         <b>{claimAddr}</b>
         <a class="edit-link" href={`/claim?address=${encodeURIComponent(p.address)}&edit=1`}>edit</a>
       </p>
+      <h1>Who's the first admin?</h1>
       <p class="muted">They receive everything sent to this address, and can invite the rest of the collective — as readers, commenters or senders.</p>
       <form method="post" action="/claim">
         <input type="hidden" name="address" value={p.address} />
         {p.refSlug ? <input type="hidden" name="ref" value={p.refSlug} /> : null}
         {p.slugError ? <p class="oc-status"><span class="oc-bad">{p.slugError}</span></p> : null}
-        {p.oc?.kind === 'contactable' ? (
-          <p class="oc-status"><span class="oc-ok">🔒 <b>{p.oc.name}</b> is a collective on Open Collective. To confirm you're part of it, your code goes to its {p.oc.admins!.length} admin{p.oc.admins!.length === 1 ? '' : 's'}: {p.oc.admins!.join(', ')}.</span></p>
+        {contactable ? (
+          <p class="oc-status"><span class="oc-warn">⚠ <b>{p.oc!.name}</b> is already claimed on Open Collective.
+            {' '}If it's your collective and you're one of its admins, we can send your code to
+            {' '}its {p.oc!.admins!.length} admin{p.oc!.admins!.length === 1 ? '' : 's'} ({p.oc!.admins!.join(', ')}) to confirm.
+            {' '}Otherwise <a href={`/claim?address=${encodeURIComponent(p.address)}&edit=1`}>pick another address</a>.</span></p>
         ) : uncontactable ? (
           <p class="oc-status"><span class="oc-warn">⚠ <b>{p.oc!.name}</b> exists on Open Collective, but its contact form is off so we can't message its admins. To prove you manage it, add <code>{claimAddr}</code> to the collective's description on opencollective.com/{p.address} — you'll want to advertise it there anyway — then use the button below. Or email hello@collective.email.</span></p>
         ) : null}
@@ -2658,9 +2665,16 @@ const AdminForm = (p: {
         <label class="lbl">Their personal email</label>
         <input class="input" type="email" name="email" value={p.email || ''} placeholder="you@example.com" required />
         <p class="fineprint">Personal, not the collective's — this is how they sign in and get notified.</p>
-        <button class={`btn ${uncontactable ? 'hidden' : ''}`} type="submit" data-busy="Sending code…">
-          {p.oc?.kind === 'contactable' ? "Send the code to the collective's admins" : 'Send me a code'}
-        </button>
+        {/* Messaging a stranger's admins is not something to do on the way past,
+            so it has its own endpoint and its own button — POST /claim never
+            sends to Open Collective, whatever it is handed. */}
+        <button class={`btn ${uncontactable || contactable ? 'hidden' : ''}`} type="submit" data-busy="Sending code…">Send me a code</button>
+        {contactable ? (
+          <button class="btn" type="submit" formaction="/claim/oc-send" data-busy="Sending code…"
+            data-confirm={`This messages the ${p.oc!.admins!.length} admin${p.oc!.admins!.length === 1 ? '' : 's'} of ${p.oc!.name} on Open Collective. Continue?`}>
+            Send the code to its admins
+          </button>
+        ) : null}
         <button class={`btn ${uncontactable ? '' : 'hidden'}`} type="submit" formaction="/claim/oc-verify" data-busy="Checking…">I've added it — verify &amp; continue</button>
       </form>
     </AuthCard>
@@ -2680,7 +2694,7 @@ const CLAIM_SCRIPT = `
     if(d.unavailable){status.innerHTML='<span class="oc-bad">'+esc(d.unavailable)+'</span>';submit.disabled=true;return;}
     var oc=d.oc||{kind:'none'};
     if(oc.kind==='contactable'){
-      status.innerHTML='<span class="oc-ok">🔒 <b>'+esc(oc.name)+'</b> is a collective on Open Collective — your code will go to its admins.</span>';
+      status.innerHTML='<span class="oc-warn">⚠ <b>'+esc(oc.name)+'</b> is already claimed on Open Collective — if you are one of its admins you can confirm it on the next step.</span>';
     }else if(oc.kind==='uncontactable'){
       status.innerHTML='<span class="oc-warn">⚠ <b>'+esc(oc.name)+'</b> exists on Open Collective — one extra step to prove you manage it.</span>';
     }else{
@@ -2755,10 +2769,9 @@ app.post('/claim', async (c) => {
 
   const info = await ocCollectiveInfo(address)
   if (info.kind === 'contactable') {
-    const ok = await issueCode(email, 'claim', { name, claimSlug: address, claimRef: refSlug || undefined },
-      (code) => sendOcVerificationCode(address, code))
-    if (!ok) return c.html(form({ oc: { kind: 'contactable', name: info.name, admins: info.admins }, error: "We couldn't reach the collective's admins just now — try again in a moment, or email hello@collective.email." }))
-    return c.html(<CodeForm email={email} sentToAdmins={info.name} claiming />)
+    // Deliberately no send: the admins of a collective that isn't yours must
+    // not be messaged just because someone typed their name. Ask first.
+    return c.html(form({ oc: { kind: 'contactable', name: info.name, admins: info.admins } }))
   }
   if (info.kind === 'uncontactable') {
     return c.html(form({ oc: { kind: 'uncontactable', name: info.name } }))
@@ -2770,6 +2783,34 @@ app.post('/claim', async (c) => {
   // none, or unknown-and-free → ordinary claim to the personal email
   await issueCode(email, 'claim', { name, claimSlug: address, claimRef: refSlug || undefined })
   return c.html(<CodeForm email={email} claiming />)
+})
+
+/** The one route that messages a collective's Open Collective admins, reached
+ *  only from the explicit "send the code to its admins" button. */
+app.post('/claim/oc-send', async (c) => {
+  const body = await c.req.parseBody()
+  const address = String(body.address || '').toLowerCase().trim()
+  const name = String(body.name || '').trim().slice(0, 60)
+  const email = String(body.email || '').toLowerCase().trim()
+  const refSlug = slugify(String(body.ref || ''))
+  const form = (extra: Partial<Parameters<typeof AdminForm>[0]>) => <AdminForm address={address} name={name} email={email} refSlug={refSlug || undefined} {...extra} />
+
+  const unavailable = await slugAvailability(address)
+  if (unavailable) return c.html(<ClaimForm address={address} refSlug={refSlug || undefined} slugError={unavailable} />)
+  if (!emailLooksValid(email)) return c.html(form({ error: "That email address doesn't look right." }))
+
+  // re-check rather than trusting the form: the button was rendered a while ago
+  const info = await ocCollectiveInfo(address)
+  if (info.kind !== 'contactable') {
+    if (info.kind === 'uncontactable') return c.html(form({ oc: { kind: 'uncontactable', name: info.name } }))
+    // nothing to confirm against any more — an ordinary claim
+    await issueCode(email, 'claim', { name, claimSlug: address, claimRef: refSlug || undefined })
+    return c.html(<CodeForm email={email} claiming />)
+  }
+  const ok = await issueCode(email, 'claim', { name, claimSlug: address, claimRef: refSlug || undefined },
+    (code) => sendOcVerificationCode(address, code))
+  if (!ok) return c.html(form({ oc: { kind: 'contactable', name: info.name, admins: info.admins }, error: "We couldn't reach the collective's admins just now — try again in a moment, or email hello@collective.email." }))
+  return c.html(<CodeForm email={email} sentToAdmins={info.name} claiming />)
 })
 
 /** Fallback ownership proof: the admin pasted our token into the collective's
@@ -2789,10 +2830,8 @@ app.post('/claim/oc-verify', async (c) => {
 
   const info = await ocCollectiveInfo(address)
   if (info.kind === 'contactable') {
-    // became reachable — send via the contact form instead
-    const ok = await issueCode(email, 'claim', { name, claimSlug: address, claimRef: refSlug || undefined }, (code) => sendOcVerificationCode(address, code))
-    if (!ok) return c.html(form({ oc: { kind: 'contactable', name: info.name, admins: info.admins }, error: 'Try again in a moment.' }))
-    return c.html(<CodeForm email={email} sentToAdmins={info.name} claiming />)
+    // became reachable in the meantime — offer that route, don't take it
+    return c.html(form({ oc: { kind: 'contactable', name: info.name, admins: info.admins } }))
   }
   if (info.kind !== 'uncontactable') {
     // no collective / can't check → just proceed as an ordinary claim

@@ -139,15 +139,16 @@ small { color: var(--muted); }
   .flow-steps li:not(.on) .t { display: none; }
 }
 
-/* the settled address on step 2, with a way back */
+/* What step 1 settled, shown directly under that step. Deliberately NOT boxed:
+   a border and a fill read as "type here", and this is a result, not a field. */
 .claimed-addr {
-  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
-  /* shrinks rather than breaking the address across lines mid-word */
-  font-family: var(--mono); font-size: clamp(12.5px, 3.4vw, 15px); margin: 0 0 10px;
-  border: 1.5px solid var(--line); border-radius: 10px; padding: 10px 14px; background: var(--fill);
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  margin: -14px 0 18px; font-size: clamp(12.5px, 3.4vw, 15px);
 }
-.claimed-addr b { overflow-wrap: anywhere; }
-.edit-link { font-family: system-ui, sans-serif; font-size: 12.5px; color: var(--muted); margin-left: auto; }
+.claimed-addr .tick { color: var(--accent); font-weight: 700; flex: none; }
+/* shrinks rather than breaking the address across lines mid-word */
+.claimed-addr b { font-family: var(--mono); font-weight: 600; overflow-wrap: anywhere; }
+.edit-link { font-size: 12.5px; color: var(--muted); text-decoration: underline; }
 .invite-url {
   font-size: 12.5px; border: 1.5px dashed var(--line); border-radius: 10px;
   padding: 10px 12px; margin: 14px 0 4px; overflow-wrap: anywhere;
