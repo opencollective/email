@@ -169,3 +169,50 @@ export async function approveApplication(collectiveId: number, months = 2): Prom
 }
 
 export const claimantOf = (collective: Collective, email: string) => getMemberIn(collective.id, email)
+
+// ---------- Open Collective ownership codes ----------
+
+/** A 6-digit code sent to a collective's Open Collective admins, proving the
+ *  claimer is one of them.
+ *
+ *  Deliberately NOT a login code: it lives in kv, never in login_codes, so
+ *  there is no path by which it mints a session or claims anything on its own.
+ *  All it does is unlock step 2, where the first admin still has to verify
+ *  their own email address. Two different questions, two different codes. */
+const OC_CODE_TTL = 10 * 60
+const OC_CODE_MAX_ATTEMPTS = 5
+const OC_CODE_RESEND_GAP = 30
+const ocCodeKey = (slug: string) => `occode:${slug}`
+
+interface OcCodeState { h: string; exp: number; n: number; at: number }
+
+const readOcCode = async (slug: string): Promise<OcCodeState | null> => {
+  const raw = await kvGet(ocCodeKey(slug))
+  if (!raw) return null
+  try { return JSON.parse(raw) as OcCodeState } catch { return null }
+}
+
+export async function issueOcOwnershipCode(slug: string, deliver: (code: string) => Promise<boolean>): Promise<boolean> {
+  const existing = await readOcCode(slug)
+  if (existing && now() - existing.at < OC_CODE_RESEND_GAP) return false
+  const code = String(Math.floor(Math.random() * 1000000)).padStart(6, '0')
+  await kvSet(ocCodeKey(slug), JSON.stringify(
+    { h: hmac(`occode:${slug}:${code}`, 64), exp: now() + OC_CODE_TTL, n: 0, at: now() } satisfies OcCodeState))
+  return deliver(code)
+}
+
+export type OcCodeResult = { ok: true } | { ok: false; error: string; resend?: boolean }
+
+export async function checkOcOwnershipCode(slug: string, code: string): Promise<OcCodeResult> {
+  const state = await readOcCode(slug)
+  const expired = { ok: false as const, error: 'That code expired — ask for a new one.', resend: true }
+  if (!state) return expired
+  if (state.exp < now()) return expired
+  if (state.n >= OC_CODE_MAX_ATTEMPTS) return { ok: false, error: 'Too many attempts — ask for a new code.', resend: true }
+  await kvSet(ocCodeKey(slug), JSON.stringify({ ...state, n: state.n + 1 }))
+  if (hmac(`occode:${slug}:${code.trim()}`, 64) !== state.h) {
+    return { ok: false, error: "That code is not right — check the message and try again." }
+  }
+  await kvSet(ocCodeKey(slug), '') // single use
+  return { ok: true }
+}

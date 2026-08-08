@@ -18,7 +18,7 @@ __setOcFetcher((async (_u: string, init: any) => {
   const acc = ACCOUNTS[slug]
   const j = (o: unknown) => ({ json: async () => o }) as Response
   if (!acc) return j({ errors: [{ message: 'Account Not Found', extensions: { code: 'NotFound' } }] })
-  if (query.includes('sendMessage')) return j({ data: { sendMessage: { success: true } } })
+  if (query.includes('sendMessage')) { console.log('[fake-oc] to ' + slug + ' admins: ' + variables.message.replace(/\s+/g, ' ').slice(0, 600)); return j({ data: { sendMessage: { success: true } } }) }
   if (query.includes('description')) return j({ data: { account: { description: acc.description, longDescription: '' } } })
   return j({ data: { account: { name: acc.name, features: { CONTACT_FORM: acc.contactForm }, members: { nodes: acc.admins.map((name) => ({ account: { name, slug: name.toLowerCase() } })) } } } })
 }) as unknown as typeof fetch)
