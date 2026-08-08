@@ -2744,9 +2744,14 @@ const CLAIM_SCRIPT = `
   function check(){
     var slug=slugify(addr.value);
     if(slug.length<6){submit.disabled=false;status.innerHTML='<span class="fineprint">At least 6 characters — letters and numbers only.</span>';return;}
-    fetch('/claim/oc?slug='+encodeURIComponent(slug)).then(function(r){return r.json();}).then(function(d){if(slugify(addr.value)===slug)render(d,slug);}).catch(function(){});
+    // a failed check must never strand the button disabled — let the server decide
+    fetch('/claim/oc?slug='+encodeURIComponent(slug)).then(function(r){return r.json();})
+      .then(function(d){if(slugify(addr.value)===slug)render(d,slug);})
+      .catch(function(){submit.disabled=false;});
   }
-  addr.addEventListener('input',function(){clearTimeout(timer);timer=setTimeout(check,400);});
+  // re-enable the moment the name changes: the refusal belonged to the old one,
+  // and the check below (or the server) will say no again if it still applies
+  addr.addEventListener('input',function(){submit.disabled=false;clearTimeout(timer);timer=setTimeout(check,400);});
   addr.addEventListener('blur',function(){clearTimeout(timer);check();});
   if(slugify(addr.value).length>=6) check();
 })();

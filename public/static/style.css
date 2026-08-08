@@ -97,6 +97,13 @@ small { color: var(--muted); }
 }
 .btn.ghost { background: transparent; color: var(--ink); border-color: var(--line); font-weight: 500; }
 .btn.small { padding: 6px 14px; font-size: 13.5px; }
+/* A disabled button must not read as the thing to press — full accent blue on
+   an unavailable address invites the tap it is refusing. `.busy` keeps its own
+   faded-accent look while a submit is in flight. */
+.btn:disabled:not(.busy) {
+  background: var(--fill); border-color: var(--line); color: var(--muted); cursor: not-allowed;
+}
+.btn:disabled:active { transform: none; }
 .btn-row { display: flex; gap: 10px; margin-top: 8px; }
 .linkish {
   background: none; border: none; padding: 0; font: inherit; font-size: 13px;
