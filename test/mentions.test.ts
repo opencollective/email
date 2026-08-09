@@ -8,6 +8,7 @@ import { now } from '../src/util.js'
 import { findMentions, mentionedMembers, noteParts } from '../src/mentions.js'
 import { resolveReplyAddress } from '../src/reply-tokens.js'
 import { slugAvailability } from '../src/claim.js'
+import { purgeArchivedTick } from '../src/archive.js'
 import { __observeAppMail, type AppMail } from '../src/appmail.js'
 
 let seq = 0
@@ -414,4 +415,88 @@ test('the address cannot move onto a taken or invalid one, or be moved by a non-
   const memberSid = await createSession(fx.target.email) // not an admin
   await rename(fx.slug, memberSid, `hostile${uniq()}`)
   assert.equal((await get<{ slug: string }>('SELECT slug FROM collectives WHERE id = ?', [fx.collective.id]))!.slug, fx.slug)
+})
+
+// ---------- closing an inbox ----------
+
+const post = (path: string, sid: string, body: Record<string, string> = {}) =>
+  app.request(path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: `requests_sid=${sid}` },
+    body: new URLSearchParams(body),
+  })
+
+const mailTo = (addr: string) => app.request('/webhooks/resend', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ type: 'email.received', data: {
+    email_id: `arch-${uniq()}`, from: 'Outsider <someone@outside.test>', to: [addr],
+    subject: 'Still there?', message_id: `<a-${uniq()}@outside.test>`, text: 'hello?',
+  } }),
+})
+
+test('closing an inbox bounces mail immediately but keeps the data for 30 days', async () => {
+  const fx = await fixture()
+  await receiveMail(fx.threadId)
+  const addr = `${fx.slug}@collective.email`
+  assert.equal((await (await mailTo(addr)).json()).routed, 1, 'receiving before')
+
+  const res = await post(`/inbox/${fx.slug}/data/archive`, fx.sid, { downloaded: '1' })
+  assert.equal(res.status, 302)
+  assert.match(decodeURIComponent(res.headers.get('location')!), /now bounces/)
+
+  const c = (await get<{ status: string; archived_at: number }>('SELECT status, archived_at FROM collectives WHERE id = ?', [fx.collective.id]))!
+  assert.equal(c.status, 'archived')
+  assert.ok(c.archived_at > 0)
+  assert.equal((await (await mailTo(addr)).json()).routed, 0, 'bouncing straight away')
+  // nothing is gone yet — the archive is still downloadable
+  assert.ok((await all('SELECT id FROM messages WHERE thread_id = ?', [fx.threadId])).length > 0)
+  assert.equal((await app.request(`/inbox/${fx.slug}/export`, { headers: { cookie: `requests_sid=${fx.sid}` } })).status, 200)
+})
+
+test('closing requires confirming the download, and only an admin can do it', async () => {
+  const fx = await fixture()
+  const unconfirmed = await post(`/inbox/${fx.slug}/data/archive`, fx.sid)
+  assert.match(decodeURIComponent(unconfirmed.headers.get('location')!), /Download the archive first/)
+  assert.equal((await get<{ status: string }>('SELECT status FROM collectives WHERE id = ?', [fx.collective.id]))!.status, 'active')
+
+  const memberSid = await createSession(fx.target.email)
+  await post(`/inbox/${fx.slug}/data/archive`, memberSid, { downloaded: '1' })
+  assert.equal((await get<{ status: string }>('SELECT status FROM collectives WHERE id = ?', [fx.collective.id]))!.status, 'active')
+})
+
+test('a closed inbox is frozen, and can be reopened', async () => {
+  const fx = await fixture()
+  await post(`/inbox/${fx.slug}/data/archive`, fx.sid, { downloaded: '1' })
+
+  // writing is refused while closed
+  const note = await post(`/inbox/${fx.slug}/thread/${fx.threadId}/note`, fx.sid, { body: 'still here?' })
+  assert.match(decodeURIComponent(note.headers.get('location')!), /This inbox is closed/)
+  assert.equal((await all('SELECT id FROM notes WHERE thread_id = ?', [fx.threadId])).length, 0)
+
+  await post(`/inbox/${fx.slug}/data/restore`, fx.sid)
+  const c = (await get<{ status: string; archived_at: number | null }>('SELECT status, archived_at FROM collectives WHERE id = ?', [fx.collective.id]))!
+  assert.equal(c.status, 'active')
+  assert.equal(c.archived_at, null)
+  assert.equal((await (await mailTo(`${fx.slug}@collective.email`)).json()).routed, 1, 'receiving again')
+})
+
+test('the cron deletes what has been closed for 30 days, and nothing younger', async () => {
+  const young = await fixture()
+  const old = await fixture()
+  await receiveMail(old.threadId)
+  await post(`/inbox/${young.slug}/data/archive`, young.sid, { downloaded: '1' })
+  await post(`/inbox/${old.slug}/data/archive`, old.sid, { downloaded: '1' })
+  await run('UPDATE collectives SET archived_at = ? WHERE id = ?', [now() - 31 * 86400, old.collective.id])
+
+  await purgeArchivedTick()
+
+  assert.equal(await get('SELECT id FROM collectives WHERE id = ?', [old.collective.id]), undefined, 'the old one is gone')
+  assert.equal((await all('SELECT id FROM threads WHERE collective_id = ?', [old.collective.id])).length, 0)
+  assert.equal((await all('SELECT id FROM messages WHERE thread_id = ?', [old.threadId])).length, 0)
+  assert.equal((await all('SELECT id FROM members WHERE collective_id = ?', [old.collective.id])).length, 0)
+  // and the address it held is free again
+  assert.equal(await slugAvailability(old.slug), null)
+
+  assert.ok(await get('SELECT id FROM collectives WHERE id = ?', [young.collective.id]), 'the recent one is untouched')
 })

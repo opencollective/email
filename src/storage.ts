@@ -34,3 +34,19 @@ export async function readBlob(locator: string): Promise<Buffer | null> {
   }
   return fs.existsSync(locator) ? fs.readFileSync(locator) : null
 }
+
+/** Remove a stored attachment. Best-effort: a blob we fail to delete is a
+ *  leak, not a correctness problem, and must not abort a purge. */
+export async function deleteBlob(locator: string): Promise<void> {
+  try {
+    if (/^https?:\/\//.test(locator)) {
+      if (!cfg.blobToken) return
+      const { del } = await import('@vercel/blob')
+      await del(locator)
+      return
+    }
+    if (fs.existsSync(locator)) fs.unlinkSync(locator)
+  } catch (err) {
+    console.error('[storage] could not delete blob:', err)
+  }
+}

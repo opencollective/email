@@ -166,6 +166,7 @@ webhooks.post('/webhooks/resend', async (c) => {
     if (!domain || domain === cfg.emailDomain) continue
     const collective = await getCollectiveByCustomDomain(domain)
     if (!collective || collective.plan !== 'pro' || seen.has(collective.id)) continue
+    if (collective.status !== 'active') continue // archived: bounce, like the slug route
     if (!canReceive(billingState(collective))) continue
     seen.add(collective.id)
     await ingestInbound(collective, parsed, d.email_id)

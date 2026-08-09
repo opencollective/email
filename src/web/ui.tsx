@@ -2,7 +2,7 @@
 import type { Child, FC } from 'hono/jsx'
 import { cfg } from '../config.js'
 import type { Collective, Member, Thread } from '../db.js'
-import { initials, relTime } from '../util.js'
+import { fmtDate, initials, relTime } from '../util.js'
 import { billingState, trialDaysLeft } from '../billing.js'
 
 /** Report this browser's time zone once (~1 year) so prices show in euros for
@@ -367,6 +367,15 @@ export const Shell: FC<{
 
         <main class="main">
           {(() => {
+            // a closed inbox says so on every page: it is bouncing mail right
+            // now, and there is a deadline attached
+            if (props.collective.status === 'archived') return (
+              <div class="billing-banner danger">
+                ✖ This inbox is closed — mail sent to it bounces, and everything is deleted on {' '}
+                {fmtDate((props.collective.archived_at ?? 0) + 30 * 86400)}.
+                {isAdmin ? <a href={`${base}/data`}> Reopen or download →</a> : ' An admin can reopen it.'}
+              </div>
+            )
             const state = billingState(props.collective)
             if (state === 'grace') return (
               <div class="billing-banner">

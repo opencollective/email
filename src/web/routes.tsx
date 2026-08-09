@@ -18,6 +18,7 @@ import { digestTick, receivingAddress, sendOnboarding, trialTick } from '../noti
 import { mentionLabels, noteParts } from '../mentions.js'
 import { addNote } from '../notes.js'
 import { backupTick } from '../backup.js'
+import { archiveCollective, messageCount, PURGE_AFTER, purgeArchivedTick, purgeDueAt, restoreCollective } from '../archive.js'
 import { CONTRIBUTE_SLUG, creditBalance, creditsLedger, creditsTick, fileContribution, mintCredits, referralUrl , PRO_MONTH_CREDITS } from '../credits.js'
 import {
   approveApplication, checkDiscountCode, checkOcOwnershipCode, discountCodeFor, fileApplication, fileProApplication,
@@ -30,7 +31,7 @@ import { sendAppEmail } from '../appmail.js'
 import { readBlob, saveBlob } from '../storage.js'
 import { createCheckoutSession, createPortalSession, stripeUsable } from '../stripe.js'
 import { billingState, canSend, planLimits, repliesThisMonth, trialDaysLeft, GRACE_DAYS } from '../billing.js'
-import { escapeHtml, excerpt, fmtDateTime, now, randomToken, relTime, signToken, slugify, splitQuotedTail, verifyToken, waitingFor } from '../util.js'
+import { escapeHtml, excerpt, fmtDate, fmtDateTime, now, randomToken, relTime, signToken, slugify, splitQuotedTail, verifyToken, waitingFor } from '../util.js'
 import { AssigneeChip, AuthCard, Avatar, eventText, Shell, StatusChip, TimeAgo } from './ui.js'
 import { HomePage } from './home.js'
 import { AboutPage, DocsPage, FaqPage } from './pages.js'
@@ -54,14 +55,22 @@ const ROLE_HINTS: Record<Member['role'], string> = {
   member: 'Answers senders as the collective — uses a paid seat.',
   admin: 'Everything a sender can, plus members, billing and settings.',
 }
+/** Nothing may be written to an archived inbox — it is on its way out, and the
+ *  outside world is already being told so by the bounces. */
+const archivedBlock = (c: Context<Env>, t: { collective: Collective }) =>
+  t.collective.status === 'archived'
+    ? c.redirect(`/inbox/${t.collective.slug}?m=` + encodeURIComponent('This inbox is closed — restore it from Settings → Data to use it again.'))
+    : null
 const readerBlock = (c: Context<Env>, t: { collective: Collective; member: Member }) =>
-  t.member.role === 'reader'
+  archivedBlock(c, t) ??
+  (t.member.role === 'reader'
     ? c.redirect(`/inbox/${t.collective.slug}?m=` + encodeURIComponent('You have read access — ask an admin to let you comment or send.'))
-    : null
+    : null)
 const senderBlock = (c: Context<Env>, t: { collective: Collective; member: Member }) =>
-  !canSendRole(t.member.role)
+  archivedBlock(c, t) ??
+  (!canSendRole(t.member.role)
     ? c.redirect(`/inbox/${t.collective.slug}?m=` + encodeURIComponent('Your role can comment but not send email — ask an admin for sending rights.'))
-    : null
+    : null)
 const memberName = (m?: Member | null) => (m ? m.name || m.email.split('@')[0] : 'someone')
 const isPlatformAdmin = (email: string | null) => !!email && !!cfg.adminEmail && email === cfg.adminEmail
 
@@ -132,15 +141,17 @@ async function tenant(c: Context<Env>): Promise<{ collective: Collective; member
     SELECT c.id AS c_id, c.slug AS c_slug, c.name AS c_name, c.status AS c_status, c.plan AS c_plan, c.created_at AS c_created_at,
            c.stripe_status AS c_stripe_status, c.trial_ends_at AS c_trial_ends_at, c.comped AS c_comped,
            c.custom_domain AS c_custom_domain, c.custom_local AS c_custom_local, c.domain_status AS c_domain_status,
+           c.archived_at AS c_archived_at,
            m.id, m.collective_id, m.email, m.name, m.role, m.notify_level, m.avatar_path, m.created_at, m.last_seen_at, m.removed_at
     FROM collectives c LEFT JOIN members m ON m.collective_id = c.id AND m.email = ?
     WHERE c.slug = ?
   `, [email, slug]) : undefined
-  if (!row || row.c_status !== 'active') return c.notFound()
+  if (!row || (row.c_status !== 'active' && row.c_status !== 'archived')) return c.notFound()
   const collective: Collective = {
     id: row.c_id, slug: row.c_slug, name: row.c_name, status: row.c_status, plan: row.c_plan, created_at: row.c_created_at,
     stripe_status: row.c_stripe_status, trial_ends_at: row.c_trial_ends_at, comped: row.c_comped,
     custom_domain: row.c_custom_domain, custom_local: row.c_custom_local, domain_status: row.c_domain_status,
+    archived_at: row.c_archived_at,
   }
   const member = (row.id != null ? (row as Member) : undefined) as Member | undefined
   if (!member || member.removed_at) {
@@ -191,6 +202,7 @@ app.get('/cron/digest', async (c) => {
   await trialTick()
   await creditsTick()
   await backupTick()
+  await purgeArchivedTick()
   return c.json({ ok: true })
 })
 
@@ -1699,6 +1711,8 @@ app.get('/inbox/:addr/data', async (c) => {
   const { collective, member } = t
   const base = `/inbox/${collective.slug}`
   if (member.role !== 'admin') return c.redirect(base)
+  const archived = collective.status === 'archived'
+  const msgCount = await messageCount(collective.id)
   return c.html(
     <Shell member={member} collective={collective} title="Data" active="data" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
       <div class="page">
@@ -1713,9 +1727,88 @@ app.get('/inbox/:addr/data', async (c) => {
           <h2>Where it lives</h2>
           <p class="muted">Your mail is stored in the EU (Dublin) and backed up nightly. Internal notes, assignments and attachments are included in the archive — it is the whole record, not a summary. No lock-in games.</p>
         </section>
+
+        <section class="card">
+          <h2>Close this inbox</h2>
+          {archived ? (
+            <>
+              <p class="muted">
+                Closed on {fmtDate(collective.archived_at!)}. Mail sent to <b>{receivingAddress(collective)}</b> is
+                bouncing, and everything here is deleted for good on <b>{fmtDate(purgeDueAt(collective))}</b>.
+                You can still download the archive until then.
+              </p>
+              <form method="post" action={`${base}/data/restore`} class="btn-row">
+                <button class="btn" type="submit" data-busy="Reopening…">Reopen this inbox</button>
+              </form>
+            </>
+          ) : (
+            <>
+              <p class="muted">
+                Stops the address receiving straight away — anything sent to it bounces. Nothing is deleted for
+                30 days, so you can change your mind; after that {msgCount ? `all ${msgCount} message${msgCount === 1 ? '' : 's'}` : 'everything'},
+                {' '}the notes and the attachments are gone for good.
+              </p>
+              <div class="btn-row">
+                <button class="btn ghost danger-btn" type="button" data-dialog="#close-modal">Close this inbox…</button>
+              </div>
+            </>
+          )}
+        </section>
+
+        {archived ? null : (
+          <dialog id="close-modal" class="modal">
+            <h2>Close {collective.name}?</h2>
+            <p class="muted">
+              <b>{receivingAddress(collective)}</b> stops receiving immediately — mail sent there will bounce, so
+              anyone still writing to you finds out right away. Everything is deleted on{' '}
+              <b>{fmtDate(now() + PURGE_AFTER)}</b>. Until then you can reopen it from this page.
+            </p>
+            <form method="post" action={`${base}/data/archive`} class="modal-form">
+              <label class="level-card">
+                <input type="checkbox" name="downloaded" value="1" required />
+                <span><b>I've downloaded the archive.</b>
+                  <small>There is no copy to ask us for afterwards — take it first if you want it.</small></span>
+              </label>
+              <div class="btn-row">
+                <button class="btn ghost danger-btn" type="submit" data-busy="Closing…">Close this inbox</button>
+                <button class="btn ghost" type="button" data-close>Cancel</button>
+              </div>
+            </form>
+          </dialog>
+        )}
       </div>
     </Shell>,
   )
+})
+
+/** Archive: stop receiving now, delete in 30 days. */
+app.post('/inbox/:addr/data/archive', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const base = `/inbox/${t.collective.slug}`
+  if (t.member.role !== 'admin') return c.redirect(base)
+  const body = await c.req.parseBody()
+  // checked server-side too: `required` is only the browser being helpful
+  if (body.downloaded !== '1') {
+    return c.redirect(`${base}/data?m=` + encodeURIComponent('Download the archive first — then you can close the inbox.'))
+  }
+  const collective = (await getCollective(t.collective.id))!
+  if (collective.status === 'archived') return c.redirect(`${base}/data`)
+  await archiveCollective(collective)
+  return c.redirect(`${base}/data?m=` + encodeURIComponent(
+    `Inbox closed — ${receivingAddress(collective)} now bounces. Deleted for good on ${fmtDate(now() + PURGE_AFTER)}.`))
+})
+
+app.post('/inbox/:addr/data/restore', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const base = `/inbox/${t.collective.slug}`
+  if (t.member.role !== 'admin') return c.redirect(base)
+  const collective = (await getCollective(t.collective.id))!
+  if (collective.status !== 'archived') return c.redirect(`${base}/data`)
+  await restoreCollective(collective)
+  return c.redirect(`${base}/data?m=` + encodeURIComponent(
+    `Reopened — ${receivingAddress(collective)} is receiving again.`))
 })
 
 /** Change the address — only while the inbox has never received anything. */

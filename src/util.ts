@@ -163,6 +163,12 @@ export function waitingFor(ts: number | null | undefined): string {
   return `${Math.floor(d / 86400)}d`
 }
 
+/** Date only — for deadlines, where a time would be false precision. */
+export function fmtDate(ts: number | null | undefined): string {
+  if (!ts) return '—'
+  return new Date(ts * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
 export function fmtDateTime(ts: number | null | undefined): string {
   if (!ts) return '—'
   return new Date(ts * 1000).toLocaleString('en-GB', {

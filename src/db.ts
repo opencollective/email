@@ -21,6 +21,7 @@ const SCHEMA = [
     comped INTEGER NOT NULL DEFAULT 0,
     referred_by INTEGER,
     activated_at INTEGER,
+    archived_at INTEGER,
     created_at INTEGER NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS members (
@@ -228,6 +229,7 @@ function init(): Promise<void> {
       'ALTER TABLE threads ADD COLUMN cc_json TEXT',
       "ALTER TABLE reply_tokens ADD COLUMN kind TEXT NOT NULL DEFAULT 'reply'",
       'ALTER TABLE reply_tokens ADD COLUMN author_member_id INTEGER',
+      'ALTER TABLE collectives ADD COLUMN archived_at INTEGER',
     ]
     ready = db.batch(SCHEMA, 'write')
       // additive migrations for pre-existing tables; ignore "duplicate column"
@@ -297,7 +299,7 @@ export interface Collective {
   id: number
   slug: string
   name: string
-  status: 'active' | 'suspended' | 'pending' | 'applied'
+  status: 'active' | 'suspended' | 'pending' | 'applied' | 'archived'
   plan: string
   stripe_customer_id?: string | null
   stripe_subscription_id?: string | null
@@ -308,6 +310,7 @@ export interface Collective {
   comped?: number | null
   referred_by?: number | null
   activated_at?: number | null
+  archived_at?: number | null
   created_at: number
   contribution_offer?: string | null
   custom_domain?: string | null
