@@ -4,9 +4,9 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import type { Context } from 'hono'
 import { cfg } from '../config.js'
 import {
-  activeMembers, addTag, all, allCollectives, attachmentsByMessage, batchAll, createCollective, formerSlugsOf, get, getCollective,
-  getCollectiveByAnySlug, getCollectiveBySlug, getMember, getMemberIn, getThread, kvGet, kvSet, lastMessageByThread, memberMap,
-  releaseFormerSlug, renameCollectiveSlug, slugChangeAllowedAt, slugTakenByOther,
+  activeMembers, addTag, all, allCollectives, attachmentsByMessage, batchAll, createCollective, get, getCollective,
+  getCollectiveBySlug, getMember, getMemberIn, getThread, kvGet, kvSet, lastMessageByThread, memberMap,
+  renameCollectiveSlug,
   membershipsByEmail, removeTag, run, setAssignee, setStatus, tagsByThread, threadMessages, threadTags,
   type Attachment, type Collective, type Invite, type Member, type Message, type Thread,
 } from '../db.js'
@@ -136,14 +136,6 @@ async function tenant(c: Context<Env>): Promise<{ collective: Collective; member
     FROM collectives c LEFT JOIN members m ON m.collective_id = c.id AND m.email = ?
     WHERE c.slug = ?
   `, [email, slug]) : undefined
-  if (!row && slug) {
-    // an old address in an email someone sent months ago still has to work:
-    // send them to the same page under the current name
-    const moved = await getCollectiveByAnySlug(slug)
-    if (moved?.former) {
-      return c.redirect(c.req.path.replace(`/inbox/${slug}`, `/inbox/${moved.collective.slug}`) + (new URL(c.req.url).search || ''))
-    }
-  }
   if (!row || row.c_status !== 'active') return c.notFound()
   const collective: Collective = {
     id: row.c_id, slug: row.c_slug, name: row.c_name, status: row.c_status, plan: row.c_plan, created_at: row.c_created_at,
@@ -1625,15 +1617,9 @@ app.get('/inbox/:addr/settings', async (c) => {
   const collective = (await getCollective(t.collective.id))!
   const addr = receivingAddress(collective)
   const onOwnDomain = Boolean(collective.custom_domain && collective.custom_local)
-  const former = await formerSlugsOf(collective.id)
-  // A brand-new inbox nobody has written to yet has none of the consequences a
-  // used one has — warning about them anyway just teaches people to click past.
-  const received = await get<{ n: number }>(
-    "SELECT COUNT(*) AS n FROM messages m JOIN threads t ON t.id = m.thread_id WHERE t.collective_id = ? AND m.direction = 'inbound'",
-    [collective.id])
-  const inUse = (received?.n ?? 0) > 0
-  const nextChange = slugChangeAllowedAt(collective)
-  const locked = nextChange > now()
+  // The address can be changed until the first email arrives; after that it is
+  // out in the world and moving it would drop mail on the floor.
+  const inUse = await hasReceivedMail(collective.id)
 
   return c.html(
     <Shell member={member} collective={collective} title="Settings" active="settings" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
@@ -1661,76 +1647,36 @@ app.get('/inbox/:addr/settings', async (c) => {
           {onOwnDomain
             ? <p class="fineprint">Your own domain is set up. <a href={`${base}/domain`}>Manage it →</a></p>
             : <p class="fineprint">Want mail at your own domain instead? <a href={`${base}/domain`}>Set one up →</a></p>}
-          <div class="btn-row">
-            <button class="btn small ghost danger-btn" type="button" data-dialog="#rename-modal" disabled={locked}>Change address…</button>
-          </div>
-          {locked ? (
-            <p class="fineprint">You changed it recently — the address can be changed again on <b>{fmtDateTime(nextChange)}</b>.</p>
-          ) : null}
+          {inUse ? (
+            <p class="fineprint">
+              Mail has arrived here, so the address is settled — people, mailing lists and forwarding
+              rules point at it, and moving it would drop their mail. If you need a different one:
+              {' '}<a href={`${base}/data`}>download your archive</a>, then email hello@collective.email
+              {' '}to close this inbox and start a new one.
+            </p>
+          ) : (
+            <div class="btn-row">
+              <button class="btn small ghost" type="button" data-dialog="#rename-modal">Change address…</button>
+            </div>
+          )}
         </section>
 
-        {former.length ? (
-          <section class="card">
-            <h2>Old addresses</h2>
-            <p class="muted">Still delivering here. While you keep one, no other collective can use it — so let go of the ones you no longer need.</p>
-            {former.map((f) => (
-              <div class="kv">
-                <code class="invite-url" style="padding:2px 8px">{f.slug}@{cfg.emailDomain}</code>
-                <form method="post" action={`${base}/settings/address/release`} style="margin-left:auto">
-                  <input type="hidden" name="slug" value={f.slug} />
-                  <button class="btn small ghost" type="submit"
-                    data-confirm={`Release ${f.slug}@${cfg.emailDomain}? Mail sent there will stop arriving, and someone else can claim it.`}>
-                    Release
-                  </button>
-                </form>
-              </div>
-            ))}
-          </section>
-        ) : null}
-
-        {/* Changing the address is the one setting here that reaches outside the
-            app — into other people's contact lists and forwarding rules — so it
-            asks you to type the current address, GitHub-style, before it moves. */}
+        {/* Only rendered before the first email arrives, so the only thing worth
+            saying is the one-way part: the old address stops existing. */}
         <dialog id="rename-modal" class="modal">
-          <h2>Change {collective.name}'s address?</h2>
-          {inUse ? (
-            <>
-              <p class="muted">The address is how the outside world reaches you. Changing it means:</p>
-              <ul class="warn-list">
-                <li><b>{addr}</b> stops being your address. Everyone who has it — senders, mailing lists, forwarding rules, contact forms on your website — is still pointing at the old one.</li>
-                <li>Links in emails we already sent will redirect, and replies you send from now on come from the new address.</li>
-                <li>Any unredeemed discount codes for the old address stop working.</li>
-                <li>You can change it again in a week, not before.</li>
-              </ul>
-            </>
-          ) : (
-            // nothing has ever been sent here, so there is nothing to break
-            <p class="muted">Nobody has written to <b>{addr}</b> yet, so nothing is pointing at it — this is a free change. You can change it again in a week, not before.</p>
-          )}
-          <form method="post" action={`${base}/settings/address`} class="modal-form" data-confirm-text={inUse ? addr : undefined}>
+          <h2>Change this address?</h2>
+          <p class="muted">
+            Nothing is pointing at <b>{addr}</b> yet — no mail has arrived — so this is a free change.
+            Afterwards the old address stops existing, and anything sent there will bounce.
+          </p>
+          <form method="post" action={`${base}/settings/address`} class="modal-form">
             <label class="lbl">New address</label>
             <span class="wl-addr">
               <input name="slug" value={collective.slug} minlength={6} maxlength={40} pattern="[a-z0-9]{6,40}" autocomplete="off" spellcheck={false} required />
               <span class="domain">@{cfg.emailDomain}</span>
             </span>
-            {inUse ? (
-              <>
-                <label class="keep-old">
-                  <input type="checkbox" name="keep_old" value="1" />
-                  <span>Keep receiving mail sent to <b>{addr}</b>.
-                    {' '}<small>It stays yours and nobody else can claim it — release it later from Settings.</small></span>
-                </label>
-                {/* the address goes outside the label: .lbl uppercases, and the
-                    phrase has to be typed exactly as it is written */}
-                <label class="lbl">Type the current address to confirm</label>
-                <p class="confirm-phrase"><code>{addr}</code></p>
-                <input class="input" name="confirm" autocomplete="off" spellcheck={false} required />
-              </>
-            ) : null}
             <div class="btn-row">
-              <button class="btn danger-btn" type="submit" data-busy="Moving…" disabled={inUse}>
-                {inUse ? 'I understand — change the address' : 'Change the address'}
-              </button>
+              <button class="btn" type="submit" data-busy="Moving…">Change the address</button>
               <button class="btn ghost" type="button" data-close>Cancel</button>
             </div>
           </form>
@@ -1739,6 +1685,11 @@ app.get('/inbox/:addr/settings', async (c) => {
     </Shell>,
   )
 })
+
+/** Has anything ever arrived here? The one thing that settles the address. */
+const hasReceivedMail = async (collectiveId: number) => Boolean((await get<{ n: number }>(
+  "SELECT COUNT(*) AS n FROM messages m JOIN threads t ON t.id = m.thread_id WHERE t.collective_id = ? AND m.direction = 'inbound'",
+  [collectiveId]))?.n)
 
 /** Data lives on its own page: an archive is a different kind of decision from
  *  a subscription, and people look for it when they are considering leaving. */
@@ -1767,7 +1718,7 @@ app.get('/inbox/:addr/data', async (c) => {
   )
 })
 
-/** Move the collective to a new address. Guarded by typing the current one. */
+/** Change the address — only while the inbox has never received anything. */
 app.post('/inbox/:addr/settings/address', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
@@ -1778,47 +1729,20 @@ app.post('/inbox/:addr/settings/address', async (c) => {
   const slug = slugify(String(body.slug || ''))
   const back = (msg: string) => c.redirect(`${base}/settings?m=` + encodeURIComponent(msg))
 
-  // once a week, whatever the UI let through
-  if (slugChangeAllowedAt(collective) > now()) {
-    return back(`The address can only be changed once a week — next possible on ${fmtDateTime(slugChangeAllowedAt(collective))}.`)
-  }
-
-  const inbound = await get<{ n: number }>(
-    "SELECT COUNT(*) AS n FROM messages m JOIN threads t ON t.id = m.thread_id WHERE t.collective_id = ? AND m.direction = 'inbound'",
-    [collective.id])
-  const inUse = (inbound?.n ?? 0) > 0
-  // an address nobody has written to has nothing to confirm away from; a used
-  // one is checked server-side too — the disabled button is only a courtesy
-  if (inUse && String(body.confirm || '').trim().toLowerCase() !== receivingAddress(collective).toLowerCase()) {
-    return back("The confirmation didn't match — the address was not changed.")
+  // the whole rule: once mail has arrived, the address belongs as much to the
+  // people who wrote it down as to us, and we are not going to drop theirs
+  if (await hasReceivedMail(collective.id)) {
+    return back('This inbox has already received email, so its address is settled. Download your archive and email hello@collective.email to close it.')
   }
   if (slug === collective.slug) return c.redirect(`${base}/settings`)
   const invalid = validateClaimSlug(slug)
   if (invalid) return back(invalid)
-  if (await slugTakenByOther(slug, collective.id)) return back(`${slug}@${cfg.emailDomain} is already taken.`)
+  if (await slugAvailability(slug)) return back(`${slug}@${cfg.emailDomain} is already taken.`)
 
-  // keeping the old address is a deliberate choice, and only means anything
-  // once someone has actually used it
-  const keepOld = inUse && body.keep_old === '1'
   const oldSlug = collective.slug
-  await renameCollectiveSlug(collective, slug, keepOld)
+  await renameCollectiveSlug(collective, slug)
   return c.redirect(`/inbox/${slug}/settings?m=` + encodeURIComponent(
-    keepOld
-      ? `Address changed to ${slug}@${cfg.emailDomain} ✓ — mail to ${oldSlug}@${cfg.emailDomain} still arrives here.`
-      : `Address changed to ${slug}@${cfg.emailDomain} ✓ — ${oldSlug}@${cfg.emailDomain} is no longer yours.`))
-})
-
-/** Let go of a former address, so another collective can have it. */
-app.post('/inbox/:addr/settings/address/release', async (c) => {
-  const t = await tenant(c)
-  if (t instanceof Response) return t
-  const base = `/inbox/${t.collective.slug}`
-  if (t.member.role !== 'admin') return c.redirect(base)
-  const body = await c.req.parseBody()
-  const slug = slugify(String(body.slug || ''))
-  await releaseFormerSlug(t.collective.id, slug)
-  return c.redirect(`${base}/settings?m=` + encodeURIComponent(
-    `${slug}@${cfg.emailDomain} released — mail sent there no longer arrives here.`))
+    `Address changed to ${slug}@${cfg.emailDomain} ✓ — mail to ${oldSlug}@${cfg.emailDomain} will bounce.`))
 })
 
 app.post('/inbox/:addr/settings', async (c) => {

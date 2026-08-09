@@ -152,19 +152,6 @@ if (typingEl) {
   setInterval(poll, 12000);
 }
 
-// Type-to-confirm (GitHub style): a form marked data-confirm-text keeps its
-// submit disabled until the exact phrase is typed. The server checks it too —
-// this only makes the consequence impossible to click past by accident.
-document.querySelectorAll('form[data-confirm-text]').forEach((form) => {
-  const want = form.getAttribute('data-confirm-text').trim().toLowerCase();
-  const field = form.querySelector('input[name="confirm"]');
-  const go = form.querySelector('button[type="submit"]');
-  if (!field || !go) return;
-  const sync = () => { go.disabled = field.value.trim().toLowerCase() !== want; };
-  field.addEventListener('input', sync);
-  sync();
-});
-
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 `
 
