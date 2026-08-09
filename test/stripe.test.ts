@@ -93,7 +93,7 @@ test('checkout POST without a Stripe key fails gracefully with a flash', async (
   assert.match(decodeURIComponent(res.headers.get('location')!), /Online payment is not available/)
 })
 
-test('no usable Stripe key: subscribe UI hidden, trial is the primary action', async () => {
+test('no usable Stripe key: subscribe UI hidden, the invite path leads', async () => {
   const { run } = await import('../src/db.js')
   const { createSession } = await import('../src/auth.js')
   const { now, sha256 } = await import('../src/util.js')
@@ -110,7 +110,7 @@ test('no usable Stripe key: subscribe UI hidden, trial is the primary action', a
   const page = await app.request(`/claim/${slug}`, { headers: { cookie: `requests_sid=${sid}` } })
   const html = await page.text()
   assert.doesNotMatch(html, /Pay & activate/, 'no dead-end checkout button')
-  assert.match(html, /Start your free trial/, 'trial promoted to the primary action')
+  assert.match(html, /Invite a teammate/, 'the invite path leads when there is nothing to pay with')
   assert.match(html, /discount code/i, 'discount codes still work')
 
   // the checkout POST is guarded too

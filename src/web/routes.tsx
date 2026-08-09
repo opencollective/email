@@ -14,7 +14,7 @@ import {
   accountsFromCookie, checkCode, createSession, destroySession, issueCode,
   type Account, type LoginCodeRow,
 } from '../auth.js'
-import { forwardMessage, outboundFrom, sendCollectiveReply, signatureFor } from '../outbound.js'
+import { forwardMessage, outboundFrom, sendCollectiveReply, sendComposed, signatureFor } from '../outbound.js'
 import { digestTick, receivingAddress, sendOnboarding, trialTick } from '../notify.js'
 import { mentionLabels, noteParts } from '../mentions.js'
 import { addNote } from '../notes.js'
@@ -37,7 +37,7 @@ import { AssigneeChip, AuthCard, Avatar, eventText, Shell, StatusChip, TimeAgo }
 import { HomePage } from './home.js'
 import { AboutPage, DocsPage, FaqPage } from './pages.js'
 import {
-  createResendDomain, deleteResendDomain, enableDomainReceiving, getResendDomain,
+  createResendDomain, deleteResendDomain, domainVerifyTick, enableDomainReceiving, getResendDomain,
   validDomainName, validLocalPart, verifyResendDomain,
 } from '../domains.js'
 
@@ -241,6 +241,7 @@ app.get('/cron/digest', async (c) => {
   await creditsTick()
   await backupTick()
   await purgeArchivedTick()
+  await domainVerifyTick()
   return c.json({ ok: true })
 })
 
@@ -536,6 +537,23 @@ async function applyInviteJoin(inviteToken: string, email: string, name: string,
     }
     await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
       [collective.id, email, name || email.split('@')[0], role, level || 'daily', now()])
+  }
+
+  // A reserved address goes live the moment a second person joins: recruiting
+  // a real teammate is the proof-of-collective that replaced the instant
+  // self-serve trial (one verified stranger per address does not scale for a
+  // squatter, and is zero extra work for an actual collective).
+  if (collective.status === 'pending' || collective.status === 'applied') {
+    await run(
+      "UPDATE collectives SET status = 'active', trial_ends_at = ?, activated_at = COALESCE(activated_at, ?) WHERE id = ? AND status IN ('pending', 'applied')",
+      [now() + 30 * 86400, now(), collective.id])
+    const fresh = await getCollective(collective.id)
+    if (fresh?.status === 'active') {
+      for (const admin of (await activeMembers(collective.id)).filter((m) => m.role === 'admin' && m.email !== email)) {
+        await sendOnboarding(fresh, admin.email).catch(() => {})
+      }
+      return fresh
+    }
   }
   return collective
 }
@@ -1124,6 +1142,8 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   const mentionsMe = new Set((batch[5] as { note_id: number; member_id: number }[])
     .filter((r) => r.member_id === member.id).map((r) => r.note_id))
   const attsMap = await attachmentsByMessage(msgs.map((m) => m.id))
+  // a composed-but-unsent thread: the reply pane becomes the draft editor
+  const draftMsg = thread.status === 'draft' ? msgs.find((m) => m.direction === 'outbound' && !m.sent_at) : undefined
   const events = allEvents.filter((e) => e.type !== 'replied')
   const lastAssignEvent = [...allEvents].reverse().find((e) => e.type === 'assigned' || e.type === 'unassigned')
   const activeList = [...members.values()].filter((m) => !m.removed_at).sort((a, b) => memberName(a).localeCompare(memberName(b)))
@@ -1310,11 +1330,34 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
           <div class="composer" id="composer">
             {canSendRole(member.role) ? (
               <div class="tabs">
-                <button class="tab on" data-tab="reply" type="button">✉ Reply to {counterpartFirst}</button>
+                <button class="tab on" data-tab="reply" type="button">{draftMsg ? '✉ Edit draft' : `✉ Reply to ${counterpartFirst}`}</button>
                 <button class="tab" data-tab="note" type="button">⌁ Internal note</button>
               </div>
             ) : null}
-            {canSendRole(member.role) ? (
+            {canSendRole(member.role) && draftMsg ? (
+            <form method="post" action={`${base}/thread/${thread.id}/draft`} data-pane="reply">
+              <div class="to note-to">✎ Draft — nothing has been sent yet. Teammates with this link can add internal notes below.</div>
+              <div class="compose-fields">
+                <label class="lbl">To</label>
+                <input class="input" name="to" value={JSON.parse(draftMsg.to_json || '[]').join(', ')} autocomplete="off" spellcheck={false} />
+                <div class="compose-cc">
+                  <span><label class="lbl">Cc</label><input class="input" name="cc" value={JSON.parse(draftMsg.cc_json || '[]').join(', ')} autocomplete="off" spellcheck={false} /></span>
+                  <span><label class="lbl">Bcc</label><input class="input" name="bcc" value={JSON.parse(draftMsg.bcc_json || '[]').join(', ')} autocomplete="off" spellcheck={false} /></span>
+                </div>
+                <label class="lbl">Subject</label>
+                <input class="input" name="subject" value={thread.subject} maxlength={200} />
+              </div>
+              <textarea name="body" rows={8}>{draftMsg.body_text || ''}</textarea>
+              <div class="actions">
+                <span class="send-stack">
+                  <button class="btn send-btn" type="submit" name="action" value="send" data-busy="Sending…">Send</button>
+                  <span class="fineprint send-note"><span>as <b>{collectiveAddr}</b></span></span>
+                </span>
+                <button class="btn ghost" type="submit" name="action" value="save" data-busy="Saving…">Save changes</button>
+              </div>
+            </form>
+            ) : null}
+            {canSendRole(member.role) && !draftMsg ? (
             <form method="post" action={`${base}/thread/${thread.id}/reply`} data-pane="reply" enctype="multipart/form-data">
               <div class="to">
                 <span>To <b>{thread.counterpart_email || 'unknown'}</b></span>
@@ -1553,6 +1596,120 @@ app.post('/inbox/:addr/thread/:id/note', async (c) => {
     }
   }
   return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}?m=` + encodeURIComponent(flash))
+})
+
+// ---------- compose: a new email the collective starts ----------
+
+/** "email one, two@ three" → clean list, capped, invalid dropped. */
+function parseRecipients(raw: unknown): string[] {
+  return [...new Set(String(raw || '').split(/[\s,;]+/).map((a) => a.toLowerCase().trim()).filter(emailLooksValid))].slice(0, 20)
+}
+
+const ComposeForm = ({ base, addr, signature }: { base: string; addr: string; signature: string }) => (
+  <div class="page">
+    <h1>New email</h1>
+    <p class="muted">Sent as <b>{addr}</b>. Save it as a draft first and the thread gets a link you can share — teammates can weigh in with internal notes before anything goes out.</p>
+    <form method="post" action={`${base}/compose`} class="card compose-form">
+      <label class="lbl">To</label>
+      <input class="input" name="to" placeholder="them@example.org — comma-separate several" autocomplete="off" spellcheck={false} autofocus />
+      <div class="compose-cc">
+        <span><label class="lbl">Cc</label><input class="input" name="cc" autocomplete="off" spellcheck={false} /></span>
+        <span><label class="lbl">Bcc</label><input class="input" name="bcc" autocomplete="off" spellcheck={false} /></span>
+      </div>
+      <label class="lbl">Subject</label>
+      <input class="input" name="subject" maxlength={200} required />
+      <label class="lbl">Message</label>
+      <textarea name="body" rows={10} data-signature={signature}>{`\n\n${signature}`}</textarea>
+      <div class="btn-row">
+        <button class="btn" type="submit" name="action" value="send" data-busy="Sending…">Send</button>
+        <button class="btn ghost" type="submit" name="action" value="draft" data-busy="Saving…">Save as draft</button>
+      </div>
+    </form>
+  </div>
+)
+
+app.get('/inbox/:addr/compose', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const blocked = senderBlock(c, t)
+  if (blocked) return blocked
+  const base = `/inbox/${t.collective.slug}`
+  return c.html(
+    <Shell member={t.member} collective={t.collective} title="New email" active="compose" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
+      <ComposeForm base={base} addr={outboundFrom(t.collective).fromAddress} signature={signatureFor(t.collective, t.member)} />
+    </Shell>,
+  )
+})
+
+app.post('/inbox/:addr/compose', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const blocked = senderBlock(c, t)
+  if (blocked) return blocked
+  const base = `/inbox/${t.collective.slug}`
+  const body = await c.req.parseBody()
+  const to = parseRecipients(body.to)
+  const cc = parseRecipients(body.cc)
+  const bcc = parseRecipients(body.bcc)
+  const subject = String(body.subject || '').trim().slice(0, 200) || '(no subject)'
+  const text = String(body.body || '').trim().slice(0, 50000)
+  const send = body.action === 'send'
+  const ts = now()
+
+  // Always a draft first: the thread and its URL exist before any network I/O,
+  // so a failed send leaves something to fix instead of something lost.
+  const th = await run(`INSERT INTO threads (collective_id, subject, status, counterpart_email, first_message_at, last_message_at, last_direction, created_at, updated_at)
+    VALUES (?, ?, 'draft', ?, ?, ?, 'outbound', ?, ?)`,
+    [t.collective.id, subject, to[0] ?? null, ts, ts, ts, ts])
+  await run(`INSERT INTO messages (thread_id, direction, from_email, from_name, to_json, cc_json, bcc_json, body_text, sent_by_member_id, created_at)
+    VALUES (?, 'outbound', ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [th.lastId, outboundFrom(t.collective).fromAddress, t.collective.name,
+     JSON.stringify(to), JSON.stringify(cc), JSON.stringify(bcc), text, t.member.id, ts])
+
+  if (!send) {
+    return c.redirect(`${base}/thread/${th.lastId}?m=` + encodeURIComponent('Draft saved — share this page with teammates, or send when ready.'))
+  }
+  try {
+    await sendComposed(t.collective, th.lastId, t.member)
+    return c.redirect(`${base}/thread/${th.lastId}?m=` + encodeURIComponent(`Sent to ${to.join(', ')} ✓`))
+  } catch (err) {
+    return c.redirect(`${base}/thread/${th.lastId}?m=` + encodeURIComponent(
+      `Saved as draft — not sent: ${err instanceof Error ? err.message : 'unknown error'}`))
+  }
+})
+
+/** Update (and optionally send) the draft a compose created. */
+app.post('/inbox/:addr/thread/:id/draft', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const blocked = senderBlock(c, t)
+  if (blocked) return blocked
+  const thread = await threadOf(c, t)
+  if (!thread || thread.status !== 'draft') return c.notFound()
+  const base = `/inbox/${t.collective.slug}`
+  const body = await c.req.parseBody()
+  const draft = await get<Message>(
+    "SELECT * FROM messages WHERE thread_id = ? AND direction = 'outbound' AND sent_at IS NULL ORDER BY id LIMIT 1", [thread.id])
+  if (!draft) return c.notFound()
+
+  const to = parseRecipients(body.to)
+  const subject = String(body.subject || '').trim().slice(0, 200) || thread.subject
+  await run('UPDATE messages SET to_json = ?, cc_json = ?, bcc_json = ?, body_text = ? WHERE id = ?',
+    [JSON.stringify(to), JSON.stringify(parseRecipients(body.cc)), JSON.stringify(parseRecipients(body.bcc)),
+     String(body.body || '').trim().slice(0, 50000), draft.id])
+  await run('UPDATE threads SET subject = ?, counterpart_email = ?, updated_at = ? WHERE id = ?',
+    [subject, to[0] ?? null, now(), thread.id])
+
+  if (body.action !== 'send') {
+    return c.redirect(`${base}/thread/${thread.id}?m=` + encodeURIComponent('Draft updated ✓'))
+  }
+  try {
+    await sendComposed(t.collective, thread.id, t.member)
+    return c.redirect(`${base}/thread/${thread.id}?m=` + encodeURIComponent(`Sent to ${to.join(', ')} ✓`))
+  } catch (err) {
+    return c.redirect(`${base}/thread/${thread.id}?m=` + encodeURIComponent(
+      `Still a draft — not sent: ${err instanceof Error ? err.message : 'unknown error'}`))
+  }
 })
 
 // ---------- typing presence ("X is drafting a response…") ----------
@@ -3266,7 +3423,13 @@ app.get('/claim/:slug', async (c) => {
       <h1>{slug}@{cfg.emailDomain} is reserved for you</h1>
       <p class="muted">{collective.status === 'applied'
         ? 'Your free-trial application is being reviewed — we normally answer within a day. You can also activate right away:'
-        : 'One last step — pick how to activate it. The reservation holds for 48 hours.'}</p>
+        : 'One last step — the reservation holds for 48 hours.'}</p>
+
+      <section class="claim-option">
+        <h2>Invite a teammate — free</h2>
+        <p class="muted">A collective is at least two people. Share your invite link; the moment someone accepts, the address goes live with a month's trial — no card needed.</p>
+        <a class="btn" href={`/claim/${slug}/invite`}>Get the invite link →</a>
+      </section>
 
       {canPay ? (
       <section class="claim-option">
@@ -3281,15 +3444,6 @@ app.get('/claim/:slug', async (c) => {
         </form>
       </section>
       ) : null}
-
-      <section class="claim-option">
-        <form method="post" action={`/claim/${slug}/trial`}>
-          <button class={canPay ? 'btn ghost' : 'btn'} type="submit" data-busy="Starting your trial…">
-            {canPay ? 'Apply for a free trial' : 'Start your free trial'}
-          </button>
-        </form>
-        <p class="fineprint">One month free, no card needed — your address works straight away. We'll email you before it ends.</p>
-      </section>
 
       <section class="claim-option">
         <h2>Have a discount code?</h2>
@@ -3348,21 +3502,6 @@ app.post('/claim/:slug/discount', async (c) => {
 /** Self-serve free trial: one month, no card, no review. The reservation is
  *  already email-verified (and ownership-verified for OC names), and the
  *  status guard means a collective can only take it once. */
-app.post('/claim/:slug/trial', async (c) => {
-  const t = await pendingClaim(c)
-  if (t instanceof Response) return t
-  await run(
-    "UPDATE collectives SET status = 'active', trial_ends_at = ?, activated_at = COALESCE(activated_at, ?) WHERE id = ? AND status IN ('pending', 'applied')",
-    [now() + 30 * 86400, now(), t.collective.id],
-  )
-  const fresh = await getCollective(t.collective.id)
-  if (!fresh || fresh.status !== 'active') {
-    return c.redirect(`/claim/${t.collective.slug}?m=` + encodeURIComponent('Could not start the trial — try again or email hello@collective.email.'))
-  }
-  await sendOnboarding(fresh, t.member.email).catch(() => {})
-  return c.redirect(`/claim/${t.collective.slug}/invite`)
-})
-
 /** Step 3 — the address works; now bring the rest of the collective in. */
 app.get('/claim/:slug/invite', async (c) => {
   const slug = c.req.param('slug')
@@ -3382,11 +3521,16 @@ app.get('/claim/:slug/invite', async (c) => {
   }
   const url = `${cfg.baseUrl}/join/${invite.token}`
   const addr = `${collective.slug}@${cfg.emailDomain}`
+  const reserved = collective.status !== 'active'
   return c.html(
     <AuthCard title="Invite your collective" flash={c.req.query('m')}>
       <Steps current={3} />
-      <h1>{addr} is live 🎉</h1>
-      <p class="muted">Share this link with your collective. Everyone signs in with their own email — no shared password. You choose what each person can do; they join as readers by default and you can change that any time.</p>
+      <h1>{reserved ? `One teammate away` : `${addr} is live 🎉`}</h1>
+      {reserved ? (
+        <p class="muted"><b>{addr}</b> is reserved. Share this link — the moment someone accepts, the address goes live with a month's free trial. Everyone signs in with their own email; no shared password.</p>
+      ) : (
+        <p class="muted">Share this link with your collective. Everyone signs in with their own email — no shared password. You choose what each person can do; they join as readers by default and you can change that any time.</p>
+      )}
       <p class="invite-url"><code>{url}</code></p>
       <div class="btn-row">
         <button class="btn" type="button" data-copy={url}>Copy invite link</button>
@@ -3413,6 +3557,87 @@ app.post('/claim/:slug/apply', async (c) => {
     return c.redirect(`/claim/${t.collective.slug}?m=` + encodeURIComponent(err instanceof Error ? err.message : 'Could not send the application.'))
   }
 })
+
+// ---------- machine-readable docs (llms.txt) ----------
+// The whole app is plain forms over HTTP, which makes it drivable by any agent
+// that can hold a cookie jar and read its principal's inbox for the 6-digit
+// codes. This file tells them exactly which fields go where, so they don't
+// have to scrape it out of the HTML.
+
+app.get('/llms.txt', (c) => {
+  const base = cfg.baseUrl
+  return c.text(`# collective.email
+
+A shared email inbox for communities: one address (you@${cfg.emailDomain}) that a whole
+collective can read and answer, with assignments, internal notes and @mentions.
+
+This site is plain HTML forms over HTTP — no JavaScript required. An agent acting for a
+human can drive every flow below with form-encoded POSTs and a cookie jar. Email
+verification codes (6 digits, 10-minute expiry) are sent to the human's inbox; reading
+them requires their mailbox access, which is the intended human-in-the-loop.
+
+## Create a collective address
+
+1. Check availability (JSON):
+   GET ${base}/claim/oc?slug=<name>
+   → {"unavailable": null|string, "oc": {"kind": "none"|"contactable"|"uncontactable"}}
+   Names are 6–40 chars, [a-z0-9] only. kind != "none" means the name belongs to a
+   collective on opencollective.com and needs an ownership proof (see the /claim pages).
+
+2. Reserve it (sends a 6-digit code to the human's personal email):
+   POST ${base}/claim
+   form fields: address=<name>, name=<first name>, email=<their personal email>
+
+3. Verify the code (sets the session cookie; the reservation holds for 48 hours):
+   POST ${base}/verify
+   form fields: email=<same email>, code=<6 digits>
+   → 302 to /claim/<name> (the activation page)
+
+4. Get the invite link (requires the session cookie):
+   GET ${base}/claim/<name>/invite
+   The page contains one URL of the form ${base}/join/<token>, valid ${String(cfg.inviteHours)} hours.
+   Share it with the human's collective.
+
+5. Activation — one of:
+   - A second person accepts the invite (any role). The address goes live
+     immediately with a 30-day free trial. This is the normal path: a collective
+     is at least two people, and reserved names that nobody joins expire.
+   - Subscribe (Stripe) or redeem a discount code on ${base}/claim/<name>.
+
+## Join a collective (invite link in hand)
+
+GET ${base}/join/<token> shows the form. Then:
+POST ${base}/join/<token>
+  form fields: name=<first name>, level=every|daily|weekly, and EITHER
+  account=<an email this cookie jar is already signed in as> (joins instantly, no code)
+  OR account=other, email=<new personal email> (a 6-digit code is emailed; verify as above).
+
+## Sign in / multiple accounts
+
+POST ${base}/login   form fields: email=<member email>  → code emailed → POST /verify.
+The cookie can hold up to five signed-in accounts (add one via ${base}/login?add=1);
+each /inbox/<name>/… page acts as whichever account is a member there.
+POST ${base}/logout  form field email=<address> signs out that account only.
+
+## After activation
+
+Inbox:        ${base}/inbox/<name>            (HTML; threads, assignment, notes)
+Compose:      POST ${base}/inbox/<name>/compose
+              form fields: to, cc, bcc (comma-separated), subject, body,
+              action=send|draft. "draft" creates a thread with a shareable URL
+              where teammates can discuss via internal notes before sending.
+Members:      ${base}/inbox/<name>/members    (invite links per role: reader/commenter/sender)
+Settings:     ${base}/inbox/<name>/settings   (rename collective; address changes only before first email)
+Export:       ${base}/inbox/<name>/export     (full zip archive — admin only)
+Docs:         ${base}/docs   Pricing & FAQ:   ${base}/faq
+`)
+})
+
+app.get('/robots.txt', (c) => c.text(`User-agent: *
+Allow: /
+
+# Machine-readable guide for AI agents: ${cfg.baseUrl}/llms.txt
+`))
 
 // ---------- offline fallback (cached by the service worker) ----------
 

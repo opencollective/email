@@ -107,3 +107,23 @@ export const validDomainName = (d: string) =>
   /^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/.test(d) && d !== cfg.emailDomain && !d.endsWith(`.${cfg.emailDomain}`)
 
 export const validLocalPart = (l: string) => /^[a-z0-9][a-z0-9._-]{0,63}$/.test(l)
+
+/** Hourly: re-check every domain still waiting on DNS. People add the records
+ *  and walk away — the button on the domain page shouldn't be the only thing
+ *  that ever notices the DNS went live. */
+export async function domainVerifyTick(): Promise<void> {
+  if (!cfg.resendKey) return
+  const { all, run } = await import('./db.js')
+  const pending = await all<{ id: number; resend_domain_id: string }>(
+    "SELECT id, resend_domain_id FROM collectives WHERE resend_domain_id IS NOT NULL AND (domain_status IS NULL OR domain_status != 'verified') AND status = 'active'")
+  for (const c of pending) {
+    try {
+      await verifyResendDomain(c.resend_domain_id)
+      const d = await getResendDomain(c.resend_domain_id)
+      if (d?.status === 'verified') {
+        await run("UPDATE collectives SET domain_status = 'verified' WHERE id = ?", [c.id])
+        console.log(`[domains] collective ${c.id} domain verified by the hourly re-check`)
+      }
+    } catch { /* DNS is patient; so are we — next hour */ }
+  }
+}

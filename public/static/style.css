@@ -782,3 +782,9 @@ iframe.msg-frame {
 .oi-acct { display: block; color: var(--muted); font-size: 10.5px; font-family: var(--mono); }
 .org-item-foot { color: var(--muted); font-size: 12.5px; justify-content: center; }
 .level-card .input { margin-top: 6px; }
+
+/* compose (new outbound email) */
+.compose-form { display: grid; gap: 6px; }
+.compose-cc { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.compose-fields { display: grid; gap: 6px; padding: 10px 16px; border-bottom: 1.5px solid var(--line-soft); }
+.compose-fields .input, .compose-cc .input { font-size: 13.5px; padding: 7px 10px; }

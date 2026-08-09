@@ -230,6 +230,7 @@ function init(): Promise<void> {
       "ALTER TABLE reply_tokens ADD COLUMN kind TEXT NOT NULL DEFAULT 'reply'",
       'ALTER TABLE reply_tokens ADD COLUMN author_member_id INTEGER',
       'ALTER TABLE collectives ADD COLUMN archived_at INTEGER',
+      'ALTER TABLE messages ADD COLUMN bcc_json TEXT',
     ]
     ready = db.batch(SCHEMA, 'write')
       // additive migrations for pre-existing tables; ignore "duplicate column"
@@ -337,7 +338,7 @@ export interface Thread {
   id: number
   collective_id: number
   subject: string
-  status: 'needs_reply' | 'answered' | 'closed' | 'spam'
+  status: 'needs_reply' | 'answered' | 'closed' | 'spam' | 'draft'
   assignee_member_id: number | null
   counterpart_email: string | null
   cc_json: string | null
@@ -359,6 +360,7 @@ export interface Message {
   from_name: string | null
   to_json: string | null
   cc_json: string | null
+  bcc_json: string | null
   body_text: string | null
   body_html: string | null
   sent_by_member_id: number | null

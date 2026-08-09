@@ -162,7 +162,7 @@ export const Avatar: FC<{ member?: Member | null; empty?: boolean }> = ({ member
 }
 
 export const StatusChip: FC<{ status: Thread['status'] }> = ({ status }) => {
-  const label = { needs_reply: 'needs reply', answered: 'answered', closed: 'closed', spam: 'spam' }[status]
+  const label = { needs_reply: 'needs reply', answered: 'answered', closed: 'closed', spam: 'spam', draft: 'draft' }[status]
   return <span class={`chip status-${status}`}><span class="dot" />{label}</span>
 }
 
@@ -229,7 +229,7 @@ export const Page: FC<{ title?: string; flash?: string; bundle?: string; childre
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=31" />
+      <link rel="stylesheet" href="/static/style.css?v=32" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script
@@ -278,9 +278,10 @@ export const AuthCard: FC<{ title?: string; flash?: string; children?: Child }> 
   </Page>
 )
 
-const Menu: FC<{ base: string; active: string; isAdmin: boolean }> = ({ base, active, isAdmin }) => (
+const Menu: FC<{ base: string; active: string; isAdmin: boolean; canSend: boolean }> = ({ base, active, isAdmin, canSend }) => (
   <nav class="nav">
     <a class={`nav-item ${active === 'inbox' ? 'active' : ''}`} href={base}>📥 Inbox</a>
+    {canSend ? <a class={`nav-item ${active === 'compose' ? 'active' : ''}`} href={`${base}/compose`}>✎ New email</a> : null}
     <a class={`nav-item ${active === 'members' ? 'active' : ''}`} href={`${base}/members`}>☺ Members</a>
     <a class={`nav-item ${active === 'notifications' ? 'active' : ''}`} href={`${base}/notifications`}>🔔 Notifications</a>
     {isAdmin ? <a class={`nav-item ${active === 'rules' ? 'active' : ''}`} href={`${base}/rules`}>⚡ Rules</a> : null}
@@ -304,6 +305,7 @@ export const Shell: FC<{
   const base = `/inbox/${props.collective.slug}`
   const addr = `${props.collective.slug}@${cfg.emailDomain}`
   const isAdmin = props.member.role === 'admin'
+  const canSend = props.member.role === 'admin' || props.member.role === 'member'
   const userBlock = (
     <a class="me" href={`${base}/profile`} title="Your profile">
       <Avatar member={props.member} />
@@ -332,7 +334,7 @@ export const Shell: FC<{
           </div>
           {props.sidebar}
           <div class="label">Menu</div>
-          <Menu base={base} active={props.active} isAdmin={isAdmin} />
+          <Menu base={base} active={props.active} isAdmin={isAdmin} canSend={canSend} />
           <div class="side-foot">{userBlock}</div>
         </aside>
 
@@ -360,7 +362,7 @@ export const Shell: FC<{
               </a>
               <div class="org-menu" hidden />
             </div>
-            <Menu base={base} active={props.active} isAdmin={isAdmin} />
+            <Menu base={base} active={props.active} isAdmin={isAdmin} canSend={canSend} />
             <div class="drawer-foot">{userBlock}</div>
           </div>
         </div>

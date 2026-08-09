@@ -179,3 +179,62 @@ export async function forwardMessage(
   }
   await addEvent(thread.id, member.id, 'forwarded', { to: dest, message_id: message.id })
 }
+
+/** Send a composed draft: a fresh outbound thread the collective started,
+ *  rather than an answer to something received. The draft row already holds
+ *  to/cc/bcc/body; this stamps it sent — so a failed send leaves the draft
+ *  intact, and nothing is ever half-recorded. */
+export async function sendComposed(collective: Collective, threadId: number, member: Member): Promise<Message> {
+  const thread = await getThread(threadId)
+  if (!thread || thread.collective_id !== collective.id) throw new Error('Thread not found')
+  const draft = await get<Message>(
+    "SELECT * FROM messages WHERE thread_id = ? AND direction = 'outbound' AND sent_at IS NULL ORDER BY id LIMIT 1", [threadId])
+  if (!draft) throw new Error('Nothing to send — this thread has no draft.')
+  await assertCanSend(collective)
+
+  const to = (JSON.parse(draft.to_json || '[]') as string[]).filter(Boolean)
+  const cc = (JSON.parse(draft.cc_json || '[]') as string[]).filter(Boolean)
+  const bcc = (JSON.parse(draft.bcc_json || '[]') as string[]).filter(Boolean)
+  if (to.length === 0) throw new Error('Add at least one recipient before sending.')
+
+  let body = (draft.body_text || '').trim()
+  if (!body) throw new Error('The draft is empty.')
+  const signature = signatureFor(collective, member)
+  if (cfg.signReplies && !body.includes(signature)) body += `\n\n${signature}`
+
+  const { fromAddress, fromHeader } = outboundFrom(collective)
+  const messageId = `<req-${threadId}-${crypto.randomBytes(8).toString('hex')}@${cfg.emailDomain}>`
+
+  let resendEmailId: string | null = null
+  if (!cfg.resendKey) {
+    console.log(`\n[outbound:dev] From: ${fromAddress}\n[outbound:dev] To: ${to.join(', ')}${cc.length ? `\n[outbound:dev] Cc: ${cc.join(', ')}` : ''}${bcc.length ? `\n[outbound:dev] Bcc: ${bcc.join(', ')}` : ''}\n[outbound:dev] Subject: ${thread.subject}\n${body}\n`)
+  } else {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${cfg.resendKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: fromHeader,
+        to,
+        ...(cc.length ? { cc } : {}),
+        ...(bcc.length ? { bcc } : {}),
+        reply_to: [fromAddress],
+        subject: thread.subject,
+        text: body,
+        headers: { 'Message-ID': messageId },
+      }),
+    })
+    if (!res.ok) throw new Error(`Could not send (${res.status}): ${(await res.text()).slice(0, 200)}`)
+    resendEmailId = ((await res.json()) as { id?: string }).id ?? null
+  }
+
+  const ts = now()
+  await run(
+    'UPDATE messages SET rfc822_message_id = ?, body_text = ?, resend_email_id = ?, sent_at = ? WHERE id = ?',
+    [messageId, body, resendEmailId, ts, draft.id])
+  await run(
+    "UPDATE threads SET counterpart_email = ?, last_message_at = ?, last_direction = 'outbound', updated_at = ? WHERE id = ?",
+    [to[0], ts, ts, threadId])
+  await setStatus(threadId, 'answered', member.id, true)
+  await addEvent(threadId, member.id, 'replied', { via: 'web' })
+  return (await get<Message>('SELECT * FROM messages WHERE id = ?', [draft.id]))!
+}

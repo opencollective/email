@@ -232,41 +232,43 @@ test('stale pending reservations are released after 48h', async () => {
   assert.deepEqual(owners.map((o) => o.email), [email2])
 })
 
-test('the free trial is self-serve: one click starts one month, and only once', async () => {
+test('activation needs a second person: the trial route is gone, acceptance starts it', async () => {
   const slug = `trial${uniq()}`
   const email = `tr-${uniq()}@t.test`
   await verifiedClaim(slug, email)
   const sid = await createSession(email)
 
+  // the one-click trial no longer exists — a name alone activates nothing
   const res = await app.request(`/claim/${slug}/trial`, {
     method: 'POST',
     headers: { cookie: `requests_sid=${sid}`, 'content-type': 'application/x-www-form-urlencoded' },
     body: '',
   })
-  assert.match(res.headers.get('location')!, new RegExp(`/claim/${slug}/invite`), 'lands on step 3: invite others')
+  assert.equal(res.status, 404)
+  assert.equal((await get<any>('SELECT status FROM collectives WHERE slug = ?', [slug]))!.status, 'pending')
+
+  // the activation page leads with the invite instead
+  const page = await (await app.request(`/claim/${slug}`, { headers: { cookie: `requests_sid=${sid}` } })).text()
+  assert.match(page, /Invite a teammate/)
+  assert.doesNotMatch(page, /Start your free trial/)
+
+  // a second person accepting = activation, one month, once
+  const { randomToken } = await import('../src/util.js')
+  const invite = randomToken(18)
   const col = (await get<any>('SELECT * FROM collectives WHERE slug = ?', [slug]))!
-  assert.equal(col.status, 'active')
-  assert.ok(col.trial_ends_at > now() + 29 * 86400 && col.trial_ends_at < now() + 31 * 86400, 'exactly one month')
-  assert.ok(col.activated_at, 'activation stamped (referral clock starts)')
-
-  // a second click cannot extend it — the status guard blocks re-taking the trial
-  const before = col.trial_ends_at
-  const again = await app.request(`/claim/${slug}/trial`, {
+  await run("INSERT INTO invites (collective_id, token, created_at, expires_at, role) VALUES (?, ?, ?, ?, 'reader')",
+    [col.id, invite, now(), now() + 86400])
+  const second = `mate-${uniq()}@t.test`
+  const mateSid = await createSession(second)
+  await app.request(`/join/${invite}`, {
     method: 'POST',
-    headers: { cookie: `requests_sid=${sid}`, 'content-type': 'application/x-www-form-urlencoded' },
-    body: '',
+    headers: { cookie: `requests_sid=${mateSid}`, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ account: second, name: 'Mate', level: 'daily' }),
   })
-  assert.equal(again.status, 404, 'no longer a pending claim')
-  assert.equal((await get<any>('SELECT trial_ends_at FROM collectives WHERE slug = ?', [slug]))!.trial_ends_at, before)
-
-  // step 3 hands over a ready-to-share invite link
-  const invite = await app.request(`/claim/${slug}/invite`, { headers: { cookie: `requests_sid=${sid}` } })
-  assert.equal(invite.status, 200)
-  const html = await invite.text()
-  assert.match(html, /Copy invite link/)
-  const token = (await get<any>('SELECT token FROM invites WHERE collective_id = ?', [col.id]))!.token
-  assert.match(html, new RegExp(`/join/${token}`), 'the real link is on the page')
-  assert.match(html, /Invite others/, 'the progress shows step 3')
+  const fresh = (await get<any>('SELECT * FROM collectives WHERE slug = ?', [slug]))!
+  assert.equal(fresh.status, 'active')
+  assert.ok(fresh.trial_ends_at > now() + 29 * 86400 && fresh.trial_ends_at < now() + 31 * 86400, 'exactly one month')
+  assert.ok(fresh.activated_at, 'activation stamped (referral clock starts)')
 })
 
 test('claiming is two steps: address first, then the first admin (editable address)', async () => {

@@ -162,3 +162,40 @@ test('the home page groups collectives per account with independent sign-out', a
   // one per-account sign-out form each
   assert.equal((html.match(/name="email" value="/g) || []).length, 2)
 })
+
+// ---------- activation: a collective is at least two people ----------
+
+test('a reserved address goes live when a second person accepts the invite', async () => {
+  const founder = `founder-${uniq()}@example.org`
+  const slug = `pend${uniq()}`
+  const col = await createCollective(slug, 'Pending Co', 'collective', { status: 'pending' })
+  await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [col.id, founder, 'Founder', 'admin', 'every', now()])
+  const invite = randomToken(18)
+  await run("INSERT INTO invites (collective_id, token, created_at, expires_at, role) VALUES (?, ?, ?, ?, 'reader')",
+    [col.id, invite, now(), now() + 86400])
+
+  // the second human joins with a signed-in account — that is the activation
+  const second = `second-${uniq()}@example.org`
+  const tok = await createSession(second)
+  const res = await postForm(`/join/${invite}`, [tok], { account: second, name: 'Sam', level: 'daily' })
+  assert.equal(res.status, 302)
+
+  const fresh = (await get<any>('SELECT status, trial_ends_at, activated_at FROM collectives WHERE id = ?', [col.id]))!
+  assert.equal(fresh.status, 'active')
+  assert.ok(fresh.trial_ends_at > now() + 29 * 86400 && fresh.trial_ends_at < now() + 31 * 86400, '30-day trial started')
+  assert.ok(fresh.activated_at)
+})
+
+test('the instant self-serve trial is gone, and agents can read the flow', async () => {
+  const res = await app.request('/claim/whatever/trial', { method: 'POST' })
+  assert.equal(res.status, 404, 'no more one-click activation without a second human')
+
+  const llms = await app.request('/llms.txt')
+  assert.equal(llms.status, 200)
+  const text = await llms.text()
+  assert.match(text, /POST .*\/claim/)
+  assert.match(text, /second person accepts the invite/i)
+  assert.match(text, /\/compose/)
+  assert.match(await (await app.request('/robots.txt')).text(), /llms\.txt/)
+})
