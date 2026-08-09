@@ -1337,15 +1337,26 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             {canSendRole(member.role) && draftMsg ? (
             <form method="post" action={`${base}/thread/${thread.id}/draft`} data-pane="reply">
               <div class="to note-to">✎ Draft — nothing has been sent yet. Teammates with this link can add internal notes below.</div>
-              <div class="compose-fields">
-                <label class="lbl">To</label>
-                <input class="input" name="to" value={JSON.parse(draftMsg.to_json || '[]').join(', ')} autocomplete="off" spellcheck={false} />
-                <div class="compose-cc">
-                  <span><label class="lbl">Cc</label><input class="input" name="cc" value={JSON.parse(draftMsg.cc_json || '[]').join(', ')} autocomplete="off" spellcheck={false} /></span>
-                  <span><label class="lbl">Bcc</label><input class="input" name="bcc" value={JSON.parse(draftMsg.bcc_json || '[]').join(', ')} autocomplete="off" spellcheck={false} /></span>
-                </div>
-                <label class="lbl">Subject</label>
-                <input class="input" name="subject" value={thread.subject} maxlength={200} />
+              <div class="c-row">
+                <span class="c-k">To</span>
+                <input class="c-in" name="to" value={JSON.parse(draftMsg.to_json || '[]').join(', ')} autocomplete="off" spellcheck={false} />
+              </div>
+              {(() => {
+                const dcc = JSON.parse(draftMsg.cc_json || '[]').join(', ')
+                const dbcc = JSON.parse(draftMsg.bcc_json || '[]').join(', ')
+                return (
+                  // collapsed unless something is already in there — hiding a
+                  // recipient the draft actually has would be a nasty surprise
+                  <details class="cc-reveal" open={Boolean(dcc || dbcc)}>
+                    <summary>+ Cc / Bcc</summary>
+                    <div class="c-row"><span class="c-k">Cc</span><input class="c-in" name="cc" value={dcc} autocomplete="off" spellcheck={false} /></div>
+                    <div class="c-row"><span class="c-k">Bcc</span><input class="c-in" name="bcc" value={dbcc} autocomplete="off" spellcheck={false} /></div>
+                  </details>
+                )
+              })()}
+              <div class="c-row">
+                <span class="c-k">Subject</span>
+                <input class="c-in" name="subject" value={thread.subject} maxlength={200} />
               </div>
               <textarea name="body" rows={8}>{draftMsg.body_text || ''}</textarea>
               <div class="actions">
@@ -1610,15 +1621,20 @@ const ComposeForm = ({ base, addr, signature }: { base: string; addr: string; si
     <h1>New email</h1>
     <p class="muted">Sent as <b>{addr}</b>. Save it as a draft first and the thread gets a link you can share — teammates can weigh in with internal notes before anything goes out.</p>
     <form method="post" action={`${base}/compose`} class="card compose-form">
-      <label class="lbl">To</label>
-      <input class="input" name="to" placeholder="them@example.org — comma-separate several" autocomplete="off" spellcheck={false} autofocus />
-      <div class="compose-cc">
-        <span><label class="lbl">Cc</label><input class="input" name="cc" autocomplete="off" spellcheck={false} /></span>
-        <span><label class="lbl">Bcc</label><input class="input" name="bcc" autocomplete="off" spellcheck={false} /></span>
+      <div class="c-row">
+        <span class="c-k">To</span>
+        <input class="c-in" name="to" placeholder="them@example.org — comma-separate several" autocomplete="off" spellcheck={false} autofocus />
       </div>
-      <label class="lbl">Subject</label>
-      <input class="input" name="subject" maxlength={200} required />
-      <label class="lbl">Message</label>
+      {/* a <details>, not a JS toggle: reveals without JavaScript too */}
+      <details class="cc-reveal">
+        <summary>+ Cc / Bcc</summary>
+        <div class="c-row"><span class="c-k">Cc</span><input class="c-in" name="cc" autocomplete="off" spellcheck={false} /></div>
+        <div class="c-row"><span class="c-k">Bcc</span><input class="c-in" name="bcc" autocomplete="off" spellcheck={false} /></div>
+      </details>
+      <div class="c-row">
+        <span class="c-k">Subject</span>
+        <input class="c-in" name="subject" maxlength={200} required />
+      </div>
       <textarea name="body" rows={10} data-signature={signature}>{`\n\n${signature}`}</textarea>
       <div class="btn-row">
         <button class="btn" type="submit" name="action" value="send" data-busy="Sending…">Send</button>

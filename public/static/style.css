@@ -783,8 +783,28 @@ iframe.msg-frame {
 .org-item-foot { color: var(--muted); font-size: 12.5px; justify-content: center; }
 .level-card .input { margin-top: 6px; }
 
-/* compose (new outbound email) */
-.compose-form { display: grid; gap: 6px; }
-.compose-cc { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.compose-fields { display: grid; gap: 6px; padding: 10px 16px; border-bottom: 1.5px solid var(--line-soft); }
-.compose-fields .input, .compose-cc .input { font-size: 13.5px; padding: 7px 10px; }
+/* compose (new outbound email): Gmail-compact — one line per field, labels
+   inline, Cc/Bcc folded away until asked for */
+.compose-form { display: grid; gap: 0; padding: 0; overflow: hidden; }
+.c-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 14px; border-bottom: 1.5px solid var(--line-soft);
+}
+.c-row:focus-within { background: var(--fill); }
+.c-k {
+  font-family: var(--mono); font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: 1px; color: var(--muted); width: 52px; flex: none;
+}
+.c-in { border: none; background: none; padding: 3px 0; flex: 1; min-width: 0; font: inherit; font-size: 14.5px; color: var(--ink); }
+.c-in:focus { outline: none; }
+@media (max-width: 560px) { .c-in { font-size: 16px; } } /* iOS zoom guard */
+.cc-reveal summary {
+  list-style: none; cursor: pointer; font-size: 12px; color: var(--muted);
+  padding: 5px 14px; border-bottom: 1.5px solid var(--line-soft);
+}
+.cc-reveal summary::-webkit-details-marker { display: none; }
+.cc-reveal summary:hover { color: var(--ink); }
+/* once revealed the rows speak for themselves — the toggle disappears */
+.cc-reveal[open] summary { display: none; }
+.compose-form textarea { border: none; border-radius: 0; resize: vertical; padding: 12px 14px; }
+.compose-form .btn-row { padding: 10px 14px; margin: 0; border-top: 1.5px solid var(--line-soft); background: var(--fill); }
