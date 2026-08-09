@@ -1764,6 +1764,10 @@ app.get('/inbox/:addr/data', async (c) => {
               <b>{fmtDate(now() + PURGE_AFTER)}</b>. Until then you can reopen it from this page.
             </p>
             <form method="post" action={`${base}/data/archive`} class="modal-form">
+              {/* the archive is one click away from here: asking someone to
+                  cancel, hunt for the button, and start again is how you end up
+                  with people closing an inbox without their data */}
+              <a class="btn ghost" href={`${base}/export`} download>⬇ Download archive (.zip)</a>
               <label class="level-card">
                 <input type="checkbox" name="downloaded" value="1" required />
                 <span><b>I've downloaded the archive.</b>
