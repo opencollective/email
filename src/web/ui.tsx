@@ -229,7 +229,7 @@ export const Page: FC<{ title?: string; flash?: string; bundle?: string; childre
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=30" />
+      <link rel="stylesheet" href="/static/style.css?v=31" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script
@@ -412,7 +412,8 @@ const SWITCHER_SCRIPT = `
 (function(){
   fetch('/mailboxes').then(function(r){return r.json();}).then(function(d){
     var boxes=(d&&d.mailboxes)||[];
-    if(boxes.length<2) return;
+    var multi=(d&&d.accounts||0)>1;
+    if(boxes.length<2&&!multi) return;
     function esc(s){var e=document.createElement('div');e.textContent=s==null?'':s;return e.innerHTML;}
     document.querySelectorAll('[data-org]').forEach(function(org){
       var current=org.getAttribute('data-slug');
@@ -424,9 +425,11 @@ const SWITCHER_SCRIPT = `
         if(b.needsReply>0) badges+='<span class="ob-badge ob-wait" title="conversations waiting for a reply">'+b.needsReply+' waiting</span>';
         if(b.mine>0) badges+='<span class="ob-badge ob-mine" title="assigned to you">'+b.mine+' yours</span>';
         return '<a class="org-item'+(b.slug===current?' on':'')+'" href="/inbox/'+encodeURIComponent(b.slug)+'">'+
-          '<span class="oi-main"><b>'+esc(b.name)+'</b><small>'+esc(b.slug)+'@collective.email</small></span>'+
+          '<span class="oi-main"><b>'+esc(b.name)+'</b><small>'+esc(b.slug)+'@collective.email</small>'+
+          (multi?'<small class="oi-acct">'+esc(b.email||'')+'</small>':'')+'</span>'+
           '<span class="oi-badges">'+badges+'</span></a>';
-      }).join('');
+      }).join('')+
+      '<a class="org-item org-item-foot" href="/">'+(multi?'Accounts & inboxes':'All inboxes')+' →</a>';
       org.addEventListener('click',function(e){
         e.preventDefault();
         var open=!menu.hidden;

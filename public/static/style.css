@@ -770,3 +770,15 @@ iframe.msg-frame {
 .mute-row:last-of-type { border-bottom: none; }
 .mute-addr { font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
 .mute-row form, .mute-row button { margin-left: auto; }
+
+/* multiple signed-in accounts (Google-style) */
+.acct { margin: 14px 0 4px; }
+.acct-head {
+  display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px;
+  border-bottom: 1.5px solid var(--line-soft); padding-bottom: 5px;
+}
+.acct-mail { font-family: var(--mono); font-size: 12.5px; font-weight: 600; overflow-wrap: anywhere; }
+.acct-head form { margin-left: auto; }
+.oi-acct { display: block; color: var(--muted); font-size: 10.5px; font-family: var(--mono); }
+.org-item-foot { color: var(--muted); font-size: 12.5px; justify-content: center; }
+.level-card .input { margin-top: 6px; }

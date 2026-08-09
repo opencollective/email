@@ -11,7 +11,8 @@ import {
   type Attachment, type Collective, type Invite, type Member, type Message, type Thread,
 } from '../db.js'
 import {
-  checkCode, createSession, destroyEmailSessions, destroySession, emailFromSession, issueCode, type LoginCodeRow,
+  accountsFromCookie, checkCode, createSession, destroySession, issueCode,
+  type Account, type LoginCodeRow,
 } from '../auth.js'
 import { forwardMessage, outboundFrom, sendCollectiveReply, signatureFor } from '../outbound.js'
 import { digestTick, receivingAddress, sendOnboarding, trialTick } from '../notify.js'
@@ -40,7 +41,7 @@ import {
   validDomainName, validLocalPart, verifyResendDomain,
 } from '../domains.js'
 
-type Env = { Variables: { email: string | null } }
+type Env = { Variables: { email: string | null; accounts: Account[] } }
 export const app = new Hono<Env>()
 
 const SID = 'requests_sid'
@@ -115,9 +116,42 @@ function visitorCurrency(c: Context): 'USD' | 'EUR' {
 // ---------- session middleware ----------
 
 app.use('*', async (c, next) => {
-  c.set('email', await emailFromSession(getCookie(c, SID)))
+  // every signed-in account, cookie order; `email` stays the first one for the
+  // handful of places where any verified identity will do
+  const accounts = await accountsFromCookie(getCookie(c, SID))
+  c.set('accounts', accounts)
+  c.set('email', accounts[0]?.email ?? null)
   await next()
 })
+
+/** Up to five accounts at once; the cookie is just their session tokens. */
+const MAX_ACCOUNTS = 5
+function writeSessionCookie(c: Context<Env>, accounts: Account[]) {
+  if (accounts.length === 0) {
+    deleteCookie(c, SID, { path: '/' })
+    return
+  }
+  setCookie(c, SID, accounts.map((a) => a.token).join('.'), {
+    httpOnly: true,
+    sameSite: 'Lax',
+    secure: cfg.baseUrl.startsWith('https'),
+    maxAge: cfg.sessionDays * 86400,
+    path: '/',
+  })
+}
+
+/** The signed-in account that is a platform admin, if any. */
+const platformAdminAccount = (c: Context<Env>): string | null =>
+  c.get('accounts').map((a) => a.email).find(isPlatformAdmin) ?? null
+
+/** The first signed-in account with a live membership in this collective. */
+async function memberAmongAccounts(c: Context<Env>, collectiveId: number): Promise<Member | undefined> {
+  for (const a of c.get('accounts')) {
+    const m = await getMemberIn(collectiveId, a.email)
+    if (m && !m.removed_at) return m
+  }
+  return undefined
+}
 
 /** The :addr URL segment is the collective's address — `commonshub` or
  *  `commonshub@collective.email` (the domain part is optional). */
@@ -133,19 +167,24 @@ function slugFromAddr(c: Context<Env>): string | null {
  *  Returns a Response when access fails: login redirect (preserving the
  *  destination) or an explicit "wrong account" page — never a silent bounce. */
 async function tenant(c: Context<Env>): Promise<{ collective: Collective; member: Member } | Response> {
-  const email = c.get('email')
-  if (!email) return c.redirect('/login?next=' + encodeURIComponent(c.req.path))
+  const accounts = c.get('accounts')
+  if (accounts.length === 0) return c.redirect('/login?next=' + encodeURIComponent(c.req.path))
   const slug = slugFromAddr(c)
-  // collective + membership resolved in a single round-trip
+  // Collective + membership in one round-trip. The URL names the collective and
+  // the collective picks the identity: whichever signed-in account is a member
+  // acts here, so moving between inboxes on different accounts is just a click.
+  const emails = accounts.map((a) => a.email)
   const row = slug ? await get<any>(`
     SELECT c.id AS c_id, c.slug AS c_slug, c.name AS c_name, c.status AS c_status, c.plan AS c_plan, c.created_at AS c_created_at,
            c.stripe_status AS c_stripe_status, c.trial_ends_at AS c_trial_ends_at, c.comped AS c_comped,
            c.custom_domain AS c_custom_domain, c.custom_local AS c_custom_local, c.domain_status AS c_domain_status,
            c.archived_at AS c_archived_at,
            m.id, m.collective_id, m.email, m.name, m.role, m.notify_level, m.avatar_path, m.created_at, m.last_seen_at, m.removed_at
-    FROM collectives c LEFT JOIN members m ON m.collective_id = c.id AND m.email = ?
+    FROM collectives c LEFT JOIN members m
+      ON m.collective_id = c.id AND m.removed_at IS NULL AND m.email IN (${emails.map(() => '?').join(',')})
     WHERE c.slug = ?
-  `, [email, slug]) : undefined
+    ORDER BY (m.id IS NULL), m.id LIMIT 1
+  `, [...emails, slug]) : undefined
   if (!row || (row.c_status !== 'active' && row.c_status !== 'archived')) return c.notFound()
   const collective: Collective = {
     id: row.c_id, slug: row.c_slug, name: row.c_name, status: row.c_status, plan: row.c_plan, created_at: row.c_created_at,
@@ -159,16 +198,15 @@ async function tenant(c: Context<Env>): Promise<{ collective: Collective; member
       <AuthCard title={collective.name}>
         <h1>Wrong account for {collective.name}</h1>
         <p class="muted">
-          You're signed in as <b>{email}</b>, which isn't a member of {collective.name}.
-          If you received an invite or onboarding email at another address, sign out and
-          sign in with <b>that</b> address.
+          You're signed in as {accounts.map((a, i) => <>{i ? ', ' : ''}<b>{a.email}</b></>)} —
+          {accounts.length === 1 ? ' which is ' : ' none of which are '}a member of {collective.name}.
+          If the invite or onboarding email went to another address, add that account:
+          you stay signed in to {accounts.length === 1 ? 'this one' : 'these'} too.
         </p>
-        <form method="post" action="/logout">
-          <button class="btn" type="submit">Sign out & use another email</button>
-        </form>
-        {isPlatformAdmin(email) ? (
+        <a class="btn" href={`/login?add=1&next=${encodeURIComponent(c.req.path)}`}>Add another account</a>
+        {platformAdminAccount(c) ? (
           <form method="post" action={`/inbox/${collective.slug}/join-admin`}>
-            <button class="btn ghost" type="submit">Add {email} as admin of this collective</button>
+            <button class="btn ghost" type="submit">Add {platformAdminAccount(c)} as admin of this collective</button>
           </form>
         ) : (
           <p class="fineprint">Not a member at all yet? Ask someone in the collective for an invite link.</p>
@@ -207,35 +245,50 @@ app.get('/cron/digest', async (c) => {
 })
 
 app.get('/', async (c) => {
-  const email = c.get('email')
-  if (!email) return c.html(<HomePage joined={c.req.query('joined') === '1'} currency={visitorCurrency(c)} />)
-  const memberships = await membershipsByEmail(email)
-  if (memberships.length === 1) return c.redirect(`/inbox/${memberships[0].collective_slug}`)
-  if (memberships.length === 0 && isPlatformAdmin(email)) return c.redirect('/admin')
+  const accounts = c.get('accounts')
+  if (accounts.length === 0) return c.html(<HomePage joined={c.req.query('joined') === '1'} currency={visitorCurrency(c)} />)
+  const byAccount = await Promise.all(accounts.map(async (a) => ({ account: a, memberships: await membershipsByEmail(a.email) })))
+  const total = byAccount.reduce((n, g) => n + g.memberships.length, 0)
+  if (accounts.length === 1 && total === 1) return c.redirect(`/inbox/${byAccount[0].memberships[0].collective_slug}`)
+  if (total === 0 && platformAdminAccount(c)) return c.redirect('/admin')
   return c.html(
     <AuthCard title="Your collective email addresses" flash={c.req.query('m')}>
       <h1>Your collective email addresses</h1>
-      {memberships.length === 0 ? (
-        <p class="muted">
-          <b>{email}</b> isn't part of any collective yet. Ask your collective for an invite link,
-          or <a href="/claim">claim an address</a> to start your own.
-        </p>
-      ) : (
-        <div class="chooser">
-          {memberships.map((m) => (
-            <a class="chooser-item" href={`/inbox/${m.collective_slug}`}>
-              <b>{m.collective_name}</b>
-              <small>{m.collective_slug}@{cfg.emailDomain}</small>
-            </a>
-          ))}
-          <a class="chooser-item chooser-new" href="/claim">
-            <b>+ New address</b>
-            <small>claim one for another collective</small>
-          </a>
+      {byAccount.map(({ account, memberships }) => (
+        <div class="acct">
+          <div class="acct-head">
+            <span class="acct-mail">{account.email}</span>
+            <form method="post" action="/logout">
+              <input type="hidden" name="email" value={account.email} />
+              <button class="linkish" type="submit">sign out</button>
+            </form>
+          </div>
+          {memberships.length === 0 ? (
+            <p class="fineprint">Not part of any collective yet — ask for an invite link, or <a href="/claim">claim an address</a>.</p>
+          ) : (
+            <div class="chooser">
+              {memberships.map((m) => (
+                <a class="chooser-item" href={`/inbox/${m.collective_slug}`}>
+                  <b>{m.collective_name}</b>
+                  <small>{m.collective_slug}@{cfg.emailDomain}</small>
+                </a>
+              ))}
+            </div>
+          )}
         </div>
-      )}
-      {isPlatformAdmin(email) ? <p class="fineprint"><a href="/admin">Platform admin →</a></p> : null}
-      <form method="post" action="/logout"><button class="linkish" type="submit">Sign out</button></form>
+      ))}
+      <div class="chooser">
+        <a class="chooser-item chooser-new" href="/login?add=1">
+          <b>+ Add another account</b>
+          <small>sign in with a second email — this one stays signed in</small>
+        </a>
+        <a class="chooser-item chooser-new" href="/claim">
+          <b>+ New address</b>
+          <small>claim one for another collective</small>
+        </a>
+      </div>
+      {platformAdminAccount(c) ? <p class="fineprint"><a href="/admin">Platform admin →</a></p> : null}
+      {accounts.length > 1 ? <form method="post" action="/logout"><button class="linkish" type="submit">Sign out of all accounts</button></form> : null}
     </AuthCard>,
   )
 })
@@ -305,11 +358,16 @@ app.get('/about', (c) => c.html(<AboutPage currency={visitorCurrency(c)} />))
 
 app.get('/login', (c) => {
   const next = safeNext(c.req.query('next'))
-  if (c.get('email')) return c.redirect(next || '/')
+  const adding = c.req.query('add') === '1'
+  if (c.get('email') && !adding) return c.redirect(next || '/')
   return c.html(
-    <AuthCard title="Sign in" flash={c.req.query('m')}>
-      <h1>Sign in</h1>
-      <p class="muted">Enter your personal email address. We'll send you a 6-digit code — no password needed.</p>
+    <AuthCard title={adding ? 'Add another account' : 'Sign in'} flash={c.req.query('m')}>
+      <h1>{adding ? 'Add another account' : 'Sign in'}</h1>
+      {adding && c.get('accounts').length ? (
+        <p class="muted">Already signed in as {c.get('accounts').map((a, i) => <>{i ? ', ' : ''}<b>{a.email}</b></>)} — that stays. Enter the other address; we'll send it a 6-digit code.</p>
+      ) : (
+        <p class="muted">Enter your personal email address. We'll send you a 6-digit code — no password needed.</p>
+      )}
       <form method="post" action="/login">
         {next ? <input type="hidden" name="next" value={next} /> : null}
         <input class="input" type="email" name="email" placeholder="you@example.com" required autofocus />
@@ -368,33 +426,19 @@ app.post('/verify', async (c) => {
       [collective.id, email, res.row.join_name || email.split('@')[0], 'admin', 'every', now()])
     redirect = `/claim/${slug}`
   } else if (res.row.purpose === 'join' && res.row.invite_token) {
-    const invite = await get<Invite>('SELECT * FROM invites WHERE token = ?', [res.row.invite_token])
-    const collective = invite ? await getCollective(invite.collective_id) : undefined
-    if (invite && collective && !invite.revoked_at && invite.expires_at >= now()) {
-      const existing = await getMemberIn(collective.id, email)
-      if (existing) {
-        await run("UPDATE members SET removed_at = NULL, name = COALESCE(NULLIF(?, ''), name), notify_level = ? WHERE id = ?",
-          [res.row.join_name || '', res.row.join_level || existing.notify_level, existing.id])
-      } else {
-        let role = ['reader', 'commenter', 'member'].includes(invite.role || '') ? invite.role! : 'reader'
-        if (role === 'member') {
-          const senders = (await activeMembers(collective.id)).filter((m) => canSendRole(m.role)).length
-          if (senders >= planLimits(collective.plan).contributors) role = 'commenter' // seats full — join with the closest free role
-        }
-        await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-          [collective.id, email, res.row.join_name || email.split('@')[0], role, res.row.join_level || 'daily', now()])
-      }
-      redirect = `/inbox/${collective.slug}?m=` + encodeURIComponent(`Welcome to ${collective.name}!`)
-    }
+    const joined = await applyInviteJoin(res.row.invite_token, email, res.row.join_name || '', res.row.join_level || '')
+    if (joined) redirect = `/inbox/${joined.slug}?m=` + encodeURIComponent(`Welcome to ${joined.name}!`)
   }
 
-  setCookie(c, SID, await createSession(email), {
-    httpOnly: true,
-    sameSite: 'Lax',
-    secure: cfg.baseUrl.startsWith('https'),
-    maxAge: cfg.sessionDays * 86400,
-    path: '/',
-  })
+  // Signing in adds an account rather than replacing the session: whoever was
+  // already signed in stays signed in. A repeat sign-in for the same email
+  // renews its token; past five accounts the oldest quietly drops off.
+  const token = await createSession(email)
+  const existing = c.get('accounts')
+  for (const a of existing) if (a.email === email) await destroySession(a.token)
+  const merged = [...existing.filter((a) => a.email !== email), { token, email }]
+  for (const dropped of merged.slice(0, Math.max(0, merged.length - MAX_ACCOUNTS))) await destroySession(dropped.token)
+  writeSessionCookie(c, merged.slice(-MAX_ACCOUNTS))
   return c.redirect(redirect)
 })
 
@@ -433,32 +477,68 @@ app.post('/resend', async (c) => {
   return c.html(<CodeForm email={email} next={next} error={ok ? undefined : rateLimited} />)
 })
 
-const doLogout = async (c: Context<Env>) => {
-  const t = getCookie(c, SID)
-  if (t) await destroySession(t)
-  deleteCookie(c, SID, { path: '/' })
+/** Sign out one account (leaving the rest signed in), or everything. */
+const doLogout = async (c: Context<Env>, only?: string) => {
+  const accounts = c.get('accounts')
+  const leaving = only ? accounts.filter((a) => a.email === only) : accounts
+  for (const a of leaving) await destroySession(a.token)
+  const staying = only ? accounts.filter((a) => a.email !== only) : []
+  writeSessionCookie(c, staying)
+  if (staying.length > 0) return c.redirect('/?m=' + encodeURIComponent(`Signed out of ${only}.`))
   return c.redirect('/login?m=' + encodeURIComponent('Signed out.'))
 }
-app.post('/logout', doLogout)
-app.get('/logout', doLogout) // force sign-out by URL
+app.post('/logout', async (c) => {
+  const body = await c.req.parseBody().catch(() => ({} as Record<string, unknown>))
+  const only = String(body.email || '').toLowerCase().trim() || undefined
+  return doLogout(c, only)
+})
+app.get('/logout', (c) => doLogout(c)) // force sign-out by URL — everything
 
 /** All mailboxes the signed-in user belongs to, with live counts, for the
  *  collective switcher. One query; only fetched when the switcher is opened. */
 app.get('/mailboxes', async (c) => {
-  const email = c.get('email')
-  if (!email) return c.json({ mailboxes: [] })
-  const rows = await all<{ slug: string; name: string; needs_reply: number; mine: number }>(`
-    SELECT c.slug, c.name,
+  const emails = c.get('accounts').map((a) => a.email)
+  if (emails.length === 0) return c.json({ mailboxes: [] })
+  const rows = await all<{ slug: string; name: string; email: string; needs_reply: number; mine: number }>(`
+    SELECT c.slug, c.name, m.email,
       (SELECT COUNT(*) FROM threads t WHERE t.collective_id = c.id AND t.status = 'needs_reply') AS needs_reply,
       (SELECT COUNT(*) FROM threads t WHERE t.collective_id = c.id AND t.assignee_member_id = m.id AND t.status IN ('needs_reply','answered')) AS mine
     FROM members m JOIN collectives c ON c.id = m.collective_id
-    WHERE m.email = ? AND m.removed_at IS NULL AND c.status = 'active'
+    WHERE m.email IN (${emails.map(() => '?').join(',')}) AND m.removed_at IS NULL AND c.status = 'active'
     ORDER BY needs_reply DESC, c.name COLLATE NOCASE
-  `, [email.toLowerCase().trim()])
-  return c.json({ mailboxes: rows.map((r) => ({ slug: r.slug, name: r.name, needsReply: r.needs_reply, mine: r.mine })) })
+  `, emails)
+  // two signed-in accounts can share a collective — one entry is enough
+  const seen = new Set<string>()
+  const mailboxes = rows.filter((r) => !seen.has(r.slug) && seen.add(r.slug))
+    .map((r) => ({ slug: r.slug, name: r.name, email: r.email, needsReply: r.needs_reply, mine: r.mine }))
+  return c.json({ mailboxes, accounts: emails.length })
 })
 
 // ---------- join via invite ----------
+
+/** Add `email` to the invite's collective (or restore a removed membership).
+ *  The caller vouches for the email: either a code was just verified, or the
+ *  address belongs to a signed-in account. Returns the collective, or null
+ *  when the invite is dead. */
+async function applyInviteJoin(inviteToken: string, email: string, name: string, level: string): Promise<Collective | null> {
+  const invite = await get<Invite>('SELECT * FROM invites WHERE token = ?', [inviteToken])
+  const collective = invite ? await getCollective(invite.collective_id) : undefined
+  if (!invite || !collective || invite.revoked_at || invite.expires_at < now()) return null
+  const existing = await getMemberIn(collective.id, email)
+  if (existing) {
+    await run("UPDATE members SET removed_at = NULL, name = COALESCE(NULLIF(?, ''), name), notify_level = ? WHERE id = ?",
+      [name, level || existing.notify_level, existing.id])
+  } else {
+    let role = ['reader', 'commenter', 'member'].includes(invite.role || '') ? invite.role! : 'reader'
+    if (role === 'member') {
+      const senders = (await activeMembers(collective.id)).filter((m) => canSendRole(m.role)).length
+      if (senders >= planLimits(collective.plan).contributors) role = 'commenter' // seats full — join with the closest free role
+    }
+    await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [collective.id, email, name || email.split('@')[0], role, level || 'daily', now()])
+  }
+  return collective
+}
 
 app.get('/join/:token', async (c) => {
   const token = c.req.param('token')
@@ -473,8 +553,9 @@ app.get('/join/:token', async (c) => {
     )
   }
   const inviter = invite.created_by ? await getMember(invite.created_by) : null
+  const accounts = c.get('accounts')
   return c.html(
-    <AuthCard title={`Join ${collective.name}`}>
+    <AuthCard title={`Join ${collective.name}`} flash={c.req.query('m')}>
       <h1>Join {collective.name}</h1>
       <p class="muted">
         {inviter ? `${memberName(inviter)} invited you to follow` : 'You were invited to follow'} email
@@ -494,10 +575,30 @@ app.get('/join/:token', async (c) => {
           ))}
         </div>
         <label class="lbl">Where should we send them?</label>
-        <input class="input" type="email" name="email" placeholder="you@example.com — your personal email" required />
-        <button class="btn" type="submit">Send me a code</button>
+        {accounts.length ? (
+          <div class="level-cards">
+            {/* already signed in: those addresses are verified, so joining with
+                one is a single click — no code, no sign-out */}
+            {accounts.map((a, i) => (
+              <label class="level-card">
+                <input type="radio" name="account" value={a.email} checked={i === 0} />
+                <span><b>{a.email}</b><small>you're signed in — no code needed</small></span>
+              </label>
+            ))}
+            <label class="level-card">
+              <input type="radio" name="account" value="other" />
+              <span><b>Another email</b>
+                <small>we'll send it a 6-digit code to confirm it's yours</small>
+                <input class="input" type="email" name="email" placeholder="you@example.com — your personal email" autocomplete="off" />
+              </span>
+            </label>
+          </div>
+        ) : (
+          <input class="input" type="email" name="email" placeholder="you@example.com — your personal email" required />
+        )}
+        <button class="btn" type="submit">{accounts.length ? 'Join' : 'Send me a code'}</button>
       </form>
-      <p class="fineprint">Notifications go to that address, and we'll email it a 6-digit code now to confirm it's yours. You can change the notification level any time.</p>
+      <p class="fineprint">Notifications go to that address. You can change the notification level any time.</p>
     </AuthCard>,
   )
 })
@@ -507,9 +608,22 @@ app.post('/join/:token', async (c) => {
   const invite = await get<Invite>('SELECT * FROM invites WHERE token = ?', [token])
   if (!invite || invite.revoked_at || invite.expires_at < now()) return c.redirect(`/join/${token}`)
   const body = await c.req.parseBody()
-  const email = String(body.email || '').toLowerCase().trim()
   const name = String(body.name || '').trim().slice(0, 60)
   const level = ['every', 'daily', 'weekly'].includes(String(body.level)) ? String(body.level) : 'every'
+
+  // A signed-in account is already a verified address — the session is the
+  // proof, so joining with it needs no code. The cookie is checked, not the
+  // form: naming someone else's email here must not work.
+  const choice = String(body.account || 'other')
+  if (choice !== 'other') {
+    if (!c.get('accounts').some((a) => a.email === choice)) return c.redirect(`/join/${token}`)
+    const joined = await applyInviteJoin(token, choice, name, level)
+    if (!joined) return c.redirect(`/join/${token}`)
+    return c.redirect(`/inbox/${joined.slug}?m=` + encodeURIComponent(`Welcome to ${joined.name}!`))
+  }
+
+  const email = String(body.email || '').toLowerCase().trim()
+  if (!emailLooksValid(email)) return c.redirect(`/join/${token}?m=` + encodeURIComponent('Enter the email address to join with.'))
   await issueCode(email, 'join', { inviteToken: token, name, level })
   return c.html(<CodeForm email={email} />)
 })
@@ -656,13 +770,12 @@ app.get('/a/:token', async (c) => {
 // ---------- attachments (proxied: locators are never exposed) ----------
 
 app.get('/attachment/:id', async (c) => {
-  const email = c.get('email')
-  if (!email) return c.redirect('/login')
+  if (c.get('accounts').length === 0) return c.redirect('/login')
   const att = await get<Attachment>('SELECT * FROM attachments WHERE id = ?', [Number(c.req.param('id'))])
   if (!att) return c.notFound()
   const msg = await get<{ thread_id: number }>('SELECT thread_id FROM messages WHERE id = ?', [att.message_id])
   const thread = msg ? await getThread(msg.thread_id) : undefined
-  if (!thread || (!(await getMemberIn(thread.collective_id, email)) && !isPlatformAdmin(email))) return c.notFound()
+  if (!thread || (!(await memberAmongAccounts(c, thread.collective_id)) && !platformAdminAccount(c))) return c.notFound()
   const content = await readBlob(att.path)
   if (!content) return c.notFound()
   return c.body(new Uint8Array(content), 200, {
@@ -674,9 +787,9 @@ app.get('/attachment/:id', async (c) => {
 // ---------- platform admin ----------
 
 app.get('/admin', async (c) => {
-  const email = c.get('email')
-  if (!email) return c.redirect('/login')
-  if (!isPlatformAdmin(email)) return c.notFound()
+  if (c.get('accounts').length === 0) return c.redirect('/login')
+  const email = platformAdminAccount(c)
+  if (!email) return c.notFound()
   const waitlist = await all<{ id: number; email: string; collective_name: string | null; plan: string | null; created_at: number }>(
     'SELECT * FROM waitlist ORDER BY created_at DESC LIMIT 200')
   const collectives = []
@@ -769,8 +882,8 @@ app.get('/admin', async (c) => {
 })
 
 app.post('/admin/credits', async (c) => {
-  const email = c.get('email')
-  if (!isPlatformAdmin(email)) return c.notFound()
+  const email = platformAdminAccount(c)
+  if (!email) return c.notFound()
   const body = await c.req.parseBody()
   const target = await getCollectiveBySlug(slugify(String(body.slug || '')))
   const amount = Math.min(24, Math.max(-12, Math.round(Number(body.amount) || 0)))
@@ -787,8 +900,8 @@ app.post('/admin/credits', async (c) => {
 })
 
 app.post('/admin/collectives', async (c) => {
-  const email = c.get('email')
-  if (!isPlatformAdmin(email)) return c.notFound()
+  const email = platformAdminAccount(c)
+  if (!email) return c.notFound()
   const body = await c.req.parseBody()
   const slug = slugify(String(body.slug || ''))
   const name = String(body.name || '').trim().slice(0, 80) || slug
@@ -1574,8 +1687,8 @@ app.post('/inbox/:addr/thread/:id/tags/remove', async (c) => {
 
 // Platform admin can add themselves to any collective (from the "wrong account" page)
 app.post('/inbox/:addr/join-admin', async (c) => {
-  const email = c.get('email')
-  if (!isPlatformAdmin(email)) return c.notFound()
+  const email = platformAdminAccount(c)
+  if (!email) return c.notFound()
   const slug = slugFromAddr(c)
   const collective = slug ? await getCollectiveBySlug(slug) : undefined
   if (!collective) return c.notFound()
@@ -2223,7 +2336,9 @@ app.get('/inbox/:addr/profile', async (c) => {
         <section class="card">
           <div class="btn-row profile-exit">
             <form method="post" action="/logout">
-              <button class="btn small ghost" type="submit">Sign out</button>
+              {/* this account only — any other signed-in account stays */}
+              <input type="hidden" name="email" value={member.email} />
+              <button class="btn small ghost" type="submit">Sign out {member.email}</button>
             </form>
             <form method="post" action={`${base}/leave`}>
               <button class="btn small ghost danger-btn" type="submit" disabled={lastAdmin}
@@ -2273,11 +2388,10 @@ app.post('/inbox/:addr/leave', async (c) => {
 
 // avatar images, visible to fellow members of any shared collective
 app.get('/avatar/:id', async (c) => {
-  const email = c.get('email')
-  if (!email) return c.notFound()
+  if (c.get('accounts').length === 0) return c.notFound()
   const target = await getMember(Number(c.req.param('id')))
   if (!target?.avatar_path) return c.notFound()
-  if (!(await getMemberIn(target.collective_id, email)) && !isPlatformAdmin(email)) return c.notFound()
+  if (!(await memberAmongAccounts(c, target.collective_id)) && !platformAdminAccount(c)) return c.notFound()
   const content = await readBlob(target.avatar_path)
   if (!content) return c.notFound()
   const ext = target.avatar_path.split('.').pop()?.toLowerCase() || ''
@@ -3135,11 +3249,10 @@ app.post('/claim/oc-verify', async (c) => {
 
 /** Activation page for a reserved (pending/applied) address. */
 app.get('/claim/:slug', async (c) => {
-  const email = c.get('email')
   const slug = c.req.param('slug')
-  if (!email) return c.redirect('/login?next=' + encodeURIComponent(`/claim/${slug}`))
+  if (c.get('accounts').length === 0) return c.redirect('/login?next=' + encodeURIComponent(`/claim/${slug}`))
   const collective = await getCollectiveBySlug(slug)
-  const member = collective ? await getMemberIn(collective.id, email) : undefined
+  const member = collective ? await memberAmongAccounts(c, collective.id) : undefined
   if (!collective || !member) return c.notFound()
   if (collective.status === 'active') return c.redirect(`/inbox/${slug}`)
   const currency = visitorCurrency(c) === 'EUR' ? 'eur' : 'usd'
@@ -3190,11 +3303,10 @@ app.get('/claim/:slug', async (c) => {
 })
 
 async function pendingClaim(c: Context<Env>): Promise<{ collective: Collective; member: Member } | Response> {
-  const email = c.get('email')
   const slug = c.req.param('slug') || ''
-  if (!email) return c.redirect('/login?next=' + encodeURIComponent(`/claim/${slug}`))
+  if (c.get('accounts').length === 0) return c.redirect('/login?next=' + encodeURIComponent(`/claim/${slug}`))
   const collective = await getCollectiveBySlug(slug)
-  const member = collective ? await getMemberIn(collective.id, email) : undefined
+  const member = collective ? await memberAmongAccounts(c, collective.id) : undefined
   if (!collective || !member || !['pending', 'applied'].includes(collective.status)) return c.notFound()
   return { collective, member }
 }
@@ -3253,11 +3365,10 @@ app.post('/claim/:slug/trial', async (c) => {
 
 /** Step 3 — the address works; now bring the rest of the collective in. */
 app.get('/claim/:slug/invite', async (c) => {
-  const email = c.get('email')
   const slug = c.req.param('slug')
-  if (!email) return c.redirect('/login?next=' + encodeURIComponent(`/claim/${slug}/invite`))
+  if (c.get('accounts').length === 0) return c.redirect('/login?next=' + encodeURIComponent(`/claim/${slug}/invite`))
   const collective = await getCollectiveBySlug(slug)
-  const member = collective ? await getMemberIn(collective.id, email) : undefined
+  const member = collective ? await memberAmongAccounts(c, collective.id) : undefined
   if (!collective || !member || member.role !== 'admin') return c.notFound()
 
   let invite = await get<Invite>(

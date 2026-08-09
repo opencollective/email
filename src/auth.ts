@@ -1,5 +1,5 @@
 import { cfg } from './config.js'
-import { get, run } from './db.js'
+import { all, get, run } from './db.js'
 import { now, randomCode, randomToken, sha256 } from './util.js'
 import { sendLoginCode } from './notify.js'
 
@@ -85,6 +85,31 @@ export async function emailFromSession(token: string | undefined): Promise<strin
   const s = await get<{ email: string; expires_at: number }>('SELECT email, expires_at FROM sessions WHERE token = ?', [token])
   if (!s || s.expires_at < now()) return null
   return s.email
+}
+
+/** One signed-in identity. The cookie can hold several — Google-style — so
+ *  nobody ever has to sign out of one address to act as another. */
+export interface Account { token: string; email: string }
+
+/** Resolve every session in the cookie (tokens joined by '.'; a legacy cookie
+ *  is just the one-token case). Order is cookie order, oldest first; expired
+ *  or unknown tokens drop out silently; one row per email. */
+export async function accountsFromCookie(raw: string | undefined): Promise<Account[]> {
+  if (!raw) return []
+  const tokens = raw.split('.').filter((t) => /^[A-Za-z0-9_-]{20,64}$/.test(t)).slice(0, 8)
+  if (tokens.length === 0) return []
+  const rows = await all<{ token: string; email: string; expires_at: number }>(
+    `SELECT token, email, expires_at FROM sessions WHERE token IN (${tokens.map(() => '?').join(',')})`, tokens)
+  const alive = new Map(rows.filter((r) => r.expires_at >= now()).map((r) => [r.token, r.email]))
+  const seen = new Set<string>()
+  const out: Account[] = []
+  for (const token of tokens) {
+    const email = alive.get(token)
+    if (!email || seen.has(email)) continue
+    seen.add(email)
+    out.push({ token, email })
+  }
+  return out
 }
 
 export const destroySession = (token: string) => run('DELETE FROM sessions WHERE token = ?', [token])
