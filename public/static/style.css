@@ -97,6 +97,10 @@ small { color: var(--muted); }
 }
 .btn.ghost { background: transparent; color: var(--ink); border-color: var(--line); font-weight: 500; }
 .btn.small { padding: 6px 14px; font-size: 13.5px; }
+/* .danger-btn only recolours text + border, which reads as red-on-accent when
+   it is the solid primary. Paper (not white) keeps contrast in both themes.
+   Declared before :disabled so a disabled danger button still looks disabled. */
+.btn.danger-btn:not(.ghost) { background: var(--danger); border-color: var(--danger); color: var(--paper); }
 /* A disabled button must not read as the thing to press — full accent blue on
    an unavailable address invites the tap it is refusing. `.busy` keeps its own
    faded-accent look while a submit is in flight. */
@@ -782,3 +786,12 @@ iframe.msg-frame {
 .mute-row:last-of-type { border-bottom: none; }
 .mute-addr { font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
 .mute-row form, .mute-row button { margin-left: auto; }
+
+/* opt-in: keep the old address receiving after a rename */
+.keep-old {
+  display: flex; gap: 9px; align-items: flex-start; font-size: 13px; line-height: 1.45;
+  border: 1.5px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 2px 0 4px;
+  cursor: pointer;
+}
+.keep-old input { margin-top: 2px; flex: none; }
+.keep-old small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }

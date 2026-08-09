@@ -21,6 +21,7 @@ const SCHEMA = [
     comped INTEGER NOT NULL DEFAULT 0,
     referred_by INTEGER,
     activated_at INTEGER,
+    slug_changed_at INTEGER,
     created_at INTEGER NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS members (
@@ -185,9 +186,10 @@ const SCHEMA = [
     created_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_credits_collective ON credits_ledger(collective_id)`,
-  // Every address a collective has ever had. Kept forever: mail sent to the old
-  // one still has to arrive, and nobody else may claim it afterwards — a
-  // reassigned address would deliver a stranger's mail to the wrong inbox.
+  // Former addresses a collective chose to keep receiving at. Opt-in, because
+  // a kept address is one no other collective can ever have. While it is here
+  // it delivers to them and nobody else may claim it — a reassigned address
+  // would drop a stranger's mail into the wrong inbox.
   `CREATE TABLE IF NOT EXISTS former_slugs (
     slug TEXT PRIMARY KEY,
     collective_id INTEGER NOT NULL,
@@ -237,6 +239,7 @@ function init(): Promise<void> {
       'ALTER TABLE threads ADD COLUMN cc_json TEXT',
       "ALTER TABLE reply_tokens ADD COLUMN kind TEXT NOT NULL DEFAULT 'reply'",
       'ALTER TABLE reply_tokens ADD COLUMN author_member_id INTEGER',
+      'ALTER TABLE collectives ADD COLUMN slug_changed_at INTEGER',
     ]
     ready = db.batch(SCHEMA, 'write')
       // additive migrations for pre-existing tables; ignore "duplicate column"
@@ -317,6 +320,7 @@ export interface Collective {
   comped?: number | null
   referred_by?: number | null
   activated_at?: number | null
+  slug_changed_at?: number | null
   created_at: number
   contribution_offer?: string | null
   custom_domain?: string | null
@@ -434,15 +438,33 @@ export async function slugTakenByOther(slug: string, collectiveId?: number): Pro
 }
 
 /** Move a collective to a new address, remembering the old one. */
-export async function renameCollectiveSlug(collective: Collective, newSlug: string): Promise<void> {
+/** Move a collective to a new address.
+ *
+ *  `keepOld` decides what happens to the address being left behind. Kept, it
+ *  goes on delivering here forever and nobody else may ever claim it. Released,
+ *  it is free again immediately — which is the default, because an address held
+ *  "just in case" is an address no other collective can have. */
+export async function renameCollectiveSlug(collective: Collective, newSlug: string, keepOld: boolean): Promise<void> {
   const clean = newSlug.toLowerCase().trim()
   if (clean === collective.slug) return
-  await run('INSERT OR IGNORE INTO former_slugs (slug, collective_id, created_at) VALUES (?, ?, ?)',
-    [collective.slug, collective.id, now()])
+  if (keepOld) {
+    await run('INSERT OR IGNORE INTO former_slugs (slug, collective_id, created_at) VALUES (?, ?, ?)',
+      [collective.slug, collective.id, now()])
+  }
   // moving back to a name we used before: it stops being "former"
   await run('DELETE FROM former_slugs WHERE slug = ? AND collective_id = ?', [clean, collective.id])
-  await run('UPDATE collectives SET slug = ? WHERE id = ?', [clean, collective.id])
+  await run('UPDATE collectives SET slug = ?, slug_changed_at = ? WHERE id = ?', [clean, now(), collective.id])
 }
+
+/** Stop holding a former address, freeing it for anyone else. */
+export const releaseFormerSlug = (collectiveId: number, slug: string) =>
+  run('DELETE FROM former_slugs WHERE collective_id = ? AND slug = ?', [collectiveId, slug.toLowerCase().trim()])
+
+/** An address may be changed once a week — rare enough to be worth thinking
+ *  about, and it caps how fast one collective can accumulate names. */
+export const SLUG_CHANGE_INTERVAL = 7 * 86400
+export const slugChangeAllowedAt = (c: Collective): number =>
+  c.slug_changed_at ? c.slug_changed_at + SLUG_CHANGE_INTERVAL : 0
 
 export const formerSlugsOf = (collectiveId: number) =>
   all<{ slug: string; created_at: number }>(

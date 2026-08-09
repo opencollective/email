@@ -352,15 +352,23 @@ test('renaming is refused for empty names and for non-admins', async () => {
 
 // ---------- changing the address ----------
 
-const rename = (slug: string, sid: string, to: string, confirm: string) =>
+const rename = (slug: string, sid: string, to: string, confirm: string, keepOld = true) =>
   app.request(`/inbox/${slug}/settings/address`, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: `requests_sid=${sid}` },
-    body: new URLSearchParams({ slug: to, confirm }),
+    body: new URLSearchParams(keepOld ? { slug: to, confirm, keep_old: '1' } : { slug: to, confirm }),
   })
 
-test('changing the address keeps the old one working, and retires it for good', async () => {
+/** A collective only counts as "in use" once something has actually arrived. */
+async function receiveMail(collectiveId: number, threadId: number) {
+  await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_email, to_json, body_text, sent_at, created_at)
+    VALUES (?, ?, 'inbound', 'outsider@example.org', '[]', 'hello', ?, ?)`,
+    [threadId, `<in-${uniq()}@example.org>`, now(), now()])
+}
+
+test('keeping the old address works, and retires it for as long as it is kept', async () => {
   const fx = await fixture()
+  await receiveMail(fx.collective.id, fx.threadId) // a used inbox
   const oldSlug = fx.slug
   const newSlug = `moved${uniq()}`
 
@@ -396,6 +404,7 @@ test('changing the address keeps the old one working, and retires it for good', 
 
 test('the address only changes when the confirmation matches', async () => {
   const fx = await fixture()
+  await receiveMail(fx.collective.id, fx.threadId)
   const res = await rename(fx.slug, fx.sid, `other${uniq()}`, 'not-the-address@collective.email')
   assert.match(decodeURIComponent(res.headers.get('location')!), /confirmation didn't match/)
   assert.equal((await get<{ slug: string }>('SELECT slug FROM collectives WHERE id = ?', [fx.collective.id]))!.slug, fx.slug)
@@ -412,4 +421,86 @@ test('the address cannot be moved onto a taken or invalid one, or by a non-admin
   const memberSid = await createSession(fx.target.email) // not an admin
   await rename(fx.slug, memberSid, `hostile${uniq()}`, confirm)
   assert.equal((await get<{ slug: string }>('SELECT slug FROM collectives WHERE id = ?', [fx.collective.id]))!.slug, fx.slug)
+})
+
+test('keeping the old address is opt-in — by default it is released', async () => {
+  const fx = await fixture()
+  await receiveMail(fx.collective.id, fx.threadId)
+  const oldSlug = fx.slug
+  const newSlug = `left${uniq()}`
+
+  const res = await rename(oldSlug, fx.sid, newSlug, `${oldSlug}@collective.email`, false)
+  assert.equal(res.status, 302)
+  assert.match(decodeURIComponent(res.headers.get('location')!), /is no longer yours/)
+
+  assert.equal((await all('SELECT slug FROM former_slugs WHERE collective_id = ?', [fx.collective.id])).length, 0,
+    'nothing is being held')
+  assert.equal(await slugAvailability(oldSlug), null, 'the old address is free for someone else')
+})
+
+test('an address can only be changed once a week', async () => {
+  const fx = await fixture()
+  await receiveMail(fx.collective.id, fx.threadId)
+  const second = `again${uniq()}`
+  const first = `first${uniq()}`
+
+  await rename(fx.slug, fx.sid, first, `${fx.slug}@collective.email`, false)
+  const tooSoon = await rename(first, fx.sid, second, `${first}@collective.email`, false)
+  assert.match(decodeURIComponent(tooSoon.headers.get('location')!), /once a week/)
+  assert.equal((await get<{ slug: string }>('SELECT slug FROM collectives WHERE id = ?', [fx.collective.id]))!.slug, first)
+
+  // a week later it is allowed again
+  await run('UPDATE collectives SET slug_changed_at = ? WHERE id = ?', [now() - 8 * 86400, fx.collective.id])
+  await rename(first, fx.sid, second, `${first}@collective.email`, false)
+  assert.equal((await get<{ slug: string }>('SELECT slug FROM collectives WHERE id = ?', [fx.collective.id]))!.slug, second)
+})
+
+test('a never-used inbox renames without the warnings or the typed confirmation', async () => {
+  const fx = await fixture() // no inbound mail
+  const page = await (await app.request(`/inbox/${fx.slug}/settings`, { headers: { cookie: `requests_sid=${fx.sid}` } })).text()
+  assert.match(page, /Nobody has written to/, 'the short version')
+  assert.doesNotMatch(page, /mailing lists, forwarding rules/, 'not the full consequence list')
+  assert.doesNotMatch(page, /Keep receiving mail sent to/, 'nothing to forward')
+
+  // and it goes through with no confirm field at all
+  const newSlug = `fresh${uniq()}`
+  const res = await app.request(`/inbox/${fx.slug}/settings/address`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: `requests_sid=${fx.sid}` },
+    body: new URLSearchParams({ slug: newSlug }),
+  })
+  assert.equal(res.status, 302)
+  assert.equal((await get<{ slug: string }>('SELECT slug FROM collectives WHERE id = ?', [fx.collective.id]))!.slug, newSlug)
+  assert.equal((await all('SELECT slug FROM former_slugs WHERE collective_id = ?', [fx.collective.id])).length, 0)
+})
+
+test('a used inbox still shows the warnings and demands the typed confirmation', async () => {
+  const fx = await fixture()
+  await receiveMail(fx.collective.id, fx.threadId)
+  const page = await (await app.request(`/inbox/${fx.slug}/settings`, { headers: { cookie: `requests_sid=${fx.sid}` } })).text()
+  assert.match(page, /mailing lists, forwarding rules/)
+  assert.match(page, /Keep receiving mail sent to/)
+
+  const res = await app.request(`/inbox/${fx.slug}/settings/address`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: `requests_sid=${fx.sid}` },
+    body: new URLSearchParams({ slug: `nope${uniq()}` }), // no confirm
+  })
+  assert.match(decodeURIComponent(res.headers.get('location')!), /confirmation didn't match/)
+})
+
+test('a kept address can be released again, freeing it for others', async () => {
+  const fx = await fixture()
+  await receiveMail(fx.collective.id, fx.threadId)
+  const oldSlug = fx.slug
+  const newSlug = `kept${uniq()}`
+  await rename(oldSlug, fx.sid, newSlug, `${oldSlug}@collective.email`, true)
+  assert.match((await slugAvailability(oldSlug))!, /already taken/)
+
+  await app.request(`/inbox/${newSlug}/settings/address/release`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: `requests_sid=${fx.sid}` },
+    body: new URLSearchParams({ slug: oldSlug }),
+  })
+  assert.equal(await slugAvailability(oldSlug), null, 'released back to the pool')
 })
