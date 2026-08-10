@@ -251,7 +251,7 @@ small { color: var(--muted); }
 .main { min-width: 0; }
 a.org { text-decoration: none; }
 .org-wrap { position: relative; }
-.org .org-caret { margin-left: auto; color: var(--muted); font-size: 13px; align-self: center; }
+.org .org-caret { margin-left: auto; margin-right: 6px; color: var(--muted); font-size: 13px; align-self: center; }
 a.org:hover .org-caret { color: var(--ink); }
 .org-menu {
   position: absolute; top: calc(100% - 8px); left: 0; right: 0; z-index: 30;
