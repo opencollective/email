@@ -1380,10 +1380,36 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
           <div class="thread-top">
             <h1>{thread.subject}</h1>
             <StatusChip status={thread.status} />
-            {rule?.close && !thread.assignee_member_id
-              ? <span class="chip" title={`Filed by ${rule.tag ? `the #${rule.tag}` : 'a'} rule — no assignment needed`}>⚡ auto-filed</span>
-              : <AssigneeChip thread={thread} members={members} />}
-            {tags.map((tg) => <span class="chip">#{tg.name}</span>)}
+          </div>
+          <div class="thread-sub">
+            {rule?.close && !thread.assignee_member_id ? (
+              <span class="chip" title={`Filed by ${rule.tag ? `the #${rule.tag}` : 'a'} rule — no assignment needed`}>⚡ auto-filed</span>
+            ) : member.role === 'reader' ? (
+              <AssigneeChip thread={thread} members={members} />
+            ) : (
+              // one tap to the one-click assignment picker (sheet on mobile)
+              <button class={`chip assign-btn ${assignee ? 'assignee' : 'unassigned'}`} type="button" data-dialog="#assign-modal"
+                title="Change who has this">
+                {assignee ? <><Avatar member={assignee} /> {memberName(assignee)}</> : '⚠ unassigned'} <span class="caret">▾</span>
+              </button>
+            )}
+            {member.role === 'reader'
+              ? tags.map((tg) => <span class="chip">#{tg.name}</span>)
+              : tags.map((tg) => (
+                <form method="post" action={`${base}/thread/${thread.id}/tags/remove`} class="inline">
+                  <input type="hidden" name="tag_id" value={String(tg.id)} />
+                  <button class="chip removable" type="submit" title="Remove tag">#{tg.name} ×</button>
+                </form>
+              ))}
+            {member.role !== 'reader' ? (
+              <details class="tag-add">
+                <summary class="chip" title="Add a tag">+ tag</summary>
+                <form method="post" action={`${base}/thread/${thread.id}/tags`} class="tag-pop">
+                  <input class="input small" name="name" placeholder="add-a-tag" autocomplete="off" />
+                  <button class="btn small ghost" type="submit">Add</button>
+                </form>
+              </details>
+            ) : null}
           </div>
 
           <div class="tl">
@@ -1626,46 +1652,104 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             </form>
           </div>
           )}
+
+          <div class="thread-actions">
+            {thread.status === 'closed' || thread.status === 'spam' ? (
+              <form method="post" action={`${base}/thread/${thread.id}/status`}>
+                <input type="hidden" name="status" value="needs_reply" />
+                <button class="btn small ghost" type="submit">↩ Reopen this thread</button>
+              </form>
+            ) : (<>
+              <form method="post" action={`${base}/thread/${thread.id}/status`}>
+                <input type="hidden" name="status" value="closed" />
+                <button class="btn small ghost" type="submit">✓ Close thread</button>
+              </form>
+              <form method="post" action={`${base}/thread/${thread.id}/status`}>
+                <input type="hidden" name="status" value="spam" />
+                <button class="linkish spam-link" type="submit" data-confirm="Mark this thread as spam?">mark as spam</button>
+              </form>
+            </>)}
+          </div>
+
+          {member.role !== 'reader' ? (
+            <dialog id="assign-modal" class="modal assign-modal">
+              <h2>Who has this?</h2>
+              {assignee && lastAssignEvent ? (
+                <p class="fineprint">{eventText(lastAssignEvent, members)} · {relTime(lastAssignEvent.created_at)}</p>
+              ) : null}
+              <div class="assign-list">
+                {[member, ...activeList.filter((m) => m.id !== member.id)].map((m) => (
+                  <form method="post" action={`${base}/thread/${thread.id}/assign`}>
+                    <input type="hidden" name="member_id" value={String(m.id)} />
+                    <button class={`assign-row ${m.id === thread.assignee_member_id ? 'on' : ''}`} type="submit">
+                      <Avatar member={m} />
+                      <span>{memberName(m)}{m.id === member.id ? ' (you)' : ''}</span>
+                      {m.id === thread.assignee_member_id ? <span class="tick">✓</span> : null}
+                    </button>
+                  </form>
+                ))}
+                {assignee ? (
+                  <form method="post" action={`${base}/thread/${thread.id}/assign`}>
+                    <input type="hidden" name="member_id" value="" />
+                    <button class="assign-row unassign" type="submit"><span class="avatar empty">–</span><span>Unassign</span></button>
+                  </form>
+                ) : null}
+              </div>
+              <div class="btn-row"><button class="btn ghost" type="button" data-close>Cancel</button></div>
+            </dialog>
+          ) : null}
         </div>
 
         <aside class="thread-side">
-          <div class="side-block">
-            <span class="label">Assignment</span>
-            {assignee ? (
-              <div class="assign-state assigned">
-                <Avatar member={assignee} /> <b>{memberName(assignee)}</b>
-                {lastAssignEvent ? <small>{eventText(lastAssignEvent, members)} · {relTime(lastAssignEvent.created_at)}</small> : null}
-              </div>
-            ) : rule?.close ? (
-              <p class="fineprint">Filed automatically by {rule.tag ? `the ⚡ #${rule.tag}` : 'a ⚡'} rule — no assignment needed.</p>
-            ) : (
-              <div class="assign-state unassigned-box">
-                <b>⚠ Nobody has this yet</b>
-                {member.role !== 'reader' ? (
-                <form method="post" action={`${base}/thread/${thread.id}/assign`}>
-                  <input type="hidden" name="member_id" value={String(member.id)} />
-                  <button class="btn small" type="submit">🙋 Claim it</button>
-                </form>
-                ) : null}
-              </div>
-            )}
-            {member.role !== 'reader' ? (
-            <form method="post" action={`${base}/thread/${thread.id}/assign`} class="assign-form">
-              <select name="member_id">
-                <option value="">— Unassigned —</option>
-                {activeList.map((m) => (
-                  <option value={String(m.id)} selected={m.id === thread.assignee_member_id}>
-                    {memberName(m)}{m.id === member.id ? ' (you)' : ''}
-                  </option>
-                ))}
-              </select>
-              <button class="btn small ghost" type="submit">{assignee ? 'Reassign' : 'Assign'}</button>
-            </form>
-            ) : null}
+
+          {/* the sidebar is a briefing now: what to do, who it's with, where it
+              stands — the controls all live on the thread itself */}
+          <div class="side-block next-block">
+            <span class="label">Next</span>
+            {(() => {
+              const waiting = waitingFor(thread.last_message_at)
+              if (thread.status === 'draft') return <p class="next-text">✎ Finish the draft and send it{thread.counterpart_email ? ` to ${counterpartFirst}` : ''}.</p>
+              if (thread.status === 'spam') return <p class="next-text">🚫 Marked as spam — nothing to do.</p>
+              if (thread.status === 'closed') return <p class="next-text">✓ Closed — nothing to do.</p>
+              if (thread.status === 'answered') return <p class="next-text">⏳ Waiting on {counterpartFirst} to answer — you're up to date.</p>
+              if (!assignee) return (
+                <>
+                  <p class="next-text next-warn">⚠ Reply to {counterpartFirst} — waiting {waiting}. Nobody has this yet.</p>
+                  {member.role !== 'reader' ? (
+                    <form method="post" action={`${base}/thread/${thread.id}/assign`}>
+                      <input type="hidden" name="member_id" value={String(member.id)} />
+                      <button class="btn small" type="submit">🙋 I'll take it</button>
+                    </form>
+                  ) : null}
+                </>
+              )
+              if (assignee.id === member.id) return (
+                <>
+                  <p class="next-text">🙋 Assigned to you — reply to {counterpartFirst}. Waiting {waiting}.</p>
+                  <a class="btn small" href="#composer">Reply →</a>
+                </>
+              )
+              return <p class="next-text">⏳ {memberName(assignee)} has this — waiting {waiting}.</p>
+            })()}
           </div>
 
+          {thread.counterpart_email ? (
+            <div class="side-block sender-card">
+              <span class="label">Sender</span>
+              <a class="sc-id" href={contactUrl(base, thread.counterpart_email)} title="All conversations with this sender">
+                <span class="avatar">{initials(thread.counterpart_name || '', thread.counterpart_email)}</span>
+                <span class="sc-who"><b>{thread.counterpart_name || thread.counterpart_email.split('@')[0]}</b><small>{thread.counterpart_email}</small></span>
+              </a>
+              <p class="fineprint"><a href={contactUrl(base, thread.counterpart_email)}>{otherCount + 1} conversation{otherCount ? 's' : ''} with {counterpartFirst} →</a></p>
+            </div>
+          ) : null}
+
           <div class="side-block">
-            <span class="label">People</span>
+            <span class="label">Thread</span>
+            <p class="fineprint thread-brief">
+              {shortDate(thread.first_message_at)}{shortDate(thread.last_message_at) !== shortDate(thread.first_message_at) ? ` → ${shortDate(thread.last_message_at)}` : ''}
+              {' '}· {msgs.length} message{msgs.length === 1 ? '' : 's'}{notes.length ? ` · ${notes.length} note${notes.length === 1 ? '' : 's'}` : ''}
+            </p>
             <div class="ppl">
               {activeList.map((m) => {
                 const r = reads.find((x) => x.member_id === m.id)
@@ -1684,40 +1768,29 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             </div>
           </div>
 
-          <div class="side-block">
-            <span class="label">Details</span>
-            <span class="kv"><span class="k">STATUS</span> <StatusChip status={thread.status} /></span>
-            <span class="kv"><span class="k">FROM</span> {thread.counterpart_email
-              ? <a href={contactUrl(base, thread.counterpart_email)} title={otherCount > 0 ? `${otherCount} other thread${otherCount === 1 ? '' : 's'} with this sender` : 'All conversations with this sender'}>{thread.counterpart_email}</a>
-              : '—'}</span>
-            <span class="kv"><span class="k">FIRST</span> {fmtDateTime(thread.first_message_at)}</span>
-            <span class="kv"><span class="k">LAST</span> <TimeAgo ts={thread.last_message_at} /></span>
-            {thread.status === 'needs_reply' ? <span class="kv"><span class="k">WAITING</span> <b>{waitingFor(thread.last_message_at)}</b></span> : null}
-          </div>
-
-          {member.role !== 'reader' ? (<>
-          <div class="side-block">
-            <span class="label">Tags</span>
-            <div class="tag-list">
-              {tags.map((tg) => (
-                <form method="post" action={`${base}/thread/${thread.id}/tags/remove`} class="inline">
-                  <input type="hidden" name="tag_id" value={String(tg.id)} />
-                  <button class="chip removable" type="submit" title="Remove tag">#{tg.name} ×</button>
-                </form>
-              ))}
+          {thread.counterpart_email && otherThreads.length ? (
+            <div class="side-block">
+              <span class="label">Other threads with {counterpartFirst}</span>
+              <div class="side-threads">
+                {otherThreads.map((o) => (
+                  <a class="side-thread" href={`${base}/thread/${o.id}`}>
+                    <span class={`dot ${o.status === 'needs_reply' ? 'open' : 'done'}`} />
+                    <span class="st-subj">{o.subject}</span>
+                    <small>{shortDate(o.last_message_at)}</small>
+                  </a>
+                ))}
+              </div>
+              <p class="fineprint"><a href={contactUrl(base, thread.counterpart_email)}>All conversations with {counterpartFirst} →</a></p>
             </div>
-            <form method="post" action={`${base}/thread/${thread.id}/tags`} class="assign-form">
-              <input class="input small" name="name" placeholder="add-a-tag" />
-              <button class="btn small ghost" type="submit">Add</button>
-            </form>
-            {member.role === 'admin' ? (
-              rule ? (
+          ) : null}
+                  {member.role === 'admin' ? (
+            <div class="side-block">
+              {rule ? (
                 <p class="fineprint">⚡ A rule already matches this thread ({describeRule(rule).when}). <a href={`${base}/rules`}>Manage rules</a></p>
               ) : thread.counterpart_email ? (
                 <details class="rule-reveal">
-                  <summary>You can also create a rule for similar messages</summary>
+                  <summary>Create a rule for similar messages</summary>
                   {(() => {
-                    // keep the subject's case; just drop reply/forward prefixes
                     const bareSubject = thread.subject.replace(/^\s*((re|fwd?|aw)\s*:\s*)+/i, '').trim()
                     return (
                       <form method="get" action={`${base}/rules`} class="rule-similar">
@@ -1735,46 +1808,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                     )
                   })()}
                 </details>
-              ) : null
-            ) : null}
-          </div>
-
-          <div class="side-block">
-            <span class="label">Actions</span>
-            <div class="btn-row">
-              {thread.status === 'closed' || thread.status === 'spam' ? (
-                <form method="post" action={`${base}/thread/${thread.id}/status`}>
-                  <input type="hidden" name="status" value="needs_reply" />
-                  <button class="btn small ghost" type="submit">↩ Reopen</button>
-                </form>
-              ) : (
-                <>
-                  <form method="post" action={`${base}/thread/${thread.id}/status`}>
-                    <input type="hidden" name="status" value="closed" />
-                    <button class="btn small ghost" type="submit">✓ Close thread</button>
-                  </form>
-                  <form method="post" action={`${base}/thread/${thread.id}/status`}>
-                    <input type="hidden" name="status" value="spam" />
-                    <button class="btn small ghost" type="submit">🚫 Mark spam</button>
-                  </form>
-                </>
-              )}
-            </div>
-          </div>
-          </>) : null}
-          {thread.counterpart_email && otherThreads.length ? (
-            <div class="side-block">
-              <span class="label">Other threads with {counterpartFirst}</span>
-              <div class="side-threads">
-                {otherThreads.map((o) => (
-                  <a class="side-thread" href={`${base}/thread/${o.id}`}>
-                    <span class={`dot ${o.status === 'needs_reply' ? 'open' : 'done'}`} />
-                    <span class="st-subj">{o.subject}</span>
-                    <small>{shortDate(o.last_message_at)}</small>
-                  </a>
-                ))}
-              </div>
-              <p class="fineprint"><a href={contactUrl(base, thread.counterpart_email)}>All conversations with {counterpartFirst} →</a></p>
+              ) : null}
             </div>
           ) : null}
         </aside>

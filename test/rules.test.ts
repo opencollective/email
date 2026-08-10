@@ -196,7 +196,7 @@ test('thread sidebar reveals "create a rule for similar messages"; editor pre-fi
 
   const page = await app.request(`/inbox/${col.slug}/thread/${thread.id}`, { headers: { cookie: `requests_sid=${sid}` } })
   const html = await page.text()
-  assert.match(html, /create a rule for similar messages/)
+  assert.match(html, /Create a rule for similar messages/)
   assert.match(html, /name="from" value="noreply@luma.test"/)
   assert.match(html, /name="subject" value="Event Submitted to the Calendar"/, 'Re: is stripped for the subject criterion')
 
