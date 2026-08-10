@@ -995,3 +995,6 @@ iframe.msg-frame {
 .new-thread-row .nt-plus { grid-area: dot; color: var(--accent); font-weight: 700; text-align: center; font-size: 15px; line-height: 1; align-self: center; }
 .new-thread-row .nt-label { color: var(--muted); }
 .new-thread-row:hover .nt-label { color: var(--accent); }
+
+/* profile: sign-out is a quiet centered footnote */
+.signout-foot { text-align: center; margin: 18px 0 8px; }

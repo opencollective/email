@@ -2816,12 +2816,12 @@ app.get('/inbox/:addr/profile', async (c) => {
           </form>
         </section>
         <section class="card">
-          <div class="btn-row profile-exit">
-            <form method="post" action="/logout">
-              {/* this account only — any other signed-in account stays */}
-              <input type="hidden" name="email" value={member.email} />
-              <button class="btn small ghost" type="submit">Sign out {member.email}</button>
-            </form>
+        </section>
+
+        <section class="card">
+          <h2>Your membership in {collective.name}</h2>
+          <p class="muted">You're a {ROLE_LABELS[member.role]} here. Leaving removes your access to {collective.slug}@{cfg.emailDomain} until someone invites you back — the collective's mail stays untouched.</p>
+          <div class="btn-row">
             <form method="post" action={`${base}/leave`}>
               <button class="btn small ghost danger-btn" type="submit" disabled={lastAdmin}
                 data-confirm={`Leave ${collective.name}? You'll lose access to ${collective.slug}@${cfg.emailDomain} until someone invites you back.`}>
@@ -2831,6 +2831,12 @@ app.get('/inbox/:addr/profile', async (c) => {
           </div>
           {lastAdmin ? <p class="fineprint">You're the last admin — make another member admin before leaving.</p> : null}
         </section>
+
+        {/* signing out is an afterthought, not an action the page is about */}
+        <form method="post" action="/logout" class="signout-foot">
+          <input type="hidden" name="email" value={member.email} />
+          <button class="linkish" type="submit" data-confirm={`Sign out ${member.email}?`}>Sign out {member.email}</button>
+        </form>
       </div>
     </Shell>,
   )
