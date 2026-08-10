@@ -1091,6 +1091,46 @@ app.get('/inbox/:addr', async (c) => {
   )
 })
 
+/** Set (or clear) who new threads from this contact auto-assign to. Backed by
+ *  the rules engine: a from-only, assign-only rule (no tag, never closes). */
+app.post('/inbox/:addr/contact/:email/auto-assign', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const base = `/inbox/${t.collective.slug}`
+  if (t.member.role !== 'admin') return c.redirect(base)
+  const email = decodeURIComponent(c.req.param('email') || '').toLowerCase().trim()
+  const back = `${base}/contact/${encodeURIComponent(email)}`
+  if (!email.includes('@')) return c.redirect(base)
+  const body = await c.req.parseBody()
+  const memberId = Number(body.member_id) || null
+
+  const existing = await get<{ id: number }>(
+    "SELECT id FROM rules WHERE collective_id = ? AND lower(match_from) = ? AND (match_subject IS NULL OR match_subject = '') AND assign_member_id IS NOT NULL ORDER BY id DESC LIMIT 1",
+    [t.collective.id, email])
+  if (!memberId) {
+    if (existing) await deleteRule(t.collective.id, existing.id)
+    return c.redirect(`${back}?m=` + encodeURIComponent('New threads from this contact are no longer auto-assigned.'))
+  }
+  // reuse createRule so the change also applies to any open, unassigned threads
+  await createRule(t.collective, { from: email, assignMemberId: memberId, close: false }, t.member.id)
+  const m = await getMember(memberId)
+  return c.redirect(`${back}?m=` + encodeURIComponent(`New threads from this contact will be assigned to ${m ? memberName(m) : 'them'}.`))
+})
+
+/** Threads where an address is the counterpart OR appears in any message's
+ *  from / to / cc — so "with Marie" includes the ones she was only copied on.
+ *  Matches the quoted address inside the JSON arrays, lowercased both sides. */
+async function threadsInvolving(collectiveId: number, email: string, excludeId = 0): Promise<Thread[]> {
+  const like = `%"${email}"%`
+  return all<Thread>(
+    `SELECT DISTINCT t.* FROM threads t JOIN messages m ON m.thread_id = t.id
+     WHERE t.collective_id = ? AND t.status != 'spam' AND t.id != ?
+       AND (lower(t.counterpart_email) = ? OR lower(m.from_email) = ?
+            OR lower(m.to_json) LIKE ? OR lower(m.cc_json) LIKE ? OR lower(m.bcc_json) LIKE ?)
+     ORDER BY t.last_message_at DESC`,
+    [collectiveId, excludeId, email, email, like, like, like])
+}
+
 // ---------- the one way a thread appears in a list ----------
 
 /** Row-sized date: "9 Aug", year only when it isn't this one. */
@@ -1226,9 +1266,7 @@ app.get('/inbox/:addr/contact/:email', async (c) => {
   const rawBack = String(c.req.query('back') || '')
   const cameFrom = rawBack.startsWith(`${base}/`) ? rawBack : null
 
-  const threads = await all<Thread>(
-    "SELECT * FROM threads WHERE collective_id = ? AND lower(counterpart_email) = ? AND status != 'spam' ORDER BY last_message_at DESC",
-    [collective.id, email])
+  const threads = await threadsInvolving(collective.id, email)
   const members = await memberMap(collective.id)
   const [extras, seenAt] = await Promise.all([
     threadListExtras(threads.map((th) => th.id)),
@@ -1236,6 +1274,14 @@ app.get('/inbox/:addr/contact/:email', async (c) => {
   ])
   const name = threads.find((th) => th.counterpart_name)?.counterpart_name || email.split('@')[0]
   const open = threads.filter((th) => th.status === 'needs_reply').length
+  // whom new threads FROM this sender get auto-assigned to — a pure-assign rule
+  // (from = this address, no subject, not a close/tag rule)
+  const autoRule = await get<{ id: number; assign_member_id: number | null }>(
+    "SELECT id, assign_member_id FROM rules WHERE collective_id = ? AND lower(match_from) = ? AND (match_subject IS NULL OR match_subject = '') AND assign_member_id IS NOT NULL ORDER BY id DESC LIMIT 1",
+    [collective.id, email])
+  const autoAssignee = autoRule?.assign_member_id ? members.get(autoRule.assign_member_id) : undefined
+  const activeMembersOnly = [...members.values()].filter((m) => !m.removed_at).sort((a, b) => memberName(a).localeCompare(memberName(b)))
+  const signature = signatureFor(collective, member)
 
   return c.html(
     <Shell member={member} collective={collective} title={name} active="contacts" flash={c.req.query('m')}
@@ -1246,17 +1292,48 @@ app.get('/inbox/:addr/contact/:email', async (c) => {
           <div class="contact-id">
             <h1>{name}</h1>
             <p class="muted">{email} · {threads.length} conversation{threads.length === 1 ? '' : 's'}{open ? ` · ${open} waiting for a reply` : ''}</p>
+            <p class="fineprint auto-assign">
+              New threads auto-assigned to{' '}
+              {autoAssignee ? <b>{memberName(autoAssignee)}</b> : <span class="muted">nobody</span>}
+              {member.role === 'admin' ? (
+                <form method="post" action={`${base}/contact/${encodeURIComponent(email)}/auto-assign`} class="inline aa-form">
+                  <select name="member_id" class="input small" onchange="this.form.requestSubmit()">
+                    <option value="">— nobody —</option>
+                    {activeMembersOnly.map((m) => (
+                      <option value={String(m.id)} selected={m.id === autoRule?.assign_member_id}>{memberName(m)}</option>
+                    ))}
+                  </select>
+                  <noscript><button class="btn small ghost" type="submit">Set</button></noscript>
+                </form>
+              ) : null}
+            </p>
           </div>
-
         </div>
         <div class="rows">
-          {canSendRole(member.role) ? (
-            // where a new thread would land is where you start one
-            <a class="row no-sender new-thread-row" href={`${base}/compose?to=${encodeURIComponent(email)}`}>
-              <span class="nt-plus" aria-hidden="true">＋</span>
-              <span class="r-subj nt-label">Start a new thread with {name}…</span>
+          {canSendRole(member.role) ? (<>
+            {/* mobile: a drawer; desktop: link straight to the full composer */}
+            <a class="row no-sender new-thread-row" href={`${base}/compose?to=${encodeURIComponent(email)}`} data-sheet="#new-thread-sheet">
+              <span class="nt-plus" aria-hidden="true"><Icon name="pencil" /></span>
+              <span class="nt-label">Start a new thread with {name}…</span>
+              <small class="nt-tip">You can save it as a draft and share it with the collective before sending.</small>
             </a>
-          ) : null}
+            <dialog id="new-thread-sheet" class="modal sheet">
+              <h2>New thread to {name}</h2>
+              <form method="post" action={`${base}/compose`} class="modal-form nt-sheet-form">
+                <input type="hidden" name="to" value={email} />
+                <div class="c-row"><span class="c-k">To</span><span class="c-static">{email}</span></div>
+                <label class="lbl">Subject</label>
+                <input class="input" name="subject" maxlength={200} required />
+                <label class="lbl">Message</label>
+                <textarea name="body" rows={7}>{`\n\n${signature}`}</textarea>
+                <div class="btn-row">
+                  <button class="btn" type="submit" name="action" value="send" data-busy="Sending…">Send</button>
+                  <button class="btn ghost" type="submit" name="action" value="draft" data-busy="Saving…">Save as draft</button>
+                  <button class="btn ghost" type="button" data-close>Cancel</button>
+                </div>
+              </form>
+            </dialog>
+          </>) : null}
           {threads.length === 0 && !canSendRole(member.role) ? (
             <div class="empty-state">No conversations with {email} yet.</div>
           ) : threads.map((th) => (

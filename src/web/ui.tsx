@@ -39,8 +39,20 @@ document.addEventListener('click', (e) => {
   if (e.target.closest('[data-drawer]')) document.body.classList.toggle('drawer-open');
   const dlgBtn = e.target.closest('[data-dialog]');
   if (dlgBtn) document.querySelector(dlgBtn.getAttribute('data-dialog'))?.showModal();
+  // a link that also names a sheet: on a narrow screen open the sheet instead
+  // of navigating to the full page; on desktop let the link do its thing
+  const sheetLink = e.target.closest('[data-sheet]');
+  if (sheetLink && window.matchMedia('(max-width: 900px)').matches) {
+    e.preventDefault();
+    document.querySelector(sheetLink.getAttribute('data-sheet'))?.showModal();
+  }
   const closeBtn = e.target.closest('[data-close]');
   if (closeBtn) closeBtn.closest('dialog')?.close();
+  // click on a modal's backdrop (the dialog element itself) closes it
+  if (e.target.tagName === 'DIALOG' && e.target.open) {
+    const r = e.target.getBoundingClientRect();
+    if (e.clientY < r.top || e.clientY > r.bottom || e.clientX < r.left || e.clientX > r.right) e.target.close();
+  }
 });
 const wantedPane = new URLSearchParams(location.search).get('pane');
 if (wantedPane === 'note') document.querySelector('[data-tab="note"]')?.click();
@@ -281,7 +293,7 @@ export const Page: FC<{ title?: string; flash?: string; bundle?: string; childre
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=49" />
+      <link rel="stylesheet" href="/static/style.css?v=50" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script

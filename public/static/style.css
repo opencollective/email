@@ -875,11 +875,13 @@ iframe.msg-frame {
 .participants .avatar:first-child { margin-left: 0; }
 .age.dates { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; line-height: 1.3; }
 .age.dates .hot { color: var(--danger); font-weight: 700; font-size: 10px; }
-.contact-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.contact-head { display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap; }
 .contact-head .contact-avatar {
   width: 44px; height: 44px;
   min-width: 44px; max-width: 44px; min-height: 44px; max-height: 44px;
   font-size: 17px;
+  /* base .avatar self-centers; here it hangs off the name, not the whole block */
+  align-self: flex-start;
 }
 .contact-id { flex: 1; min-width: 200px; }
 .contact-id h1 { margin-bottom: 2px; }
@@ -924,8 +926,9 @@ iframe.msg-frame {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   padding: 10px 24px 12px; border-bottom: 1.5px solid var(--line-soft);
 }
-.thread-sub .chip, .thread-sub .assign-btn, .thread-sub .tag-add summary.chip {
-  height: 26px; display: inline-flex; align-items: center; box-sizing: border-box; margin: 0;
+.thread-sub > *, .thread-sub form, .thread-sub .inline { display: inline-flex; align-items: center; margin: 0; }
+.thread-sub .chip, .thread-sub .assign-btn, .thread-sub .tag-add summary.chip, .thread-sub .chip.removable {
+  height: 26px; display: inline-flex; align-items: center; box-sizing: border-box; margin: 0; line-height: 1;
 }
 /* who's in this thread, at a glance, above the chips */
 .head-people { display: flex; align-items: center; gap: 18px; padding: 8px 24px 0; }
@@ -1043,3 +1046,27 @@ iframe.msg-frame {
 .fwd summary:hover .ic, .fwd[open] summary .ic { color: var(--accent); }
 .next-text .ic { width: 14px; height: 14px; margin-right: 4px; color: var(--muted); }
 .next-text.next-warn .ic { color: var(--warn); }
+
+/* contact head: auto-assign line */
+.auto-assign { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.aa-form { display: inline-flex; align-items: center; gap: 6px; }
+.aa-form .input.small { padding: 3px 8px; font-size: 12px; max-width: 160px; }
+
+/* start-a-new-thread row: plus level with the label, tip on its own line */
+.row.new-thread-row {
+  grid-template-columns: 22px 1fr; grid-template-areas: "dot label" ". tip";
+  align-items: center; row-gap: 2px;
+}
+.new-thread-row .nt-plus { grid-area: dot; display: flex; align-items: center; justify-content: center; color: var(--accent); }
+.new-thread-row .nt-plus .ic { color: var(--accent); }
+.new-thread-row .nt-label { grid-area: label; color: var(--muted); }
+.new-thread-row:hover .nt-label { color: var(--accent); }
+.new-thread-row .nt-tip { grid-area: tip; font-size: 11px; color: var(--muted); }
+@media (max-width: 900px) { .new-thread-row .nt-tip { display: none; } }
+
+/* the new-thread sheet: centered modal on desktop, bottom drawer on mobile */
+.sheet .nt-sheet-form { display: grid; gap: 6px; }
+@media (max-width: 900px) {
+  .sheet { margin: auto 0 0; width: 100%; max-width: none; max-height: 88dvh;
+    border-radius: 16px 16px 0 0; border-bottom: none; }
+}
