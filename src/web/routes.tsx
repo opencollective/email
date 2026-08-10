@@ -1169,6 +1169,22 @@ app.get('/inbox/:addr/contact/:email', async (c) => {
     [collective.id, email])
   const lastMsgs = await lastMessageByThread(threads.map((th) => th.id))
   const members = await memberMap(collective.id)
+  // who of the collective took part in each thread: replies and internal notes
+  const participants = new Map<number, number[]>()
+  if (threads.length) {
+    const ids = threads.map((th) => th.id)
+    const ph = ids.map(() => '?').join(',')
+    const rows = await all<{ thread_id: number; mid: number }>(
+      `SELECT DISTINCT thread_id, sent_by_member_id AS mid FROM messages WHERE thread_id IN (${ph}) AND sent_by_member_id IS NOT NULL
+       UNION SELECT DISTINCT thread_id, member_id AS mid FROM notes WHERE thread_id IN (${ph})`,
+      [...ids, ...ids])
+    for (const r of rows) participants.set(r.thread_id, [...(participants.get(r.thread_id) ?? []), r.mid])
+  }
+  // row-sized dates: "9 Aug" — the year only matters when it isn't this one
+  const dm = (ts: number | null | undefined) => ts
+    ? new Date(ts * 1000).toLocaleDateString('en-GB', new Date(ts * 1000).getFullYear() === new Date().getFullYear()
+        ? { day: 'numeric', month: 'short' } : { day: 'numeric', month: 'short', year: 'numeric' })
+    : '—'
   const name = threads.find((th) => th.counterpart_name)?.counterpart_name || email.split('@')[0]
   const open = threads.filter((th) => th.status === 'needs_reply').length
 
@@ -1198,8 +1214,15 @@ app.get('/inbox/:addr/contact/:email', async (c) => {
                 <span class="subj">
                   {th.subject} <span class="snippet">— {excerpt(lastMsg?.body_text || '', 90)}</span>
                 </span>
+                <span class="participants" title="Members who replied or left notes">
+                  {(participants.get(th.id) ?? []).slice(0, 4).map((mid) => <Avatar member={members.get(mid)} />)}
+                  {(participants.get(th.id) ?? []).length > 4 ? <span class="fineprint">+{(participants.get(th.id) ?? []).length - 4}</span> : null}
+                </span>
                 <AssigneeChip thread={th} members={members} />
-                <span class="age">{th.status === 'needs_reply' ? `waiting ${waitingFor(th.last_message_at)}` : relTime(th.last_message_at)}</span>
+                <span class="age dates">
+                  <span>{dm(th.first_message_at)}{th.last_message_at && dm(th.last_message_at) !== dm(th.first_message_at) ? ` → ${dm(th.last_message_at)}` : ''}</span>
+                  {th.status === 'needs_reply' ? <small class="hot">waiting {waitingFor(th.last_message_at)}</small> : null}
+                </span>
               </a>
             )
           })}

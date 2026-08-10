@@ -49,12 +49,21 @@ test('contact view: only that sender\'s threads, with a compose shortcut', async
   const fx = await fixture()
   const t1 = await fx.thread('marie@example.org', 'Marie Dupont', 'Room booking')
   await fx.thread('bob@example.org', 'Bob', 'Unrelated thing')
+  // a member replied and another left a note — both count as participants
+  const m2 = await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [fx.collective.id, `leen-${uniq()}@example.org`, 'Leen', 'member', 'every', now()])
+  await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_email, to_json, body_text, sent_by_member_id, sent_at, created_at)
+    VALUES (?, ?, 'outbound', 'x@collective.email', '[]', 'On it!', ?, ?, ?)`, [t1, `<out-${uniq()}@x>`, m2.lastId, now(), now()])
+  await run('INSERT INTO notes (thread_id, member_id, body, created_at) VALUES (?, ?, ?, ?)', [t1, m2.lastId, 'checking the calendar', now()])
 
   const html = await (await page(`/inbox/${fx.slug}/contact/${encodeURIComponent('marie@example.org')}`, fx.sid)).text()
   assert.match(html, /Room booking/)
   assert.doesNotMatch(html, /Unrelated thing/, 'other senders stay out')
   assert.match(html, new RegExp(`/thread/${t1}`), 'threads link through')
   assert.match(html, /compose\?to=marie%40example\.org/, 'one click to email them')
+  assert.match(html, /class="participants"/)
+  assert.match(html, /title="Leen"/, 'the member who replied/noted shows as a participant')
+  assert.match(html, /class="age dates"/, 'first → last dates rendered')
 })
 
 test('the sender on a thread links to their contact view', async () => {
