@@ -276,9 +276,24 @@ a.org:hover .org-caret { color: var(--ink); }
 /* ---------- mobile header + drawer ---------- */
 .m-head { display: none; }
 .hamburger {
-  background: none; border: 1.5px solid var(--line); border-radius: 8px;
-  font-size: 18px; line-height: 1; color: var(--ink); padding: 7px 11px; cursor: pointer;
+  position: relative; display: block; width: 40px; height: 40px; flex: none;
+  background: none; border: 1.5px solid var(--line); border-radius: 8px; cursor: pointer;
 }
+.hamburger .hl {
+  position: absolute; left: 11px; width: 18px; height: 2px; border-radius: 2px;
+  background: var(--ink); transform-origin: left center;
+}
+.to-burger .hl-1 { animation: hl1-back 0.35s ease both; }
+.to-burger .hl-2 { top: 19px; }
+.to-burger .hl-3 { animation: hl3-back 0.35s ease both; }
+.to-arrow .hl-1 { animation: hl1-arrow 0.35s ease both; }
+.to-arrow .hl-2 { top: 19px; }
+.to-arrow .hl-3 { animation: hl3-arrow 0.35s ease both; }
+@keyframes hl1-arrow { from { top: 13px; width: 18px; transform: rotate(0); } to { top: 19px; width: 11px; transform: rotate(-45deg); } }
+@keyframes hl3-arrow { from { top: 25px; width: 18px; transform: rotate(0); } to { top: 19px; width: 11px; transform: rotate(45deg); } }
+@keyframes hl1-back { from { top: 19px; width: 11px; transform: rotate(-45deg); } to { top: 13px; width: 18px; transform: rotate(0); } }
+@keyframes hl3-back { from { top: 19px; width: 11px; transform: rotate(45deg); } to { top: 25px; width: 18px; transform: rotate(0); } }
+@media (prefers-reduced-motion: reduce) { .hamburger .hl { animation-duration: 0s !important; } }
 .m-addr {
   font-family: var(--mono); font-size: 14px; font-weight: 700; color: var(--ink);
   text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -954,3 +969,23 @@ iframe.msg-frame {
 .sender-card .sc-who small { font-family: var(--mono); font-size: 10.5px; overflow-wrap: anywhere; }
 .sender-card .sc-id:hover b { text-decoration: underline; text-underline-offset: 3px; }
 .thread-brief { margin-top: 0; }
+
+/* thread head: subject + meta + chips, pinned so context never scrolls away */
+.thread-head {
+  position: sticky; top: 0; z-index: 30; background: var(--paper);
+  border-bottom: 1.5px solid var(--line-soft);
+}
+.thread-head .thread-sub { border-bottom: none; }
+.thread-meta { margin: 2px 0 0; font-size: 12.5px; color: var(--muted); }
+.thread-meta .sender-link { color: var(--ink); font-weight: 600; }
+.thread-meta .tm-mail { font-family: var(--mono); font-size: 11px; }
+/* messages give the sticky header room when the page jumps to #first-new */
+.tl > * { scroll-margin-top: 96px; }
+.new-divider {
+  display: flex; align-items: center; gap: 10px; margin: 2px 0;
+  color: var(--danger); font-family: var(--mono); font-size: 10px;
+  text-transform: uppercase; letter-spacing: 1.5px;
+}
+.new-divider::before, .new-divider::after { content: ""; flex: 1; border-top: 1.5px solid var(--danger); opacity: 0.4; }
+.msg-head .who { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.msg-head .who .sentby { white-space: nowrap; }

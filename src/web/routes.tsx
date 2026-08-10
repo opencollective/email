@@ -1163,7 +1163,8 @@ const ThreadRow: FC<{
 
 // ---------- contacts: everyone the collective has talked with ----------
 
-const contactUrl = (base: string, email: string) => `${base}/contact/${encodeURIComponent(email)}`
+const contactUrl = (base: string, email: string, back?: string) =>
+  `${base}/contact/${encodeURIComponent(email)}${back ? `?back=${encodeURIComponent(back)}` : ''}`
 
 app.get('/inbox/:addr/contacts', async (c) => {
   const t = await tenant(c)
@@ -1187,7 +1188,7 @@ app.get('/inbox/:addr/contacts', async (c) => {
   const list = [...contacts.values()].sort((a, b) => b.last - a.last)
 
   return c.html(
-    <Shell member={member} collective={collective} title="Contacts" active="contacts" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
+    <Shell member={member} collective={collective} title="Contacts" active="contacts" flash={c.req.query('m')} back={{ href: base, label: 'Back to inbox' }}>
       <div class="page">
         <h1>Contacts</h1>
         <p class="muted">Everyone this inbox has a conversation with — tap one to see your whole history together.</p>
@@ -1221,6 +1222,9 @@ app.get('/inbox/:addr/contact/:email', async (c) => {
   const base = `/inbox/${collective.slug}`
   const email = decodeURIComponent(c.req.param('email') || '').toLowerCase().trim()
   if (!email) return c.redirect(`${base}/contacts`)
+  // arriving from a thread, back means that thread — not the contacts list
+  const rawBack = String(c.req.query('back') || '')
+  const cameFrom = rawBack.startsWith(`${base}/`) ? rawBack : null
 
   const threads = await all<Thread>(
     "SELECT * FROM threads WHERE collective_id = ? AND lower(counterpart_email) = ? AND status != 'spam' ORDER BY last_message_at DESC",
@@ -1234,9 +1238,8 @@ app.get('/inbox/:addr/contact/:email', async (c) => {
   const open = threads.filter((th) => th.status === 'needs_reply').length
 
   return c.html(
-    <Shell member={member} collective={collective} title={name} active="contacts" flash={c.req.query('m')} sidebar={
-      <nav class="nav"><a class="nav-item" href={`${base}/contacts`}>← All contacts</a></nav>
-    }>
+    <Shell member={member} collective={collective} title={name} active="contacts" flash={c.req.query('m')}
+      back={cameFrom ? { href: cameFrom, label: 'Back to thread' } : { href: `${base}/contacts`, label: 'All contacts' }}>
       <div class="page">
         <div class="contact-head">
           <span class="avatar contact-avatar" aria-hidden="true">{initials(name, email)}</span>
@@ -1302,6 +1305,10 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   const mentionsMe = new Set((batch[5] as { note_id: number; member_id: number }[])
     .filter((r) => r.member_id === member.id).map((r) => r.note_id))
   const attsMap = await attachmentsByMessage(msgs.map((m) => m.id))
+  // where this member had read up to BEFORE this visit — that boundary is
+  // where the page auto-scrolls and where the "new" divider sits
+  const prevSeen = (await get<{ last_seen_at: number }>(
+    'SELECT last_seen_at FROM thread_reads WHERE thread_id = ? AND member_id = ?', [thread.id, member.id]))?.last_seen_at ?? 0
   // opening the page is seeing it — recorded before rendering so the sidebar
   // this response carries already includes the viewer
   await markThreadSeen(thread.id, member.id, 'web')
@@ -1372,16 +1379,22 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
 
   return c.html(
     <Shell member={member} collective={collective} active="inbox" flash={c.req.query('m')}
-      bundle={member.role === 'reader' ? undefined : 'composer.js'} sidebar={
-      <nav class="nav"><a class="nav-item" href={`${base}`}>← Back to inbox</a></nav>
-    }>
+      bundle={member.role === 'reader' ? undefined : 'composer.js'}
+      back={{ href: base, label: 'Back to inbox' }}>
       <div class="thread-wrap">
         <div class="thread-main">
+          <div class="thread-head">
           <div class="thread-top">
-            <h1>{thread.subject}</h1>
-            <StatusChip status={thread.status} />
+            <div class="thread-id">
+              <h1>{thread.subject}</h1>
+              <p class="thread-meta">
+                {shortDate(thread.first_message_at)}
+                {thread.counterpart_email ? <> · <a class="sender-link" href={contactUrl(base, thread.counterpart_email, `${base}/thread/${thread.id}`)}>{thread.counterpart_name || thread.counterpart_email}</a>{thread.counterpart_name ? <span class="tm-mail"> · {thread.counterpart_email}</span> : null}</> : null}
+              </p>
+            </div>
           </div>
           <div class="thread-sub">
+            <StatusChip status={thread.status} />
             {rule?.close && !thread.assignee_member_id ? (
               <span class="chip" title={`Filed by ${rule.tag ? `the #${rule.tag}` : 'a'} rule — no assignment needed`}>⚡ auto-filed</span>
             ) : member.role === 'reader' ? (
@@ -1411,9 +1424,14 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               </details>
             ) : null}
           </div>
+          </div>
 
           <div class="tl">
+            {(() => { return null })()}
             {groups.map((g, gi) => <>
+              {prevSeen > 0 && groupTs[gi] > prevSeen && (gi === 0 || groupTs[gi - 1] <= prevSeen) ? (
+                <div class="new-divider" id="first-new"><span>new</span></div>
+              ) : null}
               {Array.isArray(g) ? (
                 <div class="internal">
                   <span class="internal-tag">⌁ Internal — not visible to {counterpartFirst}</span>
@@ -1446,26 +1464,21 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                       {g.direction === 'outbound' || !g.from_email ? (
                         <b>{g.direction === 'outbound' ? collective.name : g.from_name || g.from_email}</b>
                       ) : (
-                        <a class="sender-link" href={contactUrl(base, g.from_email)}
+                        <a class="sender-link" href={contactUrl(base, g.from_email, `${base}/thread/${thread.id}`)}
                           title={otherCount > 0 && g.from_email.toLowerCase() === thread.counterpart_email?.toLowerCase()
                             ? `${otherCount} other thread${otherCount === 1 ? '' : 's'} with ${g.from_name || g.from_email} — see them all`
                             : `All conversations with ${g.from_name || g.from_email}`}>
                           <b>{g.from_name || g.from_email}</b>
                         </a>
                       )}
-                      {/* the contact view has to announce itself — a count next
-                          to the name is what makes it discoverable */}
-                      {otherCount > 0 && g.direction === 'inbound' && g.id === firstInboundId ? (
-                        <a class="chip other-chip" href={contactUrl(base, g.from_email!)}>{otherCount} other thread{otherCount === 1 ? '' : 's'}</a>
-                      ) : null}
-                      <small>{g.from_email} → {JSON.parse(g.to_json || '[]').join(', ')}</small>
-                    </span>
-                    <span class="msg-meta">
-                      <span class="when">{fmtDateTime(g.sent_at)}</span>
                       {g.direction === 'outbound' && g.sent_by_member_id ? (
-                        <small class="sentby">sent by {memberName(members.get(g.sent_by_member_id))}</small>
+                        <small class="sentby">· sent by {memberName(members.get(g.sent_by_member_id))}</small>
+                      ) : null}
+                      {otherCount > 0 && g.direction === 'inbound' && g.id === firstInboundId ? (
+                        <a class="chip other-chip" href={contactUrl(base, g.from_email!, `${base}/thread/${thread.id}`)}>{otherCount} other thread{otherCount === 1 ? '' : 's'}</a>
                       ) : null}
                     </span>
+                    <span class="when">{fmtDateTime(g.sent_at)}</span>
                     {canSendRole(member.role) ? (
                       <details class="fwd">
                         <summary title="Forward" aria-label="Forward this message">↪</summary>
@@ -1736,11 +1749,11 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
           {thread.counterpart_email ? (
             <div class="side-block sender-card">
               <span class="label">Sender</span>
-              <a class="sc-id" href={contactUrl(base, thread.counterpart_email)} title="All conversations with this sender">
+              <a class="sc-id" href={contactUrl(base, thread.counterpart_email, `${base}/thread/${thread.id}`)} title="All conversations with this sender">
                 <span class="avatar">{initials(thread.counterpart_name || '', thread.counterpart_email)}</span>
                 <span class="sc-who"><b>{thread.counterpart_name || thread.counterpart_email.split('@')[0]}</b><small>{thread.counterpart_email}</small></span>
               </a>
-              <p class="fineprint"><a href={contactUrl(base, thread.counterpart_email)}>{otherCount + 1} conversation{otherCount ? 's' : ''} with {counterpartFirst} →</a></p>
+              <p class="fineprint"><a href={contactUrl(base, thread.counterpart_email, `${base}/thread/${thread.id}`)}>{otherCount + 1} conversation{otherCount ? 's' : ''} with {counterpartFirst} →</a></p>
             </div>
           ) : null}
 
@@ -1780,7 +1793,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                   </a>
                 ))}
               </div>
-              <p class="fineprint"><a href={contactUrl(base, thread.counterpart_email)}>All conversations with {counterpartFirst} →</a></p>
+              <p class="fineprint"><a href={contactUrl(base, thread.counterpart_email, `${base}/thread/${thread.id}`)}>All conversations with {counterpartFirst} →</a></p>
             </div>
           ) : null}
                   {member.role === 'admin' ? (
@@ -1942,7 +1955,7 @@ app.get('/inbox/:addr/compose', async (c) => {
   if (blocked) return blocked
   const base = `/inbox/${t.collective.slug}`
   return c.html(
-    <Shell member={t.member} collective={t.collective} title="New email" active="compose" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
+    <Shell member={t.member} collective={t.collective} title="New email" active="compose" flash={c.req.query('m')} back={{ href: base, label: 'Back to inbox' }}>
       <ComposeForm base={base} addr={outboundFrom(t.collective).fromAddress} signature={signatureFor(t.collective, t.member)} to={String(c.req.query('to') || '') || undefined} />
     </Shell>,
   )
@@ -2211,7 +2224,7 @@ app.get('/inbox/:addr/settings', async (c) => {
   const inUse = await hasReceivedMail(collective.id)
 
   return c.html(
-    <Shell member={member} collective={collective} title="Settings" active="settings" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
+    <Shell member={member} collective={collective} title="Settings" active="settings" flash={c.req.query('m')} back={{ href: base, label: 'Back to inbox' }}>
       <div class="page">
         <h1>Settings</h1>
         <SettingsNav base={base} on="settings" />
@@ -2291,7 +2304,7 @@ app.get('/inbox/:addr/data', async (c) => {
   const archived = collective.status === 'archived'
   const msgCount = await messageCount(collective.id)
   return c.html(
-    <Shell member={member} collective={collective} title="Data" active="data" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
+    <Shell member={member} collective={collective} title="Data" active="data" flash={c.req.query('m')} back={{ href: base, label: 'Back to inbox' }}>
       <div class="page">
         <h1>Data</h1>
         <SettingsNav base={base} on="data" />
@@ -2447,7 +2460,7 @@ app.get('/inbox/:addr/rules', async (c) => {
   const preSubject = String(c.req.query('subject') || '')
   const preThread = String(c.req.query('thread') || '')
   return c.html(
-    <Shell member={member} collective={collective} title="Rules" active="rules" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
+    <Shell member={member} collective={collective} title="Rules" active="rules" flash={c.req.query('m')} back={{ href: base, label: 'Back to inbox' }}>
       <div class="page">
         <h2>⚡ Rules</h2>
         <p class="muted">When a message matches, the rule tags it, assigns it (or leaves it unassigned), and can close it so it never asks for a reply. Closed mail is still forwarded to members — in full HTML — and stays open for internal notes.</p>
@@ -2555,7 +2568,7 @@ app.get('/inbox/:addr/members', async (c) => {
   const adminCount = members.filter((m) => m.role === 'admin').length
 
   return c.html(
-    <Shell member={member} collective={collective} title="Members" active="members" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
+    <Shell member={member} collective={collective} title="Members" active="members" flash={c.req.query('m')} back={{ href: base, label: 'Back to inbox' }}>
       <div class="page">
         <h1>Members</h1>
         <p class="muted">Email sent to <b>{collective.slug}@{cfg.emailDomain}</b> lands here for the whole group. Readers follow along, commenters discuss internally, senders answer, admins run the place.</p>
@@ -2711,7 +2724,7 @@ app.get('/inbox/:addr/notifications', async (c) => {
     'SELECT id, match_from FROM member_mutes WHERE collective_id = ? AND member_id = ? ORDER BY match_from',
     [collective.id, member.id])
   return c.html(
-    <Shell member={member} collective={collective} title="Notifications" active="notifications" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
+    <Shell member={member} collective={collective} title="Notifications" active="notifications" flash={c.req.query('m')} back={{ href: base, label: 'Back to inbox' }}>
       <div class="page">
         <h1>Notifications</h1>
         <section class="card">
@@ -2779,7 +2792,7 @@ app.get('/inbox/:addr/profile', async (c) => {
   const adminCount = (await activeMembers(collective.id)).filter((m) => m.role === 'admin').length
   const lastAdmin = member.role === 'admin' && adminCount <= 1
   return c.html(
-    <Shell member={member} collective={collective} title="Your profile" active="profile" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
+    <Shell member={member} collective={collective} title="Your profile" active="profile" flash={c.req.query('m')} back={{ href: base, label: 'Back to inbox' }}>
       <div class="page">
         <h1>Your profile</h1>
         <section class="card">
@@ -2897,7 +2910,7 @@ app.get('/inbox/:addr/billing', async (c) => {
   const contributors = (await activeMembers(collective.id)).filter((m) => canSendRole(m.role)).length
 
   return c.html(
-    <Shell member={member} collective={collective} title="Billing" active="billing" flash={flash} sidebar={<BackNav base={base} />}>
+    <Shell member={member} collective={collective} title="Billing" active="billing" flash={flash} back={{ href: base, label: 'Back to inbox' }}>
       <div class="page">
         <h1>Billing</h1>
         <SettingsNav base={base} on="billing" />
@@ -3061,7 +3074,7 @@ app.get('/inbox/:addr/domain', async (c) => {
 
   if (collective.plan !== 'pro') {
     return c.html(
-      <Shell member={member} collective={collective} title="Your domain" active="domain" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
+      <Shell member={member} collective={collective} title="Your domain" active="domain" flash={c.req.query('m')} back={{ href: base, label: 'Back to inbox' }}>
         <DomainUpsell base={base} balance={await creditBalance(collective.id)} currency={currency} canPay={await stripeUsable()} />
       </Shell>,
     )
@@ -3077,7 +3090,7 @@ app.get('/inbox/:addr/domain', async (c) => {
     verified = true
   }
   return c.html(
-    <Shell member={member} collective={collective} title="Your domain" active="domain" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
+    <Shell member={member} collective={collective} title="Your domain" active="domain" flash={c.req.query('m')} back={{ href: base, label: 'Back to inbox' }}>
       <div class="page">
         <h1>Your own domain</h1>
         <SettingsNav base={base} on="domain" />

@@ -165,6 +165,17 @@ document.querySelectorAll('form .ccb').forEach((d) => {
   });
 });
 
+// Open a thread where you left off: jump to the first thing you haven't seen.
+const firstNew = document.getElementById('first-new');
+if (firstNew) firstNew.scrollIntoView({ block: 'start' });
+
+// Popovers (forward, add-tag) close when you click anywhere else.
+document.addEventListener('click', (e) => {
+  document.querySelectorAll('details[open].fwd, details[open].tag-add').forEach((d) => {
+    if (!d.contains(e.target)) d.open = false;
+  });
+});
+
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 `
 
@@ -242,7 +253,7 @@ export const Page: FC<{ title?: string; flash?: string; bundle?: string; childre
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=41" />
+      <link rel="stylesheet" href="/static/style.css?v=42" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script
@@ -314,6 +325,8 @@ export const Shell: FC<{
   flash?: string
   bundle?: string
   sidebar?: Child
+  /** where "back" leads; on mobile the hamburger morphs into a left arrow */
+  back?: { href: string; label: string }
   children?: Child
 }> = (props) => {
   const base = `/inbox/${props.collective.slug}`
@@ -346,16 +359,26 @@ export const Shell: FC<{
             </a>
             <div class="org-menu" hidden />
           </div>
+          {props.back ? <nav class="nav"><a class="nav-item" href={props.back.href}>← {props.back.label}</a></nav> : null}
           {props.sidebar}
           <div class="label">Menu</div>
           <Menu base={base} active={props.active} isAdmin={isAdmin} canSend={canSend} />
           <div class="side-foot">{userBlock}</div>
         </aside>
 
-        {/* mobile header: hamburger + address, then swipeable page nav */}
+        {/* mobile header: hamburger (or a back arrow, morphing between the
+            two shapes on load) + address, then the optional page nav */}
         <div class="m-head">
           <div class="m-row">
-            <button class="hamburger" data-drawer type="button" aria-label="Menu">☰</button>
+            {props.back ? (
+              <a class="hamburger to-arrow" href={props.back.href} aria-label={props.back.label}>
+                <span class="hl hl-1" /><span class="hl hl-2" /><span class="hl hl-3" />
+              </a>
+            ) : (
+              <button class="hamburger to-burger" data-drawer type="button" aria-label="Menu">
+                <span class="hl hl-1" /><span class="hl hl-2" /><span class="hl hl-3" />
+              </button>
+            )}
             <a class="m-addr" href={base}>{addr}</a>
           </div>
           {props.sidebar ? <div class="m-pills">{props.sidebar}</div> : null}
