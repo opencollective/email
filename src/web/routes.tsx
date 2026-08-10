@@ -35,7 +35,7 @@ import { readBlob, saveBlob } from '../storage.js'
 import { createCheckoutSession, createPortalSession, stripeUsable } from '../stripe.js'
 import { billingState, canSend, planLimits, repliesThisMonth, trialDaysLeft, GRACE_DAYS } from '../billing.js'
 import { escapeHtml, excerpt, fmtDate, fmtDateTime, initials, now, randomToken, relTime, signToken, slugify, splitQuotedTail, verifyToken, waitingFor } from '../util.js'
-import { AssigneeChip, AuthCard, Avatar, eventText, Shell, StatusChip, TimeAgo } from './ui.js'
+import { AssigneeChip, AuthCard, Avatar, eventText, Icon, Shell, StatusChip, TimeAgo } from './ui.js'
 import { HomePage } from './home.js'
 import { AboutPage, DocsPage, FaqPage } from './pages.js'
 import {
@@ -1514,7 +1514,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                     <span class="when">{fmtDateTime(g.sent_at)}</span>
                     {canSendRole(member.role) ? (
                       <details class="fwd">
-                        <summary title="Forward" aria-label="Forward this message">↪</summary>
+                        <summary title="Forward" aria-label="Forward this message"><Icon name="forward" /></summary>
                         <form method="post" action={`${base}/thread/${thread.id}/forward`}>
                           <input type="hidden" name="message_id" value={String(g.id)} />
                           <input class="input small" type="email" name="to" placeholder="colleague@example.com" required />
@@ -1614,8 +1614,8 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
           <div class="composer" id="composer">
             {canSendRole(member.role) ? (
               <div class="tabs">
-                <button class="tab on" data-tab="reply" type="button">{draftMsg ? '✉ Edit draft' : `✉ Reply to ${counterpartFirst}`}</button>
-                <button class="tab" data-tab="note" type="button">⌁ Internal note</button>
+                <button class="tab on" data-tab="reply" type="button"><Icon name="mail" /> {draftMsg ? 'Edit draft' : `Reply to ${counterpartFirst}`}</button>
+                <button class="tab" data-tab="note" type="button"><Icon name="note" /> Internal note</button>
               </div>
             ) : null}
             {canSendRole(member.role) && draftMsg ? (
@@ -1667,7 +1667,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               {/* the sign-off is in the text, so it can be edited or deleted before sending */}
               <textarea name="body" rows={6} placeholder={`Write to ${counterpartFirst}…`} data-draft="reply" data-signature={signature} required>{`\n\n${signature}`}</textarea>
               <div class="actions">
-                <label class="file-label">📎 Attach<input type="file" name="files" multiple class="file-input" /></label>
+                <label class="file-label"><Icon name="clip" /> Attach<input type="file" name="files" multiple class="file-input" /></label>
                 <span class="send-stack">
                   <button class="btn send-btn" type="submit" data-busy="Sending…">Send</button>
                   <span class="fineprint send-note">
@@ -1703,12 +1703,12 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             {thread.status === 'closed' || thread.status === 'spam' ? (
               <form method="post" action={`${base}/thread/${thread.id}/status`}>
                 <input type="hidden" name="status" value="needs_reply" />
-                <button class="btn small ghost" type="submit">↩ Reopen this thread</button>
+                <button class="btn small ghost" type="submit"><Icon name="rotate" /> Reopen this thread</button>
               </form>
             ) : (<>
               <form method="post" action={`${base}/thread/${thread.id}/status`}>
                 <input type="hidden" name="status" value="closed" />
-                <button class="btn small ghost" type="submit">✓ Close thread</button>
+                <button class="btn small ghost" type="submit"><Icon name="check" /> Close thread</button>
               </form>
               <form method="post" action={`${base}/thread/${thread.id}/status`}>
                 <input type="hidden" name="status" value="spam" />
@@ -1754,28 +1754,28 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             <span class="label">Next</span>
             {(() => {
               const waiting = waitingFor(thread.last_message_at)
-              if (thread.status === 'draft') return <p class="next-text">✎ Finish the draft and send it{thread.counterpart_email ? ` to ${counterpartFirst}` : ''}.</p>
-              if (thread.status === 'spam') return <p class="next-text">🚫 Marked as spam — nothing to do.</p>
-              if (thread.status === 'closed') return <p class="next-text">✓ Closed — nothing to do.</p>
-              if (thread.status === 'answered') return <p class="next-text">⏳ Waiting on {counterpartFirst} to answer — you're up to date.</p>
+              if (thread.status === 'draft') return <p class="next-text"><Icon name="pencil" /> Finish the draft and send it{thread.counterpart_email ? ` to ${counterpartFirst}` : ''}.</p>
+              if (thread.status === 'spam') return <p class="next-text">Marked as spam — nothing to do.</p>
+              if (thread.status === 'closed') return <p class="next-text"><Icon name="check" /> Closed — nothing to do.</p>
+              if (thread.status === 'answered') return <p class="next-text"><Icon name="clock" /> Waiting on {counterpartFirst} to answer — you're up to date.</p>
               if (!assignee) return (
                 <>
-                  <p class="next-text next-warn">⚠ Reply to {counterpartFirst} — waiting {waiting}. Nobody has this yet.</p>
+                  <p class="next-text next-warn"><Icon name="warn" /> Reply to {counterpartFirst} — waiting {waiting}. Nobody has this yet.</p>
                   {member.role !== 'reader' ? (
                     <form method="post" action={`${base}/thread/${thread.id}/assign`}>
                       <input type="hidden" name="member_id" value={String(member.id)} />
-                      <button class="btn small" type="submit">🙋 I'll take it</button>
+                      <button class="btn small" type="submit"><Icon name="hand" /> I'll take it</button>
                     </form>
                   ) : null}
                 </>
               )
               if (assignee.id === member.id) return (
                 <>
-                  <p class="next-text">🙋 Assigned to you — reply to {counterpartFirst}. Waiting {waiting}.</p>
+                  <p class="next-text"><Icon name="hand" /> Assigned to you — reply to {counterpartFirst}. Waiting {waiting}.</p>
                   <a class="btn small" href="#composer">Reply →</a>
                 </>
               )
-              return <p class="next-text">⏳ {memberName(assignee)} has this — waiting {waiting}.</p>
+              return <p class="next-text"><Icon name="clock" /> {memberName(assignee)} has this — waiting {waiting}.</p>
             })()}
           </div>
 

@@ -1022,3 +1022,24 @@ iframe.msg-frame {
 .log-more summary::-webkit-details-marker { display: none; }
 .log-more[open] summary { display: none; }
 .log-more { display: flex; flex-direction: column; gap: 6px; }
+
+/* the whole thread head shares one gutter on phones (declared last: the base
+   rules above were appended after the main media block and would win) */
+@media (max-width: 900px) {
+  .head-people { padding: 8px 14px 0; }
+  .thread-sub { padding: 10px 14px 12px; }
+}
+
+/* one icon language: quiet by default, accent on interaction */
+.ic { width: 16px; height: 16px; flex: none; vertical-align: -3px; }
+.nav-item { display: flex; align-items: center; gap: 9px; }
+.nav-item .ic { color: var(--muted); transition: color 0.12s; }
+.nav-item:hover .ic, .nav-item.active .ic { color: var(--accent); }
+.tab .ic { width: 14px; height: 14px; margin-right: 5px; color: var(--muted); }
+.tab.on .ic { color: var(--accent); }
+.btn .ic, .file-label .ic { width: 14px; height: 14px; margin-right: 4px; }
+.fwd summary { display: inline-flex; align-items: center; }
+.fwd summary .ic { width: 15px; height: 15px; color: var(--muted); transition: color 0.12s; }
+.fwd summary:hover .ic, .fwd[open] summary .ic { color: var(--accent); }
+.next-text .ic { width: 14px; height: 14px; margin-right: 4px; color: var(--muted); }
+.next-text.next-warn .ic { color: var(--warn); }
