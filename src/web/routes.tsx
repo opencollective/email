@@ -7,7 +7,8 @@ import {
   activeMembers, addTag, all, allCollectives, attachmentsByMessage, batchAll, createCollective, get, getCollective,
   getCollectiveBySlug, getMember, getMemberIn, getThread, kvGet, kvSet, lastMessageByThread, memberMap,
   renameCollectiveSlug,
-  membershipsByEmail, removeTag, run, setAssignee, setStatus, tagsByThread, threadMessages, threadTags,
+  markThreadSeen, membershipsByEmail, readsForMember, removeTag, run, setAssignee, setStatus, tagsByThread, threadMessages, threadReads, threadTags,
+  type ThreadRead,
   type Attachment, type Collective, type Invite, type Member, type Message, type Thread,
 } from '../db.js'
 import {
@@ -199,7 +200,7 @@ async function tenant(c: Context<Env>): Promise<{ collective: Collective; member
         <h1>Wrong account for {collective.name}</h1>
         <p class="muted">
           You're signed in as {accounts.map((a, i) => <>{i ? ', ' : ''}<b>{a.email}</b></>)} —
-          {accounts.length === 1 ? ' which is ' : ' none of which are '}a member of {collective.name}.
+          {accounts.length === 1 ? ' which is not ' : ' none of which are '}a member of {collective.name}.
           If the invite or onboarding email went to another address, add that account:
           you stay signed in to {accounts.length === 1 ? 'this one' : 'these'} too.
         </p>
@@ -1007,6 +1008,7 @@ app.get('/inbox/:addr', async (c) => {
     { sql: `SELECT tt.thread_id, t.id, t.name FROM tags t JOIN thread_tags tt ON tt.tag_id = t.id WHERE tt.thread_id IN (${ph}) ORDER BY t.name`, args: ids },
   ]) : [[], []]
   const lastMsgs = new Map((lastMsgRows as Message[]).map((m) => [m.thread_id, m]))
+  const seenAt = await readsForMember(member.id, threads.map((th) => th.id))
   const tagsMap = new Map<number, { id: number; name: string }[]>()
   for (const r of threadTagRows as { thread_id: number; id: number; name: string }[]) {
     if (!tagsMap.has(r.thread_id)) tagsMap.set(r.thread_id, [])
@@ -1078,8 +1080,9 @@ app.get('/inbox/:addr', async (c) => {
           const tags = tagsMap.get(th.id) || []
           const replier = lastMsg?.direction === 'outbound' && lastMsg.sent_by_member_id ? members.get(lastMsg.sent_by_member_id) : null
           const stale = th.status === 'needs_reply' && th.last_message_at && now() - th.last_message_at > 48 * 3600
+          const unseen = (seenAt.get(th.id) ?? 0) < (th.last_message_at ?? 0)
           return (
-            <a class={`row ${th.status === 'needs_reply' ? 'unread' : ''}`} href={`${base}/thread/${th.id}`}>
+            <a class={`row ${unseen ? 'unread' : ''}`} href={`${base}/thread/${th.id}`}>
               <span class={`dot ${th.status === 'needs_reply' ? 'open' : 'done'}`} />
               <span class="from">
                 {th.counterpart_name || th.counterpart_email || '—'}
@@ -1271,6 +1274,15 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   const mentionsMe = new Set((batch[5] as { note_id: number; member_id: number }[])
     .filter((r) => r.member_id === member.id).map((r) => r.note_id))
   const attsMap = await attachmentsByMessage(msgs.map((m) => m.id))
+  // opening the page is seeing it — recorded before rendering so the sidebar
+  // this response carries already includes the viewer
+  await markThreadSeen(thread.id, member.id, 'web')
+  const reads = await threadReads(thread.id)
+  // who did something on the thread (replied or left a note), for the sidebar
+  const contributed = new Set<number>([
+    ...msgs.filter((m) => m.sent_by_member_id).map((m) => m.sent_by_member_id!),
+    ...notes.map((n) => n.member_id),
+  ])
   // a composed-but-unsent thread: the reply pane becomes the draft editor
   const draftMsg = thread.status === 'draft' ? msgs.find((m) => m.direction === 'outbound' && !m.sent_at) : undefined
   const events = allEvents.filter((e) => e.type !== 'replied')
@@ -1302,6 +1314,27 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
     }
   }
 
+  // WhatsApp-style: under each timeline entry, who has read up to there —
+  // a reader sits under the last item older than their last opening
+  const groupTs = groups.map((g) => Array.isArray(g) ? Math.max(...g.map((i) => i.ts)) : (g.sent_at || g.created_at))
+  const seenUpTo = new Map<number, ThreadRead[]>()
+  for (const r of reads) {
+    let idx = -1
+    for (let i = 0; i < groupTs.length; i++) if (groupTs[i] <= r.last_seen_at) idx = i
+    if (idx >= 0) seenUpTo.set(idx, [...(seenUpTo.get(idx) ?? []), r])
+  }
+  const SeenMarker = ({ at }: { at: number }) => {
+    const rs = seenUpTo.get(at)
+    if (!rs?.length) return null
+    return (
+      <div class="seen-row" title={rs.map((r: ThreadRead) => `${memberName(members.get(r.member_id))} · ${relTime(r.last_seen_at)}`).join('\n')}>
+        <span class="seen-eye" aria-hidden="true">✓</span>
+        {rs.map((r: ThreadRead) => <Avatar member={members.get(r.member_id)} />)}
+        <small>seen {rs.length === 1 ? `by ${memberName(members.get(rs[0].member_id))} ${relTime(rs[0].last_seen_at)}` : `by ${rs.length} people`}</small>
+      </div>
+    )
+  }
+
   return c.html(
     <Shell member={member} collective={collective} active="inbox" flash={c.req.query('m')}
       bundle={member.role === 'reader' ? undefined : 'composer.js'} sidebar={
@@ -1319,8 +1352,8 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
           </div>
 
           <div class="tl">
-            {groups.map((g) =>
-              Array.isArray(g) ? (
+            {groups.map((g, gi) => <>
+              {Array.isArray(g) ? (
                 <div class="internal">
                   <span class="internal-tag">⌁ Internal — not visible to {counterpartFirst}</span>
                   {g.map((item) =>
@@ -1422,8 +1455,9 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                     </div>
                   ) : null}
                 </div>
-              ),
-            )}
+              )}
+              <SeenMarker at={gi} />
+            </>)}
           </div>
 
           {(() => {
@@ -1482,10 +1516,11 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                 return (
                   // collapsed unless something is already in there — hiding a
                   // recipient the draft actually has would be a nasty surprise
-                  <details class="cc-reveal" open={Boolean(dcc || dbcc)}>
-                    <summary>+ Cc / Bcc</summary>
+                  <details class="ccb" open={Boolean(dcc || dbcc)}>
+                    <summary>Cc/Bcc, From: {collectiveAddr}</summary>
                     <div class="c-row"><span class="c-k">Cc</span><input class="c-in" name="cc" value={dcc} autocomplete="off" spellcheck={false} /></div>
                     <div class="c-row"><span class="c-k">Bcc</span><input class="c-in" name="bcc" value={dbcc} autocomplete="off" spellcheck={false} /></div>
+                    <div class="c-row"><span class="c-k">From</span><span class="c-static">{collectiveAddr}</span></div>
                   </details>
                 )
               })()}
@@ -1581,6 +1616,26 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               <button class="btn small ghost" type="submit">{assignee ? 'Reassign' : 'Assign'}</button>
             </form>
             ) : null}
+          </div>
+
+          <div class="side-block">
+            <span class="label">People</span>
+            <div class="ppl">
+              {activeList.map((m) => {
+                const r = reads.find((x) => x.member_id === m.id)
+                return (
+                  <div class="ppl-row">
+                    <Avatar member={m} />
+                    <span class="ppl-name">{memberName(m)}{m.id === member.id ? ' (you)' : ''}</span>
+                    <span class="ppl-tags">
+                      {m.id === thread.assignee_member_id ? <span class="chip assignee">assigned</span> : null}
+                      {contributed.has(m.id) ? <span class="chip">contributed</span> : null}
+                    </span>
+                    <small class="ppl-seen">{r ? `seen ${relTime(r.last_seen_at)}` : 'not seen yet'}</small>
+                  </div>
+                )
+              })}
+            </div>
           </div>
 
           <div class="side-block">
@@ -1762,11 +1817,14 @@ const ComposeForm = ({ base, addr, signature, to }: { base: string; addr: string
         <span class="c-k">To</span>
         <input class="c-in" name="to" value={to || ''} placeholder="them@example.org — comma-separate several" autocomplete="off" spellcheck={false} autofocus={!to} />
       </div>
-      {/* a <details>, not a JS toggle: reveals without JavaScript too */}
-      <details class="cc-reveal">
-        <summary>+ Cc / Bcc</summary>
+      {/* Apple-Mail style: one quiet combined line; tapping expands each onto
+          its own row (a <details>, so it works without JavaScript; focusing the
+          body folds it back when Cc/Bcc are still empty) */}
+      <details class="ccb">
+        <summary>Cc/Bcc, From: {addr}</summary>
         <div class="c-row"><span class="c-k">Cc</span><input class="c-in" name="cc" autocomplete="off" spellcheck={false} /></div>
         <div class="c-row"><span class="c-k">Bcc</span><input class="c-in" name="bcc" autocomplete="off" spellcheck={false} /></div>
+        <div class="c-row"><span class="c-k">From</span><span class="c-static">{addr}</span></div>
       </details>
       <div class="c-row">
         <span class="c-k">Subject</span>

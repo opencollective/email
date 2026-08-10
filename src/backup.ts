@@ -3,7 +3,7 @@ import { saveBlob } from './storage.js'
 import { cfg } from './config.js'
 
 const TABLES = [
-  'collectives', 'members', 'threads', 'messages', 'notes', 'note_mentions', 'events',
+  'collectives', 'members', 'threads', 'messages', 'notes', 'note_mentions', 'thread_reads', 'events',
   'tags', 'thread_tags', 'invites', 'waitlist', 'kv',
 ]
 

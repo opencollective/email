@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import satori from 'satori'
 import { Resvg } from '@resvg/resvg-js'
-import { get, getMember, getThread, type Member, type Message, type Thread } from './db.js'
+import { get, getMember, getThread, markThreadSeen, type Member, type Message, type Thread } from './db.js'
 import { verifyToken } from './util.js'
 import { INTER_REGULAR, INTER_SEMIBOLD } from './og-fonts.js'
 
@@ -52,10 +52,14 @@ export async function badgeState(thread: Thread): Promise<{ line: string; who: s
 }
 
 ogApp.get('/aimg/:token', async (c) => {
+  // fall through to the badge whatever happens to the tracking write
   const payload = verifyToken(c.req.param('token'))
   if (!payload || payload.a !== 'aimg') return c.notFound()
   const thread = await getThread(Number(payload.th))
   if (!thread) return c.notFound()
+  // the badge loading IS the open: newer tokens carry the recipient, so this
+  // doubles as the read receipt (best-effort — never blocks the image)
+  if (payload.m) await markThreadSeen(thread.id, Number(payload.m), 'email').catch(() => {})
   const s = await badgeState(thread)
   const initials = s.who ? s.who.slice(0, 2).toUpperCase() : s.line.startsWith('✓') ? '✓' : '!'
   // rendered large for retina; emails display it at 688×74 (same 9.3 ratio)

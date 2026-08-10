@@ -798,14 +798,16 @@ iframe.msg-frame {
 .c-in { border: none; background: none; padding: 3px 0; flex: 1; min-width: 0; font: inherit; font-size: 14.5px; color: var(--ink); }
 .c-in:focus { outline: none; }
 @media (max-width: 560px) { .c-in { font-size: 16px; } } /* iOS zoom guard */
-.cc-reveal summary {
+.ccb summary {
   list-style: none; cursor: pointer; font-size: 12px; color: var(--muted);
   padding: 5px 14px; border-bottom: 1.5px solid var(--line-soft);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.cc-reveal summary::-webkit-details-marker { display: none; }
-.cc-reveal summary:hover { color: var(--ink); }
-/* once revealed the rows speak for themselves — the toggle disappears */
-.cc-reveal[open] summary { display: none; }
+.ccb summary::-webkit-details-marker { display: none; }
+.ccb summary:hover { color: var(--ink); }
+/* expanded: each on its own row; the combined line disappears */
+.ccb[open] summary { display: none; }
+.c-static { font-size: 13px; color: var(--muted); font-family: var(--mono); }
 .compose-form textarea { border: none; border-radius: 0; resize: vertical; padding: 12px 14px; }
 .compose-form .btn-row { padding: 10px 14px; margin: 0; border-top: 1.5px solid var(--line-soft); background: var(--fill); }
 
@@ -831,3 +833,20 @@ iframe.msg-frame {
 .sender-link { text-decoration: none; }
 .sender-link:hover b { text-decoration: underline; text-underline-offset: 3px; }
 .rows .row .avatar { flex: none; }
+
+/* who has seen the thread, and how far (WhatsApp-style) */
+.seen-row {
+  display: flex; align-items: center; gap: 5px; margin: -6px 0 0 48px;
+  font-size: 11px; color: var(--muted);
+}
+.seen-row .seen-eye { color: var(--accent); font-weight: 700; font-size: 10px; }
+.seen-row .avatar { width: 16px; height: 16px; min-width: 16px; max-width: 16px; min-height: 16px; max-height: 16px; font-size: 7px; }
+.seen-row small { font-family: var(--mono); font-size: 10px; }
+
+/* thread sidebar: everyone at a glance */
+.ppl { display: flex; flex-direction: column; gap: 7px; }
+.ppl-row { display: flex; align-items: center; gap: 7px; font-size: 12.5px; min-width: 0; }
+.ppl-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ppl-tags { display: flex; gap: 4px; }
+.ppl-tags .chip { font-size: 9.5px; padding: 1px 7px; }
+.ppl-seen { margin-left: auto; font-family: var(--mono); font-size: 9.5px; color: var(--muted); white-space: nowrap; }

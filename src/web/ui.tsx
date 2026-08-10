@@ -152,6 +152,19 @@ if (typingEl) {
   setInterval(poll, 12000);
 }
 
+// Apple-Mail Cc/Bcc line: expanded rows fold back when the body textarea takes
+// focus, unless the person actually typed a Cc/Bcc — those must stay visible.
+document.querySelectorAll('form .ccb').forEach((d) => {
+  const form = d.closest('form');
+  const ta = form && form.querySelector('textarea');
+  if (!ta) return;
+  ta.addEventListener('focus', () => {
+    const cc = form.querySelector('input[name="cc"]');
+    const bcc = form.querySelector('input[name="bcc"]');
+    if (!(cc && cc.value.trim()) && !(bcc && bcc.value.trim())) d.open = false;
+  });
+});
+
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 `
 
@@ -229,7 +242,7 @@ export const Page: FC<{ title?: string; flash?: string; bundle?: string; childre
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=36" />
+      <link rel="stylesheet" href="/static/style.css?v=37" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script

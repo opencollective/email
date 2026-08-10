@@ -186,6 +186,18 @@ const SCHEMA = [
     created_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_credits_collective ON credits_ledger(collective_id)`,
+  // Who has seen a thread, and until when. One row per member per thread,
+  // updated on every open (web page view or notification-email image load) —
+  // the WhatsApp-style "seen by" state.
+  `CREATE TABLE IF NOT EXISTS thread_reads (
+    thread_id INTEGER NOT NULL,
+    member_id INTEGER NOT NULL,
+    first_seen_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    via TEXT,
+    PRIMARY KEY (thread_id, member_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_thread_reads_member ON thread_reads(member_id)`,
   `CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)`,
   `CREATE TABLE IF NOT EXISTS waitlist (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -390,6 +402,30 @@ export interface Attachment {
 }
 
 /** All members of a collective (including removed — needed to render history). */
+/** Record that a member has seen a thread (web view or email open). */
+export async function markThreadSeen(threadId: number, memberId: number, via: 'web' | 'email'): Promise<void> {
+  const member = await getMember(memberId)
+  const thread = await getThread(threadId)
+  if (!member || !thread || member.collective_id !== thread.collective_id) return
+  await run(`INSERT INTO thread_reads (thread_id, member_id, first_seen_at, last_seen_at, via) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(thread_id, member_id) DO UPDATE SET last_seen_at = excluded.last_seen_at, via = excluded.via`,
+    [threadId, memberId, now(), now(), via])
+}
+
+export interface ThreadRead { thread_id: number; member_id: number; first_seen_at: number; last_seen_at: number; via: string | null }
+
+export const threadReads = (threadId: number) =>
+  all<ThreadRead>('SELECT * FROM thread_reads WHERE thread_id = ? ORDER BY last_seen_at DESC', [threadId])
+
+/** last_seen_at per thread for one member, over a set of threads. */
+export async function readsForMember(memberId: number, threadIds: number[]): Promise<Map<number, number>> {
+  if (threadIds.length === 0) return new Map()
+  const rows = await all<{ thread_id: number; last_seen_at: number }>(
+    `SELECT thread_id, last_seen_at FROM thread_reads WHERE member_id = ? AND thread_id IN (${threadIds.map(() => '?').join(',')})`,
+    [memberId, ...threadIds])
+  return new Map(rows.map((r) => [r.thread_id, r.last_seen_at]))
+}
+
 export async function memberMap(collectiveId: number): Promise<Map<number, Member>> {
   const rows = await all<Member>('SELECT * FROM members WHERE collective_id = ?', [collectiveId])
   return new Map(rows.map((m) => [m.id, m]))
