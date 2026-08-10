@@ -1,5 +1,6 @@
 /** @jsxImportSource hono/jsx */
 import { Hono } from 'hono'
+import type { FC } from 'hono/jsx'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import type { Context } from 'hono'
 import { cfg } from '../config.js'
@@ -1008,7 +1009,11 @@ app.get('/inbox/:addr', async (c) => {
     { sql: `SELECT tt.thread_id, t.id, t.name FROM tags t JOIN thread_tags tt ON tt.tag_id = t.id WHERE tt.thread_id IN (${ph}) ORDER BY t.name`, args: ids },
   ]) : [[], []]
   const lastMsgs = new Map((lastMsgRows as Message[]).map((m) => [m.thread_id, m]))
-  const seenAt = await readsForMember(member.id, threads.map((th) => th.id))
+  void lastMsgs
+  const [seenAt, extras] = await Promise.all([
+    readsForMember(member.id, threads.map((th) => th.id)),
+    threadListExtras(threads.map((th) => th.id)),
+  ])
   const tagsMap = new Map<number, { id: number; name: string }[]>()
   for (const r of threadTagRows as { thread_id: number; id: number; name: string }[]) {
     if (!tagsMap.has(r.thread_id)) tagsMap.set(r.thread_id, [])
@@ -1075,36 +1080,92 @@ app.get('/inbox/:addr', async (c) => {
                 ? `No conversations yet — email ${collective.slug}@${cfg.emailDomain} to start one.`
                 : 'No threads here.'}
           </div>
-        ) : threads.map((th) => {
-          const lastMsg = lastMsgs.get(th.id)
-          const tags = tagsMap.get(th.id) || []
-          const replier = lastMsg?.direction === 'outbound' && lastMsg.sent_by_member_id ? members.get(lastMsg.sent_by_member_id) : null
-          const stale = th.status === 'needs_reply' && th.last_message_at && now() - th.last_message_at > 48 * 3600
-          const unseen = (seenAt.get(th.id) ?? 0) < (th.last_message_at ?? 0)
-          return (
-            <a class={`row ${unseen ? 'unread' : ''}`} href={`${base}/thread/${th.id}`}>
-              <span class={`dot ${th.status === 'needs_reply' ? 'open' : 'done'}`} />
-              <span class="from">
-                {th.counterpart_name || th.counterpart_email || '—'}
-                <small>{th.counterpart_email}</small>
-              </span>
-              <span class="subj">
-                {th.subject} <span class="snippet">— {excerpt(lastMsg?.body_text || '', 90)}</span>
-              </span>
-              <span class="tags">{tags.slice(0, 2).map((tg) => <span class="chip">#{tg.name}</span>)}</span>
-              <AssigneeChip thread={th} members={members} />
-              <span class={`age ${stale ? 'hot' : ''}`}>
-                {th.status === 'needs_reply'
-                  ? `waiting ${waitingFor(th.last_message_at)}`
-                  : replier ? `${memberName(replier)} replied · ${relTime(th.last_message_at)}` : relTime(th.last_message_at)}
-              </span>
-            </a>
-          )
-        })}
+        ) : threads.map((th) => (
+          <ThreadRow base={base} thread={th} members={members}
+            unread={(seenAt.get(th.id) ?? 0) < (th.last_message_at ?? 0)}
+            lastMsg={extras.lastMsgs.get(th.id)} participants={extras.participants.get(th.id)}
+            noteCount={extras.noteCounts.get(th.id)} tags={tagsMap.get(th.id)} />
+        ))}
       </div>
     </Shell>,
   )
 })
+
+// ---------- the one way a thread appears in a list ----------
+
+/** Row-sized date: "9 Aug", year only when it isn't this one. */
+const shortDate = (ts: number | null | undefined) => ts
+  ? new Date(ts * 1000).toLocaleDateString('en-GB', new Date(ts * 1000).getFullYear() === new Date().getFullYear()
+      ? { day: 'numeric', month: 'short' } : { day: 'numeric', month: 'short', year: 'numeric' })
+  : '—'
+
+/** Everything a thread list needs beyond the threads themselves, batched:
+ *  last message, who participated (replies + notes), and note counts. */
+async function threadListExtras(threadIds: number[]): Promise<{
+  lastMsgs: Map<number, Message>; participants: Map<number, number[]>; noteCounts: Map<number, number>
+}> {
+  if (threadIds.length === 0) return { lastMsgs: new Map(), participants: new Map(), noteCounts: new Map() }
+  const ph = threadIds.map(() => '?').join(',')
+  const [partRows, noteRows] = await Promise.all([
+    all<{ thread_id: number; mid: number }>(
+      `SELECT DISTINCT thread_id, sent_by_member_id AS mid FROM messages WHERE thread_id IN (${ph}) AND sent_by_member_id IS NOT NULL
+       UNION SELECT DISTINCT thread_id, member_id AS mid FROM notes WHERE thread_id IN (${ph})`, [...threadIds, ...threadIds]),
+    all<{ thread_id: number; n: number }>(
+      `SELECT thread_id, COUNT(*) AS n FROM notes WHERE thread_id IN (${ph}) GROUP BY thread_id`, threadIds),
+  ])
+  const participants = new Map<number, number[]>()
+  for (const r of partRows) participants.set(r.thread_id, [...(participants.get(r.thread_id) ?? []), r.mid])
+  return {
+    lastMsgs: await lastMessageByThread(threadIds),
+    participants,
+    noteCounts: new Map(noteRows.map((r) => [r.thread_id, r.n])),
+  }
+}
+
+/** THE thread row. Two lines per row, each column a stacked pair:
+ *
+ *    read | first date (dim) | name  | subject            | assignee     | status
+ *         | LAST DATE        | email | last-message line  | participants | n notes
+ *
+ *  `sender={false}` drops the name/email column — in a contact view every
+ *  row is the same person. Every list renders this, so a thread reads the
+ *  same everywhere. */
+const ThreadRow: FC<{
+  base: string; thread: Thread; unread: boolean; members: Map<number, Member>
+  lastMsg?: Message; participants?: number[]; noteCount?: number
+  tags?: { id: number; name: string }[]; sender?: boolean
+}> = (p) => {
+  const th = p.thread
+  const showSender = p.sender !== false
+  const sameDay = shortDate(th.first_message_at) === shortDate(th.last_message_at)
+  return (
+    <a class={`row${showSender ? '' : ' no-sender'}${p.unread ? ' unread' : ''}`} href={`${p.base}/thread/${th.id}`}>
+      <span class={`dot ${th.status === 'needs_reply' ? 'open' : 'done'}`} />
+      <span class="rcell r-dates">
+        <span class="r-dim">{shortDate(th.first_message_at)}</span>
+        <b>{sameDay ? '' : shortDate(th.last_message_at)}</b>
+      </span>
+      {showSender ? (
+        <span class="rcell r-who">
+          <span class="r-name">{th.counterpart_name || th.counterpart_email || '—'}</span>
+          <span class="r-mail">{th.counterpart_email}</span>
+        </span>
+      ) : null}
+      <span class="rcell r-subj-cell">
+        <span class="r-subj">{th.subject}{(p.tags ?? []).slice(0, 2).map((tg) => <span class="chip">#{tg.name}</span>)}</span>
+        <span class="r-snip">{excerpt(p.lastMsg?.body_text || '', 110)}</span>
+      </span>
+      <span class="rcell r-assign">
+        <AssigneeChip thread={th} members={p.members} />
+        <span class="participants">{(p.participants ?? []).slice(0, 4).map((mid) => <Avatar member={p.members.get(mid)} />)}</span>
+      </span>
+      <span class="rcell r-state">
+        <StatusChip status={th.status} />
+        {p.noteCount ? <span class="r-notes">⌁ {p.noteCount} note{p.noteCount === 1 ? '' : 's'}</span> : null}
+      </span>
+    </a>
+  )
+}
 
 // ---------- contacts: everyone the collective has talked with ----------
 
@@ -1170,24 +1231,11 @@ app.get('/inbox/:addr/contact/:email', async (c) => {
   const threads = await all<Thread>(
     "SELECT * FROM threads WHERE collective_id = ? AND lower(counterpart_email) = ? AND status != 'spam' ORDER BY last_message_at DESC",
     [collective.id, email])
-  const lastMsgs = await lastMessageByThread(threads.map((th) => th.id))
   const members = await memberMap(collective.id)
-  // who of the collective took part in each thread: replies and internal notes
-  const participants = new Map<number, number[]>()
-  if (threads.length) {
-    const ids = threads.map((th) => th.id)
-    const ph = ids.map(() => '?').join(',')
-    const rows = await all<{ thread_id: number; mid: number }>(
-      `SELECT DISTINCT thread_id, sent_by_member_id AS mid FROM messages WHERE thread_id IN (${ph}) AND sent_by_member_id IS NOT NULL
-       UNION SELECT DISTINCT thread_id, member_id AS mid FROM notes WHERE thread_id IN (${ph})`,
-      [...ids, ...ids])
-    for (const r of rows) participants.set(r.thread_id, [...(participants.get(r.thread_id) ?? []), r.mid])
-  }
-  // row-sized dates: "9 Aug" — the year only matters when it isn't this one
-  const dm = (ts: number | null | undefined) => ts
-    ? new Date(ts * 1000).toLocaleDateString('en-GB', new Date(ts * 1000).getFullYear() === new Date().getFullYear()
-        ? { day: 'numeric', month: 'short' } : { day: 'numeric', month: 'short', year: 'numeric' })
-    : '—'
+  const [extras, seenAt] = await Promise.all([
+    threadListExtras(threads.map((th) => th.id)),
+    readsForMember(member.id, threads.map((th) => th.id)),
+  ])
   const name = threads.find((th) => th.counterpart_name)?.counterpart_name || email.split('@')[0]
   const open = threads.filter((th) => th.status === 'needs_reply').length
 
@@ -1209,26 +1257,12 @@ app.get('/inbox/:addr/contact/:email', async (c) => {
         <div class="rows">
           {threads.length === 0 ? (
             <div class="empty-state">No conversations with {email} yet.</div>
-          ) : threads.map((th) => {
-            const lastMsg = lastMsgs.get(th.id)
-            return (
-              <a class={`row contact-thread ${th.status === 'needs_reply' ? 'unread' : ''}`} href={`${base}/thread/${th.id}`}>
-                <span class={`dot ${th.status === 'needs_reply' ? 'open' : 'done'}`} />
-                <span class="subj">
-                  {th.subject} <span class="snippet">— {excerpt(lastMsg?.body_text || '', 90)}</span>
-                </span>
-                <span class="participants" title="Members who replied or left notes">
-                  {(participants.get(th.id) ?? []).slice(0, 4).map((mid) => <Avatar member={members.get(mid)} />)}
-                  {(participants.get(th.id) ?? []).length > 4 ? <span class="fineprint">+{(participants.get(th.id) ?? []).length - 4}</span> : null}
-                </span>
-                <AssigneeChip thread={th} members={members} />
-                <span class="age dates">
-                  <span>{dm(th.first_message_at)}{th.last_message_at && dm(th.last_message_at) !== dm(th.first_message_at) ? ` → ${dm(th.last_message_at)}` : ''}</span>
-                  {th.status === 'needs_reply' ? <small class="hot">waiting {waitingFor(th.last_message_at)}</small> : null}
-                </span>
-              </a>
-            )
-          })}
+          ) : threads.map((th) => (
+            <ThreadRow base={base} thread={th} members={members} sender={false}
+              unread={(seenAt.get(th.id) ?? 0) < (th.last_message_at ?? 0)}
+              lastMsg={extras.lastMsgs.get(th.id)} participants={extras.participants.get(th.id)}
+              noteCount={extras.noteCounts.get(th.id)} />
+          ))}
         </div>
       </div>
     </Shell>,
@@ -1278,6 +1312,13 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   // this response carries already includes the viewer
   await markThreadSeen(thread.id, member.id, 'web')
   const reads = await threadReads(thread.id)
+  const otherThreads = thread.counterpart_email ? await all<Thread>(
+    "SELECT * FROM threads WHERE collective_id = ? AND lower(counterpart_email) = lower(?) AND id != ? AND status != 'spam' ORDER BY last_message_at DESC LIMIT 5",
+    [collective.id, thread.counterpart_email, thread.id]) : []
+  const firstInboundId = msgs.find((m) => m.direction === 'inbound' && m.from_email && m.from_email.toLowerCase() === (thread.counterpart_email || '').toLowerCase())?.id
+  const otherCount = thread.counterpart_email ? Number((await get<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM threads WHERE collective_id = ? AND lower(counterpart_email) = lower(?) AND id != ? AND status != 'spam'",
+    [collective.id, thread.counterpart_email, thread.id]))?.n ?? 0) : 0
   // who did something on the thread (replied or left a note), for the sidebar
   const contributed = new Set<number>([
     ...msgs.filter((m) => m.sent_by_member_id).map((m) => m.sent_by_member_id!),
@@ -1385,10 +1426,18 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                       {g.direction === 'outbound' || !g.from_email ? (
                         <b>{g.direction === 'outbound' ? collective.name : g.from_name || g.from_email}</b>
                       ) : (
-                        <a class="sender-link" href={contactUrl(base, g.from_email)} title={`All conversations with ${g.from_name || g.from_email}`}>
+                        <a class="sender-link" href={contactUrl(base, g.from_email)}
+                          title={otherCount > 0 && g.from_email.toLowerCase() === thread.counterpart_email?.toLowerCase()
+                            ? `${otherCount} other thread${otherCount === 1 ? '' : 's'} with ${g.from_name || g.from_email} — see them all`
+                            : `All conversations with ${g.from_name || g.from_email}`}>
                           <b>{g.from_name || g.from_email}</b>
                         </a>
                       )}
+                      {/* the contact view has to announce itself — a count next
+                          to the name is what makes it discoverable */}
+                      {otherCount > 0 && g.direction === 'inbound' && g.id === firstInboundId ? (
+                        <a class="chip other-chip" href={contactUrl(base, g.from_email!)}>{otherCount} other thread{otherCount === 1 ? '' : 's'}</a>
+                      ) : null}
                       <small>{g.from_email} → {JSON.parse(g.to_json || '[]').join(', ')}</small>
                     </span>
                     <span class="msg-meta">
@@ -1642,7 +1691,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             <span class="label">Details</span>
             <span class="kv"><span class="k">STATUS</span> <StatusChip status={thread.status} /></span>
             <span class="kv"><span class="k">FROM</span> {thread.counterpart_email
-              ? <a href={contactUrl(base, thread.counterpart_email)} title="All conversations with this sender">{thread.counterpart_email}</a>
+              ? <a href={contactUrl(base, thread.counterpart_email)} title={otherCount > 0 ? `${otherCount} other thread${otherCount === 1 ? '' : 's'} with this sender` : 'All conversations with this sender'}>{thread.counterpart_email}</a>
               : '—'}</span>
             <span class="kv"><span class="k">FIRST</span> {fmtDateTime(thread.first_message_at)}</span>
             <span class="kv"><span class="k">LAST</span> <TimeAgo ts={thread.last_message_at} /></span>
@@ -1716,6 +1765,21 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             </div>
           </div>
           </>) : null}
+          {thread.counterpart_email && otherThreads.length ? (
+            <div class="side-block">
+              <span class="label">Other threads with {counterpartFirst}</span>
+              <div class="side-threads">
+                {otherThreads.map((o) => (
+                  <a class="side-thread" href={`${base}/thread/${o.id}`}>
+                    <span class={`dot ${o.status === 'needs_reply' ? 'open' : 'done'}`} />
+                    <span class="st-subj">{o.subject}</span>
+                    <small>{shortDate(o.last_message_at)}</small>
+                  </a>
+                ))}
+              </div>
+              <p class="fineprint"><a href={contactUrl(base, thread.counterpart_email)}>All conversations with {counterpartFirst} →</a></p>
+            </div>
+          ) : null}
         </aside>
       </div>
     </Shell>,

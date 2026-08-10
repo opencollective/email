@@ -63,7 +63,9 @@ test('contact view: only that sender\'s threads, with a compose shortcut', async
   assert.match(html, /compose\?to=marie%40example\.org/, 'one click to email them')
   assert.match(html, /class="participants"/)
   assert.match(html, /title="Leen"/, 'the member who replied/noted shows as a participant')
-  assert.match(html, /class="age dates"/, 'first → last dates rendered')
+  assert.match(html, /class="rcell r-dates"/, 'first + last dates rendered')
+  assert.match(html, /class="row no-sender/, 'the shared ThreadRow, sender column dropped')
+  assert.match(html, /r-notes/, 'note count on the second line')
 })
 
 test('the sender on a thread links to their contact view', async () => {

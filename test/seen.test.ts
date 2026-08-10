@@ -88,6 +88,19 @@ test('loading the notification badge counts as an email open', async () => {
   assert.equal(await get('SELECT * FROM thread_reads WHERE thread_id = ? AND member_id = ?', [fx.threadId, stranger.lastId]), undefined)
 })
 
+test('the thread sidebar lists other threads with the sender, and the name carries the count', async () => {
+  const fx = await fixture()
+  // a second thread with the same counterpart
+  const t2 = await run(`INSERT INTO threads (collective_id, subject, status, counterpart_email, counterpart_name,
+    first_message_at, last_message_at, last_direction, created_at, updated_at) VALUES (?, 'Older topic', 'answered', 'out@x.test', 'Out', ?, ?, 'inbound', ?, ?)`,
+    [fx.collective.id, now() - 90000, now() - 90000, now() - 90000, now()])
+  const html = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
+  assert.match(html, /Other threads with/, 'the sidebar block exists')
+  assert.match(html, new RegExp(`/thread/${t2.lastId}`), 'and links the other thread')
+  assert.match(html, /1 other thread</, 'the count badge sits next to the sender name')
+  assert.match(html, /other thread.*see them all|1 other thread/, 'hover title carries it too')
+})
+
 test('compose: the quiet combined line, Apple Mail style', async () => {
   const fx = await fixture()
   const html = await (await page(`/inbox/${fx.slug}/compose`, fx.alice.sid)).text()
