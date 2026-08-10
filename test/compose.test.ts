@@ -98,3 +98,18 @@ test('commenters cannot compose — sending is a paid-seat action', async () => 
   assert.match(decodeURIComponent(res.headers.get('location')!), /comment but not send/)
   assert.equal((await all('SELECT id FROM threads WHERE collective_id = ?', [fx.collective.id])).length, 0)
 })
+
+test('replies carry Bcc too, stored on the message', async () => {
+  const fx = await fixture()
+  const t = await run(`INSERT INTO threads (collective_id, subject, status, counterpart_email, first_message_at, last_message_at, last_direction, created_at, updated_at)
+    VALUES (?, 'Inbound q', 'needs_reply', 'asker@example.org', ?, ?, 'inbound', ?, ?)`, [fx.collective.id, now(), now(), now(), now()])
+  await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_email, to_json, body_text, sent_at, created_at)
+    VALUES (?, ?, 'inbound', 'asker@example.org', '[]', 'question?', ?, ?)`, [t.lastId, `<q-${uniq()}@x>`, now(), now()])
+  const res = await post(`/inbox/${fx.slug}/thread/${t.lastId}/reply`, fx.sid, {
+    body: 'answer!', cc: 'ally@example.org', bcc: 'archive@example.org',
+  })
+  assert.equal(res.status, 302)
+  const m = (await get<Message>("SELECT * FROM messages WHERE thread_id = ? AND direction = 'outbound'", [t.lastId]))!
+  assert.deepEqual(JSON.parse(m.cc_json!), ['ally@example.org'])
+  assert.deepEqual(JSON.parse(m.bcc_json!), ['archive@example.org'])
+})

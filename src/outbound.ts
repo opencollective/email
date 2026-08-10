@@ -43,6 +43,7 @@ export async function sendCollectiveReply(
   via: 'web' | 'email',
   attachments: OutAttachment[] = [],
   cc: string[] = [],
+  bcc: string[] = [],
 ): Promise<Message> {
   const thread = await getThread(threadId)
   if (!thread || thread.collective_id !== collective.id) throw new Error('Thread not found')
@@ -86,6 +87,7 @@ export async function sendCollectiveReply(
       from: fromHeader,
       to: [to],
       ...(cc.length ? { cc } : {}),
+      ...(bcc.length ? { bcc } : {}),
       reply_to: [fromAddress],
       subject,
       text: body,
@@ -116,11 +118,11 @@ export async function sendCollectiveReply(
 
   const ts = now()
   const r = await run(`
-    INSERT INTO messages (thread_id, rfc822_message_id, in_reply_to, direction, from_email, from_name, to_json, cc_json, body_text, sent_by_member_id, resend_email_id, sent_at, created_at)
-    VALUES (?, ?, ?, 'outbound', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO messages (thread_id, rfc822_message_id, in_reply_to, direction, from_email, from_name, to_json, cc_json, bcc_json, body_text, sent_by_member_id, resend_email_id, sent_at, created_at)
+    VALUES (?, ?, ?, 'outbound', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     threadId, messageId, lastIn?.rfc822_message_id ?? null,
-    fromAddress, collective.name, JSON.stringify([to]), JSON.stringify(cc),
+    fromAddress, collective.name, JSON.stringify([to]), JSON.stringify(cc), JSON.stringify(bcc),
     body, member.id, resendEmailId, ts, ts,
   ])
   for (const [i, a] of attachments.entries()) await storeAttachment(r.lastId, a.filename, a.contentType, a.content, i)

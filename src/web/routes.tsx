@@ -1138,29 +1138,23 @@ const ThreadRow: FC<{
   const th = p.thread
   const showSender = p.sender !== false
   const sameDay = shortDate(th.first_message_at) === shortDate(th.last_message_at)
+  // a REAL two-row grid (named areas), so line 1 aligns across every column
+  // and line 2 does too — stacked cells only pretend to be rows
   return (
     <a class={`row${showSender ? '' : ' no-sender'}${p.unread ? ' unread' : ''}`} href={`${p.base}/thread/${th.id}`}>
       <span class={`dot ${th.status === 'needs_reply' ? 'open' : 'done'}`} />
-      <span class="rcell r-dates">
-        <span class="r-dim">{shortDate(th.first_message_at)}</span>
-        <b>{sameDay ? '' : shortDate(th.last_message_at)}</b>
-      </span>
-      {showSender ? (
-        <span class="rcell r-who">
-          <span class="r-name">{th.counterpart_name || th.counterpart_email || '—'}</span>
-          <span class="r-mail">{th.counterpart_email}</span>
-        </span>
-      ) : null}
-      <span class="rcell r-subj-cell">
-        <span class="r-subj">{th.subject}{(p.tags ?? []).slice(0, 2).map((tg) => <span class="chip">#{tg.name}</span>)}</span>
-        <span class="r-snip">{excerpt(p.lastMsg?.body_text || '', 110)}</span>
-      </span>
-      <span class="rcell r-assign">
+      <span class="r-d1">{shortDate(th.first_message_at)}</span>
+      <b class="r-d2">{sameDay ? '' : shortDate(th.last_message_at)}</b>
+      {showSender ? <span class="r-name">{th.counterpart_name || th.counterpart_email || '—'}</span> : null}
+      {showSender ? <span class="r-mail">{th.counterpart_email}</span> : null}
+      <span class="r-subj">{th.subject}{(p.tags ?? []).slice(0, 2).map((tg) => <span class="chip">#{tg.name}</span>)}</span>
+      <span class="r-snip">{excerpt(p.lastMsg?.body_text || '', 110)}</span>
+      <span class="r-meta1">
         <AssigneeChip thread={th} members={p.members} />
-        <span class="participants">{(p.participants ?? []).slice(0, 4).map((mid) => <Avatar member={p.members.get(mid)} />)}</span>
-      </span>
-      <span class="rcell r-state">
         <StatusChip status={th.status} />
+      </span>
+      <span class="r-meta2">
+        <span class="participants">{(p.participants ?? []).slice(0, 4).map((mid) => <Avatar member={p.members.get(mid)} />)}</span>
         {p.noteCount ? <span class="r-notes">⌁ {p.noteCount} note{p.noteCount === 1 ? '' : 's'}</span> : null}
       </span>
     </a>
@@ -1589,12 +1583,15 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             ) : null}
             {canSendRole(member.role) && !draftMsg ? (
             <form method="post" action={`${base}/thread/${thread.id}/reply`} data-pane="reply" enctype="multipart/form-data">
-              <div class="to">
-                <span>To <b>{thread.counterpart_email || 'unknown'}</b></span>
-                <label class="cc-field">Cc
-                  <input class="input small" name="cc" value={threadCc.join(', ')} placeholder="nobody — add emails, comma separated" autocomplete="off" spellcheck={false} />
-                </label>
-              </div>
+              <div class="c-row"><span class="c-k">To</span><span class="c-static c-to">{thread.counterpart_email || 'unknown'}</span></div>
+              {/* same quiet line as compose; open when the thread carries a
+                  sticky Cc — hiding a recipient that will be copied would lie */}
+              <details class="ccb" open={threadCc.length > 0}>
+                <summary>Cc/Bcc, From: {collectiveAddr}</summary>
+                <div class="c-row"><span class="c-k">Cc</span><input class="c-in" name="cc" value={threadCc.join(', ')} autocomplete="off" spellcheck={false} /></div>
+                <div class="c-row"><span class="c-k">Bcc</span><input class="c-in" name="bcc" autocomplete="off" spellcheck={false} /></div>
+                <div class="c-row"><span class="c-k">From</span><span class="c-static">{collectiveAddr}</span></div>
+              </details>
               {/* the sign-off is in the text, so it can be edited or deleted before sending */}
               <textarea name="body" rows={6} placeholder={`Write to ${counterpartFirst}…`} data-draft="reply" data-signature={signature} required>{`\n\n${signature}`}</textarea>
               <div class="actions">
@@ -1808,7 +1805,8 @@ app.post('/inbox/:addr/thread/:id/reply', async (c) => {
       content: Buffer.from(await f.arrayBuffer()),
     })))
     const cc = parseEmails(String(body.cc || ''))
-    await sendCollectiveReply(t.collective, thread.id, String(body.body || ''), t.member, 'web', attachments, cc)
+    const bcc = parseEmails(String(body.bcc || ''))
+    await sendCollectiveReply(t.collective, thread.id, String(body.body || ''), t.member, 'web', attachments, cc, bcc)
     // the Cc list belongs to the conversation, so the next reply keeps it
     await run('UPDATE threads SET cc_json = ? WHERE id = ?', [JSON.stringify(cc), thread.id])
     const fresh = (await getThread(thread.id))!
