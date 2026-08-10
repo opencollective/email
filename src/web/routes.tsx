@@ -1333,6 +1333,18 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   // a composed-but-unsent thread: the reply pane becomes the draft editor
   const draftMsg = thread.status === 'draft' ? msgs.find((m) => m.direction === 'outbound' && !m.sent_at) : undefined
   const events = allEvents.filter((e) => e.type !== 'replied')
+  // the sidebar log: everything that happened here, newest first
+  const logItems = [
+    ...msgs.filter((m) => m.sent_at).map((m) => ({
+      ts: (m.sent_at || m.created_at) as number,
+      text: m.direction === 'inbound'
+        ? `Received from ${m.from_name || m.from_email || 'the sender'}`
+        : `${m.sent_by_member_id ? memberName(members.get(m.sent_by_member_id)) : collective.name} replied`,
+    })),
+    ...notes.map((n) => ({ ts: n.created_at, text: `${memberName(members.get(n.member_id))} left a note` })),
+    ...events.map((e) => ({ ts: e.created_at, text: eventText(e, members) })),
+  ].sort((a, b) => b.ts - a.ts)
+
   const lastAssignEvent = [...allEvents].reverse().find((e) => e.type === 'assigned' || e.type === 'unassigned')
   const activeList = [...members.values()].filter((m) => !m.removed_at).sort((a, b) => memberName(a).localeCompare(memberName(b)))
   const assignee = thread.assignee_member_id ? members.get(thread.assignee_member_id) : null
@@ -1767,46 +1779,30 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             })()}
           </div>
 
-          {thread.counterpart_email ? (
-            <div class="side-block sender-card">
-              <span class="label">Sender</span>
-              <a class="sc-id" href={contactUrl(base, thread.counterpart_email, `${base}/thread/${thread.id}`)} title="All conversations with this sender">
-                <span class="avatar">{initials(thread.counterpart_name || '', thread.counterpart_email)}</span>
-                <span class="sc-who"><b>{thread.counterpart_name || thread.counterpart_email.split('@')[0]}</b><small>{thread.counterpart_email}</small></span>
-              </a>
-              <p class="fineprint"><a href={contactUrl(base, thread.counterpart_email, `${base}/thread/${thread.id}`)}>{otherCount + 1} conversation{otherCount ? 's' : ''} with {counterpartFirst} →</a></p>
-            </div>
-          ) : null}
 
           <div class="side-block">
-            <span class="label">Thread</span>
-            <p class="fineprint thread-brief">
-              {shortDate(thread.first_message_at)}{shortDate(thread.last_message_at) !== shortDate(thread.first_message_at) ? ` → ${shortDate(thread.last_message_at)}` : ''}
-              {' '}· {msgs.length} message{msgs.length === 1 ? '' : 's'}{notes.length ? ` · ${notes.length} note${notes.length === 1 ? '' : 's'}` : ''}
-            </p>
-            <div class="ppl">
-              {activeList.map((m) => {
-                const r = reads.find((x) => x.member_id === m.id)
-                return (
-                  <div class="ppl-row">
-                    <Avatar member={m} />
-                    <span class="ppl-name">{memberName(m)}{m.id === member.id ? ' (you)' : ''}</span>
-                    <span class="ppl-tags">
-                      {m.id === thread.assignee_member_id ? <span class="chip assignee">assigned</span> : null}
-                      {contributed.has(m.id) ? <span class="chip">contributed</span> : null}
-                    </span>
-                    <small class="ppl-seen">{r ? `seen ${relTime(r.last_seen_at)}` : 'not seen yet'}</small>
-                  </div>
-                )
-              })}
+            <span class="label">Log</span>
+            <div class="side-log">
+              {logItems.slice(0, 5).map((li) => (
+                <div class="log-row"><span>{li.text}</span><small>{relTime(li.ts)}</small></div>
+              ))}
+              {logItems.length > 5 ? (
+                <details class="log-more">
+                  <summary>Show all {logItems.length} →</summary>
+                  {logItems.slice(5).map((li) => (
+                    <div class="log-row"><span>{li.text}</span><small>{relTime(li.ts)}</small></div>
+                  ))}
+                </details>
+              ) : null}
             </div>
           </div>
 
           {thread.counterpart_email && otherThreads.length ? (
+            // only worth a section when there IS more (≥ 2 threads total)
             <div class="side-block">
-              <span class="label">Other threads with {counterpartFirst}</span>
+              <span class="label">More by this sender</span>
               <div class="side-threads">
-                {otherThreads.map((o) => (
+                {otherThreads.slice(0, 3).map((o) => (
                   <a class="side-thread" href={`${base}/thread/${o.id}`}>
                     <span class={`dot ${o.status === 'needs_reply' ? 'open' : 'done'}`} />
                     <span class="st-subj">{o.subject}</span>
@@ -1814,7 +1810,9 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                   </a>
                 ))}
               </div>
-              <p class="fineprint"><a href={contactUrl(base, thread.counterpart_email, `${base}/thread/${thread.id}`)}>All conversations with {counterpartFirst} →</a></p>
+              {otherCount > 3 ? (
+                <p class="fineprint"><a href={contactUrl(base, thread.counterpart_email, `${base}/thread/${thread.id}`)}>All {otherCount + 1} conversations →</a></p>
+              ) : null}
             </div>
           ) : null}
                   {member.role === 'admin' ? (

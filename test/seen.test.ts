@@ -62,8 +62,10 @@ test('the thread shows who has seen it: timeline marker and People sidebar', asy
   const html = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.bob.sid)).text()
   assert.match(html, /class="seen-row"/, 'a WhatsApp-style marker under the last item read')
   assert.match(html, /seen by/, 'named')
-  assert.match(html, /class="ppl"/, 'the People block exists')
-  assert.match(html, /not seen yet|seen just now|seen .*ago/, 'per-member seen state')
+  assert.match(html, /class="head-people"/, 'the header carries the people strips')
+  assert.match(html, /class="hp-group"[^>]*>[\s\S]*?seen/, 'the seen cluster is labelled')
+  assert.match(html, /class="side-log"/, 'the sidebar log exists')
+  assert.match(html, /Received from out@x\.test/, 'log lists the inbound message')
   // Bob is viewing right now, so both members have read rows — the log keeps them
   assert.equal((await all('SELECT member_id FROM thread_reads WHERE thread_id = ?', [fx.threadId])).length, 2)
 })
@@ -95,7 +97,7 @@ test('the thread sidebar lists other threads with the sender, and the name carri
     first_message_at, last_message_at, last_direction, created_at, updated_at) VALUES (?, 'Older topic', 'answered', 'out@x.test', 'Out', ?, ?, 'inbound', ?, ?)`,
     [fx.collective.id, now() - 90000, now() - 90000, now() - 90000, now()])
   const html = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
-  assert.match(html, /Other threads with/, 'the sidebar block exists')
+  assert.match(html, /More by this sender/, 'the sidebar block exists')
   assert.match(html, new RegExp(`/thread/${t2.lastId}`), 'and links the other thread')
   assert.match(html, /1 other thread</, 'the count badge sits next to the sender name')
   assert.match(html, /other thread.*see them all|1 other thread/, 'hover title carries it too')

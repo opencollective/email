@@ -1009,3 +1009,16 @@ iframe.msg-frame {
 
 /* profile: sign-out is a quiet centered footnote */
 .signout-foot { text-align: center; margin: 18px 0 8px; }
+
+/* sidebar log */
+.side-log { display: flex; flex-direction: column; gap: 6px; }
+.log-row { display: flex; align-items: baseline; gap: 8px; font-size: 12px; min-width: 0; }
+.log-row span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-row small { font-family: var(--mono); font-size: 9.5px; color: var(--muted); flex: none; }
+.log-more summary {
+  list-style: none; cursor: pointer; font-size: 11.5px; color: var(--muted);
+  margin-top: 2px; text-decoration: underline; text-underline-offset: 3px;
+}
+.log-more summary::-webkit-details-marker { display: none; }
+.log-more[open] summary { display: none; }
+.log-more { display: flex; flex-direction: column; gap: 6px; }
