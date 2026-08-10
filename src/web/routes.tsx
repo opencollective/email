@@ -1398,6 +1398,22 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               </p>
             </div>
           </div>
+          {contributed.size > 0 || reads.length > 0 ? (
+            <div class="head-people">
+              {contributed.size > 0 ? (
+                <span class="hp-group" title={[...contributed].map((id) => memberName(members.get(id))).join(', ')}>
+                  <span class="participants">{[...contributed].slice(0, 5).map((id) => <Avatar member={members.get(id)} />)}</span>
+                  <small>participated</small>
+                </span>
+              ) : null}
+              {reads.length > 0 ? (
+                <span class="hp-group" title={reads.map((r) => `${memberName(members.get(r.member_id))} · ${relTime(r.last_seen_at)}`).join('\n')}>
+                  <span class="participants">{reads.slice(0, 5).map((r) => <Avatar member={members.get(r.member_id)} />)}</span>
+                  <small>seen</small>
+                </span>
+              ) : null}
+            </div>
+          ) : null}
           <div class="thread-sub">
             <StatusChip status={thread.status} />
             {rule?.close && !thread.assignee_member_id ? (
