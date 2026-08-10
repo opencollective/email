@@ -1247,12 +1247,17 @@ app.get('/inbox/:addr/contact/:email', async (c) => {
             <h1>{name}</h1>
             <p class="muted">{email} · {threads.length} conversation{threads.length === 1 ? '' : 's'}{open ? ` · ${open} waiting for a reply` : ''}</p>
           </div>
-          {canSendRole(member.role) ? (
-            <a class="btn small ghost" href={`${base}/compose?to=${encodeURIComponent(email)}`}>✉ New email</a>
-          ) : null}
+
         </div>
         <div class="rows">
-          {threads.length === 0 ? (
+          {canSendRole(member.role) ? (
+            // where a new thread would land is where you start one
+            <a class="row no-sender new-thread-row" href={`${base}/compose?to=${encodeURIComponent(email)}`}>
+              <span class="nt-plus" aria-hidden="true">＋</span>
+              <span class="r-subj nt-label">Start a new thread with {name}…</span>
+            </a>
+          ) : null}
+          {threads.length === 0 && !canSendRole(member.role) ? (
             <div class="empty-state">No conversations with {email} yet.</div>
           ) : threads.map((th) => (
             <ThreadRow base={base} thread={th} members={members} sender={false}

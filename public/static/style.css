@@ -989,3 +989,9 @@ iframe.msg-frame {
 .new-divider::before, .new-divider::after { content: ""; flex: 1; border-top: 1.5px solid var(--danger); opacity: 0.4; }
 .msg-head .who { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .msg-head .who .sentby { white-space: nowrap; }
+
+/* starting a new thread looks like the row it will become */
+.row.new-thread-row { border-bottom-style: dashed; color: var(--muted); }
+.new-thread-row .nt-plus { grid-area: dot; color: var(--accent); font-weight: 700; text-align: center; font-size: 15px; line-height: 1; align-self: center; }
+.new-thread-row .nt-label { color: var(--muted); }
+.new-thread-row:hover .nt-label { color: var(--accent); }
