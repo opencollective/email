@@ -229,7 +229,7 @@ export const Page: FC<{ title?: string; flash?: string; bundle?: string; childre
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=33" />
+      <link rel="stylesheet" href="/static/style.css?v=35" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script
@@ -282,6 +282,7 @@ const Menu: FC<{ base: string; active: string; isAdmin: boolean; canSend: boolea
   <nav class="nav">
     <a class={`nav-item ${active === 'inbox' ? 'active' : ''}`} href={base}>📥 Inbox</a>
     {canSend ? <a class={`nav-item ${active === 'compose' ? 'active' : ''}`} href={`${base}/compose`}>✎ New email</a> : null}
+    <a class={`nav-item ${active === 'contacts' ? 'active' : ''}`} href={`${base}/contacts`}>📇 Contacts</a>
     <a class={`nav-item ${active === 'members' ? 'active' : ''}`} href={`${base}/members`}>☺ Members</a>
     <a class={`nav-item ${active === 'notifications' ? 'active' : ''}`} href={`${base}/notifications`}>🔔 Notifications</a>
     {isAdmin ? <a class={`nav-item ${active === 'rules' ? 'active' : ''}`} href={`${base}/rules`}>⚡ Rules</a> : null}

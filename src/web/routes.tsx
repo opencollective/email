@@ -32,7 +32,7 @@ import { sendAppEmail } from '../appmail.js'
 import { readBlob, saveBlob } from '../storage.js'
 import { createCheckoutSession, createPortalSession, stripeUsable } from '../stripe.js'
 import { billingState, canSend, planLimits, repliesThisMonth, trialDaysLeft, GRACE_DAYS } from '../billing.js'
-import { escapeHtml, excerpt, fmtDate, fmtDateTime, now, randomToken, relTime, signToken, slugify, splitQuotedTail, verifyToken, waitingFor } from '../util.js'
+import { escapeHtml, excerpt, fmtDate, fmtDateTime, initials, now, randomToken, relTime, signToken, slugify, splitQuotedTail, verifyToken, waitingFor } from '../util.js'
 import { AssigneeChip, AuthCard, Avatar, eventText, Shell, StatusChip, TimeAgo } from './ui.js'
 import { HomePage } from './home.js'
 import { AboutPage, DocsPage, FaqPage } from './pages.js'
@@ -1103,6 +1103,112 @@ app.get('/inbox/:addr', async (c) => {
   )
 })
 
+// ---------- contacts: everyone the collective has talked with ----------
+
+const contactUrl = (base: string, email: string) => `${base}/contact/${encodeURIComponent(email)}`
+
+app.get('/inbox/:addr/contacts', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const { collective, member } = t
+  const base = `/inbox/${collective.slug}`
+  // one cheap scan, aggregated here: most recent name wins, spam stays out
+  const rows = await all<{ counterpart_email: string; counterpart_name: string | null; status: string; last_message_at: number | null }>(
+    "SELECT counterpart_email, counterpart_name, status, last_message_at FROM threads WHERE collective_id = ? AND status != 'spam' AND counterpart_email IS NOT NULL ORDER BY last_message_at DESC",
+    [collective.id])
+  const contacts = new Map<string, { email: string; name: string; threads: number; open: number; last: number }>()
+  for (const r of rows) {
+    const key = r.counterpart_email.toLowerCase()
+    const entry = contacts.get(key) ?? { email: r.counterpart_email, name: '', threads: 0, open: 0, last: 0 }
+    entry.threads++
+    if (r.status === 'needs_reply') entry.open++
+    if (!entry.name && r.counterpart_name) entry.name = r.counterpart_name // rows arrive newest-first
+    entry.last = Math.max(entry.last, r.last_message_at ?? 0)
+    contacts.set(key, entry)
+  }
+  const list = [...contacts.values()].sort((a, b) => b.last - a.last)
+
+  return c.html(
+    <Shell member={member} collective={collective} title="Contacts" active="contacts" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
+      <div class="page">
+        <h1>Contacts</h1>
+        <p class="muted">Everyone this inbox has a conversation with — tap one to see your whole history together.</p>
+        <div class="rows">
+          {list.length === 0 ? (
+            <div class="empty-state">Nobody yet — contacts appear with the first conversation.</div>
+          ) : list.map((p) => (
+            <a class="row contact-row" href={contactUrl(base, p.email)}>
+              <span class="avatar" aria-hidden="true">{initials(p.name, p.email)}</span>
+              <span class="from">
+                {p.name || p.email.split('@')[0]}
+                <small>{p.email}</small>
+              </span>
+              <span class="subj">
+                {p.threads} conversation{p.threads === 1 ? '' : 's'}
+                {p.open ? <span class="snippet"> — {p.open} waiting for a reply</span> : null}
+              </span>
+              <span class="age">{relTime(p.last)}</span>
+            </a>
+          ))}
+        </div>
+      </div>
+    </Shell>,
+  )
+})
+
+app.get('/inbox/:addr/contact/:email', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const { collective, member } = t
+  const base = `/inbox/${collective.slug}`
+  const email = decodeURIComponent(c.req.param('email') || '').toLowerCase().trim()
+  if (!email) return c.redirect(`${base}/contacts`)
+
+  const threads = await all<Thread>(
+    "SELECT * FROM threads WHERE collective_id = ? AND lower(counterpart_email) = ? AND status != 'spam' ORDER BY last_message_at DESC",
+    [collective.id, email])
+  const lastMsgs = await lastMessageByThread(threads.map((th) => th.id))
+  const members = await memberMap(collective.id)
+  const name = threads.find((th) => th.counterpart_name)?.counterpart_name || email.split('@')[0]
+  const open = threads.filter((th) => th.status === 'needs_reply').length
+
+  return c.html(
+    <Shell member={member} collective={collective} title={name} active="contacts" flash={c.req.query('m')} sidebar={
+      <nav class="nav"><a class="nav-item" href={`${base}/contacts`}>← All contacts</a></nav>
+    }>
+      <div class="page">
+        <div class="contact-head">
+          <span class="avatar contact-avatar" aria-hidden="true">{initials(name, email)}</span>
+          <div class="contact-id">
+            <h1>{name}</h1>
+            <p class="muted">{email} · {threads.length} conversation{threads.length === 1 ? '' : 's'}{open ? ` · ${open} waiting for a reply` : ''}</p>
+          </div>
+          {canSendRole(member.role) ? (
+            <a class="btn small ghost" href={`${base}/compose?to=${encodeURIComponent(email)}`}>✉ New email</a>
+          ) : null}
+        </div>
+        <div class="rows">
+          {threads.length === 0 ? (
+            <div class="empty-state">No conversations with {email} yet.</div>
+          ) : threads.map((th) => {
+            const lastMsg = lastMsgs.get(th.id)
+            return (
+              <a class={`row contact-thread ${th.status === 'needs_reply' ? 'unread' : ''}`} href={`${base}/thread/${th.id}`}>
+                <span class={`dot ${th.status === 'needs_reply' ? 'open' : 'done'}`} />
+                <span class="subj">
+                  {th.subject} <span class="snippet">— {excerpt(lastMsg?.body_text || '', 90)}</span>
+                </span>
+                <AssigneeChip thread={th} members={members} />
+                <span class="age">{th.status === 'needs_reply' ? `waiting ${waitingFor(th.last_message_at)}` : relTime(th.last_message_at)}</span>
+              </a>
+            )
+          })}
+        </div>
+      </div>
+    </Shell>,
+  )
+})
+
 // ---------- tenant: thread ----------
 
 type TimelineItem =
@@ -1220,7 +1326,13 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                   <div class="msg-head">
                     <Avatar member={g.sent_by_member_id ? members.get(g.sent_by_member_id) : null} empty={g.direction === 'inbound'} />
                     <span class="who">
-                      <b>{g.direction === 'outbound' ? collective.name : g.from_name || g.from_email}</b>
+                      {g.direction === 'outbound' || !g.from_email ? (
+                        <b>{g.direction === 'outbound' ? collective.name : g.from_name || g.from_email}</b>
+                      ) : (
+                        <a class="sender-link" href={contactUrl(base, g.from_email)} title={`All conversations with ${g.from_name || g.from_email}`}>
+                          <b>{g.from_name || g.from_email}</b>
+                        </a>
+                      )}
                       <small>{g.from_email} → {JSON.parse(g.to_json || '[]').join(', ')}</small>
                     </span>
                     <span class="msg-meta">
@@ -1451,7 +1563,9 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
           <div class="side-block">
             <span class="label">Details</span>
             <span class="kv"><span class="k">STATUS</span> <StatusChip status={thread.status} /></span>
-            <span class="kv"><span class="k">FROM</span> {thread.counterpart_email || '—'}</span>
+            <span class="kv"><span class="k">FROM</span> {thread.counterpart_email
+              ? <a href={contactUrl(base, thread.counterpart_email)} title="All conversations with this sender">{thread.counterpart_email}</a>
+              : '—'}</span>
             <span class="kv"><span class="k">FIRST</span> {fmtDateTime(thread.first_message_at)}</span>
             <span class="kv"><span class="k">LAST</span> <TimeAgo ts={thread.last_message_at} /></span>
             {thread.status === 'needs_reply' ? <span class="kv"><span class="k">WAITING</span> <b>{waitingFor(thread.last_message_at)}</b></span> : null}
@@ -1616,14 +1730,14 @@ function parseRecipients(raw: unknown): string[] {
   return [...new Set(String(raw || '').split(/[\s,;]+/).map((a) => a.toLowerCase().trim()).filter(emailLooksValid))].slice(0, 20)
 }
 
-const ComposeForm = ({ base, addr, signature }: { base: string; addr: string; signature: string }) => (
+const ComposeForm = ({ base, addr, signature, to }: { base: string; addr: string; signature: string; to?: string }) => (
   <div class="page">
     <h1>New email</h1>
     <p class="muted">Sent as <b>{addr}</b>. Save it as a draft first and the thread gets a link you can share — teammates can weigh in with internal notes before anything goes out.</p>
     <form method="post" action={`${base}/compose`} class="card compose-form">
       <div class="c-row">
         <span class="c-k">To</span>
-        <input class="c-in" name="to" placeholder="them@example.org — comma-separate several" autocomplete="off" spellcheck={false} autofocus />
+        <input class="c-in" name="to" value={to || ''} placeholder="them@example.org — comma-separate several" autocomplete="off" spellcheck={false} autofocus={!to} />
       </div>
       {/* a <details>, not a JS toggle: reveals without JavaScript too */}
       <details class="cc-reveal">
@@ -1652,7 +1766,7 @@ app.get('/inbox/:addr/compose', async (c) => {
   const base = `/inbox/${t.collective.slug}`
   return c.html(
     <Shell member={t.member} collective={t.collective} title="New email" active="compose" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
-      <ComposeForm base={base} addr={outboundFrom(t.collective).fromAddress} signature={signatureFor(t.collective, t.member)} />
+      <ComposeForm base={base} addr={outboundFrom(t.collective).fromAddress} signature={signatureFor(t.collective, t.member)} to={String(c.req.query('to') || '') || undefined} />
     </Shell>,
   )
 })
