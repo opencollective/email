@@ -2778,7 +2778,13 @@ app.get('/inbox/:addr/domain', async (c) => {
 
   const domain = collective.resend_domain_id ? await getResendDomain(collective.resend_domain_id) : null
   const customAddr = collective.custom_domain ? `${collective.custom_local}@${collective.custom_domain}` : null
-  const verified = collective.domain_status === 'verified'
+  let verified = collective.domain_status === 'verified'
+  if (!verified && domain?.status === 'verified') {
+    // Resend finished its (asynchronous) check since we last looked — bank it
+    // now, so no section of this page claims we're still waiting on DNS
+    await run("UPDATE collectives SET domain_status = 'verified' WHERE id = ?", [collective.id])
+    verified = true
+  }
   return c.html(
     <Shell member={member} collective={collective} title="Your domain" active="domain" flash={c.req.query('m')} sidebar={<BackNav base={base} />}>
       <div class="page">
@@ -2835,11 +2841,12 @@ app.get('/inbox/:addr/domain', async (c) => {
                         <code style="font-size:11.5px">{rec.name}</code>
                         <code style="font-size:11.5px;overflow-wrap:anywhere;flex:1">{rec.value}</code>
                         <button class="btn small ghost" type="button" data-copy={rec.value}>Copy</button>
-                        <small>{rec.status === 'verified' ? '✓' : '…'}</small>
+                        <small title={rec.status === 'verified' ? 'found in DNS' : 'being checked'}>{rec.status === 'verified' ? '✓' : '…'}</small>
                       </div>
                     ))}
                   </div>
                 ) : <p class="fineprint">Could not load the DNS records — try “Check verification”.</p>}
+                <p class="fineprint">✓ found in DNS · … still being checked — while a re-check runs, even records that were ✓ show as … for a minute. Nothing is lost.</p>
                 <form method="post" action={`${base}/domain/verify`} class="btn-row">
                   <button class="btn small" type="submit" data-busy="Checking…">Check verification</button>
                 </form>
@@ -2898,13 +2905,28 @@ app.post('/inbox/:addr/domain/verify', async (c) => {
   if (t.member.role !== 'admin') return c.redirect(base)
   const collective = (await getCollective(t.collective.id))!
   if (!collective.resend_domain_id) return c.redirect(`${base}/domain`)
-  await verifyResendDomain(collective.resend_domain_id).catch(() => {})
-  const domain = await getResendDomain(collective.resend_domain_id)
+  const done = () => c.redirect(`${base}/domain?m=` + encodeURIComponent(`✓ ${collective.custom_domain} verified — replies now go out as ${collective.custom_local}@${collective.custom_domain}.`))
+
+  // Read BEFORE triggering: the trigger resets Resend's per-record statuses to
+  // pending while its async check runs, which is exactly the "my checkmarks
+  // disappeared" effect — and it threw away a finished verification to boot.
+  let domain = await getResendDomain(collective.resend_domain_id)
   if (domain?.status === 'verified') {
     await run("UPDATE collectives SET domain_status = 'verified' WHERE id = ?", [collective.id])
-    return c.redirect(`${base}/domain?m=` + encodeURIComponent(`✓ ${collective.custom_domain} verified — replies now go out as ${collective.custom_local}@${collective.custom_domain}.`))
+    return done()
   }
-  return c.redirect(`${base}/domain?m=` + encodeURIComponent('Not verified yet — DNS can take a few minutes to propagate. Try again shortly.'))
+  await verifyResendDomain(collective.resend_domain_id).catch(() => {})
+  // fast checks often land within seconds — give it a short moment before
+  // sending the user back to a page that says "pending"
+  for (let i = 0; i < 3; i++) {
+    await new Promise((r) => setTimeout(r, 1500))
+    domain = await getResendDomain(collective.resend_domain_id)
+    if (domain?.status === 'verified') {
+      await run("UPDATE collectives SET domain_status = 'verified' WHERE id = ?", [collective.id])
+      return done()
+    }
+  }
+  return c.redirect(`${base}/domain?m=` + encodeURIComponent('Re-check started — records already in DNS usually confirm within a minute or two. This page also re-checks itself every hour, so you can simply come back.'))
 })
 
 app.post('/inbox/:addr/domain/mx', async (c) => {

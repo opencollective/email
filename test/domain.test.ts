@@ -167,3 +167,55 @@ test('thread page + reply route reflect the verified custom domain (tenant proje
   const html2 = await page2.text()
   assert.match(html2, new RegExp(`as <b>${col.slug}@`), 'unverified falls back to the platform address')
 })
+
+// ---------- verification is read-before-trigger, and self-heals ----------
+
+test('the domain page banks a verification Resend finished on its own', async () => {
+  const { __setResendDomainStub } = await import('../src/domains.js')
+  const { createSession } = await import('../src/auth.js')
+  const { createCollective, get, run } = await import('../src/db.js')
+  const { now } = await import('../src/util.js')
+
+  const slug = `dver${Date.now() % 100000}`
+  const col = await createCollective(slug, 'DomainVerify', 'pro')
+  await run("UPDATE collectives SET custom_domain = 'madeleine.pod.brussels', custom_local = 'hello', resend_domain_id = 'dom_x', domain_status = 'pending', receive_mode = 'forward' WHERE id = ?", [col.id])
+  await run("INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, 'dv@t.test', 'D', 'admin', 'every', ?)", [col.id, now()])
+  const sid = await createSession('dv@t.test')
+
+  // Resend has finished its async check since we last looked
+  __setResendDomainStub({
+    id: 'dom_x', name: 'madeleine.pod.brussels', status: 'verified',
+    records: [{ record: 'DKIM', name: 'resend._domainkey', type: 'TXT', value: 'p=X', status: 'verified' }],
+  })
+  try {
+    const page = await app.request(`/inbox/${slug}/domain`, { headers: { cookie: `requests_sid=${sid}` } })
+    const html = await page.text()
+    assert.match(html, /verified — replies now go out as/i, 'no section still claims to be waiting on DNS')
+    assert.equal((await get<any>('SELECT domain_status FROM collectives WHERE id = ?', [col.id]))!.domain_status, 'verified',
+      'a plain page view banks the result — no button needed')
+  } finally {
+    __setResendDomainStub(null)
+  }
+})
+
+test('the hourly tick reads before it re-triggers, so a finished check is never reset away', async () => {
+  const { __setResendDomainStub, domainVerifyTick } = await import('../src/domains.js')
+  const { createCollective, get, run } = await import('../src/db.js')
+  const { cfg } = await import('../src/config.js')
+
+  const slug = `dtick${Date.now() % 100000}`
+  const col = await createCollective(slug, 'DomainTick', 'pro')
+  await run("UPDATE collectives SET custom_domain = 'tick.example.org', custom_local = 'hello', resend_domain_id = 'dom_t', domain_status = 'pending' WHERE id = ?", [col.id])
+
+  void cfg
+  // Resend already finished the check — the tick's READ must bank it, and the
+  // read must come before any re-trigger could reset it to pending
+  __setResendDomainStub({ id: 'dom_t', name: 'tick.example.org', status: 'verified', records: [] })
+  try {
+    await domainVerifyTick()
+    assert.equal((await get<any>('SELECT domain_status FROM collectives WHERE id = ?', [col.id]))!.domain_status, 'verified',
+      'the hourly tick banks a finished verification')
+  } finally {
+    __setResendDomainStub(null)
+  }
+})

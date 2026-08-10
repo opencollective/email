@@ -31,6 +31,10 @@ const STUB: ResendDomain = {
   ],
 }
 
+/** Test seam: fake what Resend reports without a key or network. */
+let stubOverride: ResendDomain | null = null
+export function __setResendDomainStub(d: ResendDomain | null) { stubOverride = d }
+
 export class ResendApiError extends Error {
   constructor(message: string, public status: number) { super(message) }
 }
@@ -77,7 +81,7 @@ export async function createResendDomain(name: string): Promise<ResendDomain> {
 }
 
 export async function getResendDomain(id: string): Promise<ResendDomain | null> {
-  if (!cfg.resendKey) return STUB
+  if (!cfg.resendKey) return stubOverride ?? STUB
   try {
     const d = await resend(`/domains/${id}`, 'GET')
     return { id: d.id, name: d.name, status: d.status, records: d.records || [] }
@@ -112,18 +116,22 @@ export const validLocalPart = (l: string) => /^[a-z0-9][a-z0-9._-]{0,63}$/.test(
  *  and walk away — the button on the domain page shouldn't be the only thing
  *  that ever notices the DNS went live. */
 export async function domainVerifyTick(): Promise<void> {
-  if (!cfg.resendKey) return
+  if (!cfg.resendKey && !stubOverride) return // stub keeps the tick testable
   const { all, run } = await import('./db.js')
   const pending = await all<{ id: number; resend_domain_id: string }>(
     "SELECT id, resend_domain_id FROM collectives WHERE resend_domain_id IS NOT NULL AND (domain_status IS NULL OR domain_status != 'verified') AND status = 'active'")
   for (const c of pending) {
     try {
-      await verifyResendDomain(c.resend_domain_id)
+      // READ first: Resend's verify is asynchronous and resets record statuses
+      // to pending while it runs, so trigger-then-read never sees "verified" —
+      // it re-arms the race every hour. Reading first banks last hour's result.
       const d = await getResendDomain(c.resend_domain_id)
       if (d?.status === 'verified') {
         await run("UPDATE collectives SET domain_status = 'verified' WHERE id = ?", [c.id])
         console.log(`[domains] collective ${c.id} domain verified by the hourly re-check`)
+        continue
       }
+      await verifyResendDomain(c.resend_domain_id) // next hour reads this check's result
     } catch { /* DNS is patient; so are we — next hour */ }
   }
 }
