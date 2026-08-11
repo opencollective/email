@@ -1070,3 +1070,6 @@ iframe.msg-frame {
   .sheet { margin: auto 0 0; width: 100%; max-width: none; max-height: 88dvh;
     border-radius: 16px 16px 0 0; border-bottom: none; }
 }
+
+/* file pickers: icon, then a text span the change handler may rewrite */
+.file-label .file-text { margin-left: 2px; }

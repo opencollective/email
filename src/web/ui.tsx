@@ -71,8 +71,12 @@ document.querySelectorAll('iframe.msg-frame').forEach((f) => {
 document.querySelectorAll('.file-input').forEach((inp) => {
   inp.addEventListener('change', () => {
     const label = inp.closest('.file-label');
+    const txt = label && label.querySelector('.file-text');
+    if (!txt) return;
     const n = inp.files.length;
-    label.firstChild.textContent = n ? '📎 ' + n + ' file' + (n > 1 ? 's' : '') + ' ' : '📎 Attach';
+    txt.textContent = n === 0 ? (txt.dataset.idle || 'Attach')
+      : n === 1 ? (inp.files[0].name.length > 22 ? inp.files[0].name.slice(0, 21) + '…' : inp.files[0].name)
+      : n + ' files';
   });
 });
 
@@ -207,6 +211,7 @@ const ICON_PATHS: Record<string, string> = {
   note: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
   forward: '<polyline points="15 14 20 9 15 4"/><path d="M4 20v-7a4 4 0 0 1 4-4h12"/>',
   clip: '<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
+  image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>',
   check: '<polyline points="20 6 9 17 4 12"/>',
   rotate: '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>',
   warn: '<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
@@ -233,7 +238,7 @@ export const StatusChip: FC<{ status: Thread['status'] }> = ({ status }) => {
 export const AssigneeChip: FC<{ thread: Thread; members: Map<number, Member> }> = ({ thread, members }) => {
   const m = thread.assignee_member_id ? members.get(thread.assignee_member_id) : null
   // only warn where it matters: an unanswered thread with no owner
-  if (!m) return thread.status === 'needs_reply' ? <span class="chip unassigned">⚠ unassigned</span> : null
+  if (!m) return thread.status === 'needs_reply' ? <span class="chip unassigned"><Icon name="warn" /> unassigned</span> : null
   return (
     <span class="chip assignee">
       <Avatar member={m} /> {m.name || m.email.split('@')[0]}
@@ -293,7 +298,7 @@ export const Page: FC<{ title?: string; flash?: string; bundle?: string; childre
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=50" />
+      <link rel="stylesheet" href="/static/style.css?v=51" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script
@@ -471,7 +476,7 @@ export const Shell: FC<{
             const days = state === 'trial' ? trialDaysLeft(props.collective) : null
             if (isAdmin && days !== null && days <= 15) return (
               <div class="billing-banner soft">
-                ⏳ {days} day{days === 1 ? '' : 's'} left in the free trial. <a href={`${base}/billing`}>Subscribe →</a>
+                <Icon name="clock" /> {days} day{days === 1 ? '' : 's'} left in the free trial. <a href={`${base}/billing`}>Subscribe →</a>
               </div>
             )
             return null

@@ -52,6 +52,9 @@ const SID = 'requests_sid'
  *  send external email; senders + admins are the paid contributor seats. */
 const canSendRole = (r: Member['role']) => r === 'member' || r === 'admin'
 const ROLE_LABELS: Record<Member['role'], string> = { reader: 'reader', commenter: 'commenter', member: 'sender', admin: 'admin' }
+/** "a sender" but "an admin" — only 'admin' starts with a vowel today, but the
+ *  rule is cheap and survives the next role we name. */
+const withArticle = (label: string) => `${/^[aeiou]/i.test(label) ? 'an' : 'a'} ${label}`
 const ROLE_HINTS: Record<Member['role'], string> = {
   reader: 'Reads everything and gets the digests — takes no actions.',
   commenter: 'Discusses internally: notes, assigning, tags — cannot email the outside world.',
@@ -581,7 +584,7 @@ app.get('/join/:token', async (c) => {
         {inviter ? `${memberName(inviter)} invited you to follow` : 'You were invited to follow'} email
         sent to <b>{collective.slug}@{cfg.emailDomain}</b>.
       </p>
-      <p class="muted">You'll join as a <b>{ROLE_LABELS[(invite.role || 'reader') as Member['role']]}</b> — {ROLE_HINTS[(invite.role || 'reader') as Member['role']].charAt(0).toLowerCase()}{ROLE_HINTS[(invite.role || 'reader') as Member['role']].slice(1)}</p>
+      <p class="muted">You'll join as {/^[aeiou]/i.test(ROLE_LABELS[(invite.role || 'reader') as Member['role']]) ? 'an' : 'a'} <b>{ROLE_LABELS[(invite.role || 'reader') as Member['role']]}</b> — {ROLE_HINTS[(invite.role || 'reader') as Member['role']].charAt(0).toLowerCase()}{ROLE_HINTS[(invite.role || 'reader') as Member['role']].slice(1)}</p>
       <form method="post" action={`/join/${token}`}>
         <label class="lbl">Your name</label>
         <input class="input" name="name" placeholder="First name (as teammates know you)" required />
@@ -1744,7 +1747,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               {/* the sign-off is in the text, so it can be edited or deleted before sending */}
               <textarea name="body" rows={6} placeholder={`Write to ${counterpartFirst}…`} data-draft="reply" data-signature={signature} required>{`\n\n${signature}`}</textarea>
               <div class="actions">
-                <label class="file-label"><Icon name="clip" /> Attach<input type="file" name="files" multiple class="file-input" /></label>
+                <label class="file-label"><Icon name="clip" /><span class="file-text" data-idle="Attach">Attach</span><input type="file" name="files" multiple class="file-input" /></label>
                 <span class="send-stack">
                   <button class="btn send-btn" type="submit" data-busy="Sending…">Send</button>
                   <span class="fineprint send-note">
@@ -2673,7 +2676,7 @@ app.get('/inbox/:addr/members', async (c) => {
           <h2>Invite someone</h2>
           {inviteUrl ? (
             <>
-              <p class="muted">Whoever opens this link joins as <b>{ROLE_LABELS[(invite!.role || 'reader') as Member['role']]}</b> — they pick their own email and notification level. Share it anywhere in your community.</p>
+              <p class="muted">Whoever opens this link joins as {/^[aeiou]/i.test(ROLE_LABELS[(invite!.role || 'reader') as Member['role']]) ? 'an' : 'a'} <b>{ROLE_LABELS[(invite!.role || 'reader') as Member['role']]}</b> — they pick their own email and notification level. Share it anywhere in your community.</p>
               <div class="invite-row">
                 <code class="invite-url">{inviteUrl}</code>
                 <button class="btn small" type="button" data-copy={inviteUrl}>Copy link</button>
@@ -2895,23 +2898,18 @@ app.get('/inbox/:addr/profile', async (c) => {
           <form method="post" action={`${base}/profile`} enctype="multipart/form-data" class="me-form">
             <div class="profile-avatar-row">
               <Avatar member={member} />
-              <label class="file-label">🖼 Change avatar<input type="file" name="avatar" accept="image/*" class="file-input" /></label>
+              <label class="file-label"><Icon name="image" /><span class="file-text" data-idle="Change avatar">Change avatar</span><input type="file" name="avatar" accept="image/*" class="file-input" /></label>
             </div>
             <label class="lbl">Display name</label>
             <input class="input" name="name" value={member.name} required />
-            <label class="lbl">Signed in as</label>
-            <p class="muted" style="margin:0">{member.email}</p>
             <div class="btn-row">
               <button class="btn small" type="submit" data-busy="Saving…">Save</button>
             </div>
           </form>
         </section>
         <section class="card">
-        </section>
-
-        <section class="card">
           <h2>Your membership in {collective.name}</h2>
-          <p class="muted">You're a {ROLE_LABELS[member.role]} here. Leaving removes your access to {collective.slug}@{cfg.emailDomain} until someone invites you back — the collective's mail stays untouched.</p>
+          <p class="muted">You're {withArticle(ROLE_LABELS[member.role])} here. Leaving removes your access to {collective.slug}@{cfg.emailDomain} until someone invites you back — the collective's mail stays untouched.</p>
           <div class="btn-row">
             <form method="post" action={`${base}/leave`}>
               <button class="btn small ghost danger-btn" type="submit" disabled={lastAdmin}
