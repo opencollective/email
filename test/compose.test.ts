@@ -113,3 +113,51 @@ test('replies carry Bcc too, stored on the message', async () => {
   assert.deepEqual(JSON.parse(m.cc_json!), ['ally@example.org'])
   assert.deepEqual(JSON.parse(m.bcc_json!), ['archive@example.org'])
 })
+
+// ---------- recipient caps by plan ----------
+
+test('a trial inbox cannot send one email to more than 3 people', async () => {
+  const fx = await fixture() // fixture collectives are on trial
+  const to = 'a@x.test, b@x.test'
+  const cc = 'c@x.test, d@x.test'
+  const res = await post(`/inbox/${fx.slug}/compose`, fx.sid, { to, cc, bcc: '', subject: 'Blast', body: 'hi', action: 'send' })
+  const loc = decodeURIComponent(res.headers.get('location')!)
+  assert.match(loc, /at most 3 people/, 'refused with the cap in the message')
+  assert.match(loc, /Saved as draft/, 'the work is kept, only the send is refused')
+  const th = (await get<any>("SELECT * FROM threads WHERE collective_id = ? ORDER BY id DESC LIMIT 1", [fx.collective.id]))!
+  assert.equal(th.status, 'draft', 'still a draft')
+  // 3 recipients is fine on trial
+  const ok = await post(`/inbox/${fx.slug}/compose`, fx.sid, { to: 'a@x.test', cc: 'c@x.test', bcc: 'e@x.test', subject: 'Fine', body: 'hi', action: 'send' })
+  assert.match(decodeURIComponent(ok.headers.get('location')!), /Sent to/)
+})
+
+test('paid plans send to 20, pro to 50 — and no further', async () => {
+  const fx = await fixture()
+  await run("UPDATE collectives SET stripe_status = 'active', plan = 'collective' WHERE id = ?", [fx.collective.id])
+  const many = (n: number) => Array.from({ length: n }, (_, i) => `r${i}@x.test`).join(', ')
+
+  const ok20 = await post(`/inbox/${fx.slug}/compose`, fx.sid, { to: many(20), subject: 'Update', body: 'hi', action: 'send' })
+  assert.match(decodeURIComponent(ok20.headers.get('location')!), /Sent to/)
+  const no21 = await post(`/inbox/${fx.slug}/compose`, fx.sid, { to: many(21), subject: 'Update', body: 'hi', action: 'send' })
+  assert.match(decodeURIComponent(no21.headers.get('location')!), /at most 20 people/)
+
+  await run("UPDATE collectives SET plan = 'pro' WHERE id = ?", [fx.collective.id])
+  const ok50 = await post(`/inbox/${fx.slug}/compose`, fx.sid, { to: many(50), subject: 'Update', body: 'hi', action: 'send' })
+  assert.match(decodeURIComponent(ok50.headers.get('location')!), /Sent to/)
+  const no51 = await post(`/inbox/${fx.slug}/compose`, fx.sid, { to: many(51), subject: 'Update', body: 'hi', action: 'send' })
+  assert.match(decodeURIComponent(no51.headers.get('location')!), /at most 50 people/)
+})
+
+test('the reply cap counts the sender plus Cc and Bcc', async () => {
+  const fx = await fixture()
+  const t = await run(`INSERT INTO threads (collective_id, subject, status, counterpart_email, counterpart_name, first_message_at, last_message_at, last_direction, created_at, updated_at)
+    VALUES (?, 'Hello', 'needs_reply', 'ruta@x.test', 'Ruta', ?, ?, 'inbound', ?, ?)`, [fx.collective.id, now(), now(), now(), now()])
+  await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_email, from_name, to_json, body_text, sent_at, created_at)
+    VALUES (?, ?, 'inbound', 'ruta@x.test', 'Ruta', '[]', 'hello', ?, ?)`, [t.lastId, `<cap-${uniq()}@x>`, now(), now()])
+  const threadId = t.lastId
+  // trial: 1 (Ruta) + 3 Cc = 4 > 3
+  const res = await post(`/inbox/${fx.slug}/thread/${threadId}/reply`, fx.sid,
+    { body: 'hi all', cc: 'a@x.test, b@x.test, c@x.test', bcc: '' })
+  assert.match(decodeURIComponent(res.headers.get('location')!), /at most 3 people/)
+  assert.equal(await get("SELECT id FROM messages WHERE thread_id = ? AND direction = 'outbound'", [threadId]), undefined, 'nothing went out')
+})

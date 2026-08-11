@@ -5,7 +5,7 @@ import {
   type Collective, type Member, type Message,
 } from './db.js'
 import { escapeHtml, now } from './util.js'
-import { assertCanSend } from './billing.js'
+import { assertCanSend, assertRecipientCap } from './billing.js'
 
 /** Who a reply goes out as. Verified Pro domains send as the custom address;
  *  a configured-but-unverified domain degrades to slug@ with the custom
@@ -51,6 +51,7 @@ export async function sendCollectiveReply(
   const lastIn = await lastInboundMessage(threadId)
   const to = thread.counterpart_email || lastIn?.from_email
   if (!to) throw new Error('This thread has no external sender to reply to.')
+  assertRecipientCap(collective, 1 + cc.length + bcc.length)
 
   let body = text.trim()
   if (!body && attachments.length === 0) throw new Error('Reply is empty.')
@@ -198,6 +199,7 @@ export async function sendComposed(collective: Collective, threadId: number, mem
   const cc = (JSON.parse(draft.cc_json || '[]') as string[]).filter(Boolean)
   const bcc = (JSON.parse(draft.bcc_json || '[]') as string[]).filter(Boolean)
   if (to.length === 0) throw new Error('Add at least one recipient before sending.')
+  assertRecipientCap(collective, to.length + cc.length + bcc.length)
 
   let body = (draft.body_text || '').trim()
   if (!body) throw new Error('The draft is empty.')

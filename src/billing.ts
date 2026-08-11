@@ -40,6 +40,22 @@ export const PLAN_LIMITS: Record<string, { contributors: number; replies: number
 
 export const planLimits = (plan: string) => PLAN_LIMITS[plan] || PLAN_LIMITS.collective
 
+/** How many people one outbound email may address, To + Cc + Bcc combined.
+ *  Trials get 3 — enough to write to a real person, useless for a spam run. */
+export function recipientLimit(c: Pick<Collective, 'plan' | 'stripe_status' | 'trial_ends_at' | 'comped'>): number {
+  if (billingState(c) === 'trial') return 3
+  return c.plan === 'pro' ? 50 : 20
+}
+
+export function assertRecipientCap(collective: Collective, count: number): void {
+  const cap = recipientLimit(collective)
+  if (count <= cap) return
+  const fix = billingState(collective) === 'trial'
+    ? 'Subscribing raises it to 20.'
+    : collective.plan === 'pro' ? '' : 'The Pro plan raises it to 50.'
+  throw new Error(`One email can go to at most ${cap} people here (To, Cc and Bcc combined) — this one names ${count}. ${fix}`.trim())
+}
+
 /** Outbound replies sent by this collective in the current calendar month. */
 export async function repliesThisMonth(collectiveId: number): Promise<number> {
   const d = new Date()

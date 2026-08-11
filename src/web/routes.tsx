@@ -973,8 +973,13 @@ app.get('/inbox/:addr', async (c) => {
     args.push(tag)
   }
   if (q) {
-    where += ' AND (t.subject LIKE ? OR t.counterpart_email LIKE ? OR t.counterpart_name LIKE ?)'
-    args.push(`%${q}%`, `%${q}%`, `%${q}%`)
+    // people count as much as subjects: a name or address anywhere in the
+    // conversation (sender, To, Cc, Bcc of any message) matches the thread
+    where += ` AND (t.subject LIKE ? OR t.counterpart_email LIKE ? OR t.counterpart_name LIKE ?
+      OR EXISTS (SELECT 1 FROM messages pm WHERE pm.thread_id = t.id AND (
+        pm.from_name LIKE ? OR pm.from_email LIKE ? OR pm.to_json LIKE ? OR pm.cc_json LIKE ? OR pm.bcc_json LIKE ?)))`
+    const like = `%${q}%`
+    args.push(like, like, like, like, like, like, like, like)
   }
   const sortQ = c.req.query('sort')
   const sort = sortQ === 'newest' || sortQ === 'oldest' ? sortQ : f === 'needs_reply' ? 'oldest' : 'newest'
@@ -1125,8 +1130,10 @@ app.post('/inbox/:addr/contact/:email/auto-assign', async (c) => {
  *  Matches the quoted address inside the JSON arrays, lowercased both sides. */
 async function threadsInvolving(collectiveId: number, email: string, excludeId = 0): Promise<Thread[]> {
   const like = `%"${email}"%`
+  // LEFT JOIN: a thread whose only tie is its counterpart (no messages yet,
+  // e.g. a fresh draft) still counts
   return all<Thread>(
-    `SELECT DISTINCT t.* FROM threads t JOIN messages m ON m.thread_id = t.id
+    `SELECT DISTINCT t.* FROM threads t LEFT JOIN messages m ON m.thread_id = t.id
      WHERE t.collective_id = ? AND t.status != 'spam' AND t.id != ?
        AND (lower(t.counterpart_email) = ? OR lower(m.from_email) = ?
             OR lower(m.to_json) LIKE ? OR lower(m.cc_json) LIKE ? OR lower(m.bcc_json) LIKE ?)
@@ -1357,6 +1364,9 @@ type TimelineItem =
   | { kind: 'msg'; ts: number; msg: Message }
   | { kind: 'note'; ts: number; id: number; member_id: number; body: string }
   | { kind: 'event'; ts: number; ev: { actor_member_id: number | null; type: string; data_json: string | null } }
+  // GitHub-style cross-reference: something happened in another thread with
+  // the same contact while this conversation was running
+  | { kind: 'related'; ts: number; threadId: number; subject: string; what: string }
 
 async function threadOf(c: Context<Env>, t: { collective: Collective }): Promise<Thread | undefined> {
   const thread = await getThread(Number(c.req.param('id')))
@@ -1398,13 +1408,13 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   // this response carries already includes the viewer
   await markThreadSeen(thread.id, member.id, 'web')
   const reads = await threadReads(thread.id)
-  const otherThreads = thread.counterpart_email ? await all<Thread>(
-    "SELECT * FROM threads WHERE collective_id = ? AND lower(counterpart_email) = lower(?) AND id != ? AND status != 'spam' ORDER BY last_message_at DESC LIMIT 5",
-    [collective.id, thread.counterpart_email, thread.id]) : []
+  // every other thread this contact is part of — sender OR merely Cc'd (the
+  //  Odoo pattern: a quote emailed to the contact with the collective in copy)
+  const otherAll = thread.counterpart_email
+    ? await threadsInvolving(collective.id, thread.counterpart_email.toLowerCase(), thread.id) : []
+  const otherThreads = otherAll.slice(0, 5)
+  const otherCount = otherAll.length
   const firstInboundId = msgs.find((m) => m.direction === 'inbound' && m.from_email && m.from_email.toLowerCase() === (thread.counterpart_email || '').toLowerCase())?.id
-  const otherCount = thread.counterpart_email ? Number((await get<{ n: number }>(
-    "SELECT COUNT(*) AS n FROM threads WHERE collective_id = ? AND lower(counterpart_email) = lower(?) AND id != ? AND status != 'spam'",
-    [collective.id, thread.counterpart_email, thread.id]))?.n ?? 0) : 0
   // who did something on the thread (replied or left a note), for the sidebar
   const contributed = new Set<number>([
     ...msgs.filter((m) => m.sent_by_member_id).map((m) => m.sent_by_member_id!),
@@ -1437,10 +1447,31 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   const threadCc: string[] = JSON.parse(thread.cc_json || '[]')
   const signature = signatureFor(collective, member)
 
+  // cross-references: sibling threads that started (or closed) after this
+  // conversation began — shown inline where they happened, like a linked PR
+  const related: TimelineItem[] = []
+  if (otherAll.length) {
+    const startedAfter = otherAll.filter((o) => (o.first_message_at ?? 0) >= (thread.first_message_at ?? 0))
+    for (const o of startedAfter) {
+      related.push({ kind: 'related', ts: o.first_message_at!, threadId: o.id, subject: o.subject || '(no subject)', what: 'started' })
+    }
+    const sibIds = startedAfter.map((o) => o.id)
+    if (sibIds.length) {
+      const sibEvents = await all<{ thread_id: number; type: string; created_at: number }>(
+        `SELECT thread_id, type, created_at FROM events WHERE thread_id IN (${sibIds.map(() => '?').join(',')}) AND type IN ('closed', 'reopened')`, sibIds)
+      const byId = new Map(startedAfter.map((o) => [o.id, o]))
+      for (const e of sibEvents) {
+        const o = byId.get(e.thread_id)!
+        related.push({ kind: 'related', ts: e.created_at, threadId: o.id, subject: o.subject || '(no subject)', what: e.type === 'closed' ? 'closed' : 'reopened' })
+      }
+    }
+  }
+
   const items: TimelineItem[] = [
     ...msgs.map((m): TimelineItem => ({ kind: 'msg', ts: m.sent_at || m.created_at, msg: m })),
     ...notes.map((n): TimelineItem => ({ kind: 'note', ts: n.created_at, id: n.id, member_id: n.member_id, body: n.body })),
     ...events.map((e): TimelineItem => ({ kind: 'event', ts: e.created_at, ev: e })),
+    ...related,
   ].sort((a, b) => a.ts - b.ts)
 
   const groups: (Message | TimelineItem[])[] = []
@@ -1566,6 +1597,11 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                       </div>
                     ) : item.kind === 'event' ? (
                       <div class="event">{eventText(item.ev, members)} · {relTime(item.ts)}</div>
+                    ) : item.kind === 'related' ? (
+                      <div class="event related-ev">
+                        <Icon name="forward" /> {item.what === 'started' ? 'New thread with' : item.what === 'closed' ? 'Thread closed with' : 'Thread reopened with'} {counterpartFirst}:{' '}
+                        <a href={`${base}/thread/${item.threadId}`}>{item.subject}</a> · {relTime(item.ts)}
+                      </div>
                     ) : null,
                   )}
                 </div>
@@ -1963,11 +1999,12 @@ app.post('/inbox/:addr/thread/:id/reply', async (c) => {
   }
 })
 
-/** "a@x.test, b@y.test" → ['a@x.test','b@y.test'] (deduped, invalid dropped). */
+/** "a@x.test, b@y.test" → ['a@x.test','b@y.test'] (deduped, invalid dropped).
+ *  Capped above any plan's recipient limit — the plan cap does the refusing. */
 const parseEmails = (raw: string): string[] => [...new Set(
   raw.split(/[,;\s]+/).map((e) => e.trim().toLowerCase())
     .filter((e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)),
-)].slice(0, 20)
+)].slice(0, 60)
 
 app.post('/inbox/:addr/thread/:id/forward', async (c) => {
   const t = await tenant(c)
@@ -2011,9 +2048,11 @@ app.post('/inbox/:addr/thread/:id/note', async (c) => {
 
 // ---------- compose: a new email the collective starts ----------
 
-/** "email one, two@ three" → clean list, capped, invalid dropped. */
+/** "email one, two@ three" → clean list, invalid dropped. Parsed generously
+ *  (above any plan's cap) so the plan limit surfaces as an honest error at
+ *  send time instead of a silent trim here. */
 function parseRecipients(raw: unknown): string[] {
-  return [...new Set(String(raw || '').split(/[\s,;]+/).map((a) => a.toLowerCase().trim()).filter(emailLooksValid))].slice(0, 20)
+  return [...new Set(String(raw || '').split(/[\s,;]+/).map((a) => a.toLowerCase().trim()).filter(emailLooksValid))].slice(0, 60)
 }
 
 const ComposeForm = ({ base, addr, signature, to }: { base: string; addr: string; signature: string; to?: string }) => (

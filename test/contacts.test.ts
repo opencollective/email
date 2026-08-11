@@ -122,3 +122,42 @@ test('an admin can set who new threads from a contact auto-assign to', async () 
   assert.match(decodeURIComponent(clear.headers.get('location')!), /no longer auto-assigned/)
   assert.equal(await get("SELECT id FROM rules WHERE collective_id = ? AND lower(match_from) = 'marie@example.org'", [fx.collective.id]), undefined)
 })
+
+test('search finds threads by the people in the conversation, not just the sender', async () => {
+  const fx = await fixture()
+  await fx.thread('ruta@europeancorrespondent.com', 'Ruta Puodziukynaite', 'Quotation for the event spaces')
+  // a thread from someone else where Ruta is only on the Cc
+  const other = await run(`INSERT INTO threads (collective_id, subject, status, counterpart_email, counterpart_name, first_message_at, last_message_at, last_direction, created_at, updated_at)
+    VALUES (?, 'Invoice INV-42', 'answered', 'noreply@odoo.test', 'Odoo', ?, ?, 'inbound', ?, ?)`, [fx.collective.id, now(), now(), now(), now()])
+  await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_email, from_name, to_json, cc_json, body_text, sent_at, created_at)
+    VALUES (?, ?, 'inbound', 'noreply@odoo.test', 'Odoo', '["ruta@europeancorrespondent.com"]', '[]', 'invoice attached', ?, ?)`,
+    [other.lastId, `<sq-${uniq()}@x>`, now(), now()])
+  // and one with no Ruta anywhere
+  await fx.thread('bob@example.org', 'Bob', 'Unrelated business')
+
+  const html = await (await page(`/inbox/${fx.slug}?q=Ruta`, fx.sid)).text()
+  assert.match(html, /Quotation for the event spaces/, 'her own thread matches')
+  assert.match(html, /Invoice INV-42/, 'the thread that merely emails her matches too')
+  assert.doesNotMatch(html, /Unrelated business/)
+})
+
+test('the timeline cross-references threads with the same contact, GitHub-style', async () => {
+  const fx = await fixture()
+  const main = await fx.thread('ruta@europeancorrespondent.com', 'Ruta', 'Quotation for the event spaces')
+  // later, Odoo opens a new thread by emailing Ruta with the collective in copy
+  const later = now() + 3600
+  const sib = await run(`INSERT INTO threads (collective_id, subject, status, counterpart_email, counterpart_name, first_message_at, last_message_at, last_direction, created_at, updated_at)
+    VALUES (?, 'Quote Q-0042', 'answered', 'noreply@odoo.test', 'Odoo', ?, ?, 'inbound', ?, ?)`, [fx.collective.id, later, later, later, later])
+  await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_email, to_json, cc_json, body_text, sent_at, created_at)
+    VALUES (?, ?, 'inbound', 'noreply@odoo.test', '["ruta@europeancorrespondent.com"]', '["${fx.slug}@collective.email"]', 'your quote', ?, ?)`,
+    [sib.lastId, `<xref-${uniq()}@x>`, later, later])
+
+  const html = await (await page(`/inbox/${fx.slug}/thread/${main}`, fx.sid)).text()
+  assert.match(html, /related-ev/, 'the cross-reference marker renders')
+  assert.match(html, /New thread with Ruta/)
+  assert.match(html, new RegExp(`/thread/${sib.lastId}"[^>]*>Quote Q-0042`), 'and links to the sibling')
+
+  // the sibling predates nothing on its own page — no marker for older threads
+  const sibHtml = await (await page(`/inbox/${fx.slug}/thread/${sib.lastId}`, fx.sid)).text()
+  assert.doesNotMatch(sibHtml, /related-ev/, 'older sibling threads stay in the sidebar, not the timeline')
+})

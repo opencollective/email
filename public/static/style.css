@@ -1098,3 +1098,9 @@ button.row.new-thread-row {
 }
 .rule-editor { display: grid; gap: 6px; }
 .rule-editor .btn-row { margin-top: 10px; }
+
+/* cross-reference marker: another thread with this contact, GitHub-style */
+.event.related-ev { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.related-ev .ic { width: 13px; height: 13px; flex: none; color: var(--muted); }
+.related-ev a { color: var(--ink); font-weight: 600; text-decoration-color: var(--line); }
+.related-ev a:hover { color: var(--accent); }
