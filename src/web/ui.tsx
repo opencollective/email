@@ -190,17 +190,19 @@ if (typingEl) {
   setInterval(poll, 12000);
 }
 
-// Apple-Mail Cc/Bcc line: expanded rows fold back when the body textarea takes
-// focus, unless the person actually typed a Cc/Bcc — those must stay visible.
+// Apple-Mail Cc/Bcc line: the expanded rows fold back as soon as attention
+// moves on — to the body, the To line or the subject — unless a Cc/Bcc was
+// actually typed, in which case hiding it would hide a real recipient.
 document.querySelectorAll('form .ccb').forEach((d) => {
   const form = d.closest('form');
-  const ta = form && form.querySelector('textarea');
-  if (!ta) return;
-  ta.addEventListener('focus', () => {
+  if (!form) return;
+  const fold = () => {
     const cc = form.querySelector('input[name="cc"]');
     const bcc = form.querySelector('input[name="bcc"]');
     if (!(cc && cc.value.trim()) && !(bcc && bcc.value.trim())) d.open = false;
-  });
+  };
+  form.querySelectorAll('textarea, input[name="to"], input[name="subject"]')
+    .forEach((el) => el.addEventListener('focus', fold));
 });
 
 // Open a thread where you left off: jump to the first thing you haven't seen.
@@ -320,7 +322,7 @@ export const Page: FC<{ title?: string; flash?: string; bundle?: string; childre
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=56" />
+      <link rel="stylesheet" href="/static/style.css?v=57" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script

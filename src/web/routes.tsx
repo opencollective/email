@@ -1199,6 +1199,10 @@ const ThreadRow: FC<{
   const lastWho = lastBy
     ? { title: memberName(lastBy), member: lastBy }
     : { title: p.lastMsg?.from_name || p.lastMsg?.from_email || th.counterpart_name || th.counterpart_email || 'the sender', member: undefined }
+  // the stack ends on the author of the quoted line, so "who spoke last" is
+  // never ambiguous; the others are everyone else who took part
+  const stackBefore = (p.participants ?? []).filter((mid) => mid !== lastBy?.id).slice(0, 3)
+  const stackNames = [...stackBefore.map((mid) => memberName(p.members.get(mid))), lastWho.title]
   const sameDay = shortDate(th.first_message_at) === shortDate(th.last_message_at)
   // a REAL two-row grid (named areas), so line 1 aligns across every column
   // and line 2 does too — stacked cells only pretend to be rows
@@ -1211,9 +1215,14 @@ const ThreadRow: FC<{
       {showSender ? <span class="r-mail">{th.counterpart_email}</span> : null}
       <span class="r-subj">{th.subject}{(p.tags ?? []).slice(0, 2).map((tg) => <span class="chip">#{tg.name}</span>)}</span>
       <span class="r-snip">
-        {p.lastMsg ? (lastBy
-          ? <Avatar member={lastBy} />
-          : <span class="avatar mini-out" title={lastWho.title}>{initials(p.lastMsg.from_name || '', p.lastMsg.from_email || th.counterpart_email || '?')}</span>
+        {p.lastMsg ? (
+          <span class="snip-stack" title={`${stackNames.join(', ')} — last: ${lastWho.title}`}>
+            {/* everyone who contributed, ending on the author of this very line */}
+            {stackBefore.map((mid) => <Avatar member={p.members.get(mid)} />)}
+            {lastBy
+              ? <Avatar member={lastBy} />
+              : <span class="avatar mini-out" title={lastWho.title}>{initials(p.lastMsg.from_name || '', p.lastMsg.from_email || th.counterpart_email || '?')}</span>}
+          </span>
         ) : null}
         {excerpt(p.lastMsg?.body_text || '', 110)}
       </span>
@@ -1222,8 +1231,7 @@ const ThreadRow: FC<{
         <StatusChip status={th.status} />
       </span>
       <span class="r-meta2">
-        <span class="participants">{(p.participants ?? []).slice(0, 4).map((mid) => <Avatar member={p.members.get(mid)} />)}</span>
-        {p.noteCount ? <span class="r-notes">⌁ {p.noteCount} note{p.noteCount === 1 ? '' : 's'}</span> : null}
+        {p.noteCount ? <span class="r-notes"><Icon name="note" /> {p.noteCount} note{p.noteCount === 1 ? '' : 's'}</span> : null}
       </span>
     </a>
   )
@@ -2795,10 +2803,10 @@ app.get('/inbox/:addr/members', async (c) => {
   const adminCount = members.filter((m) => m.role === 'admin').length
 
   return c.html(
-    <Shell member={member} collective={collective} title="Members" active="members" flash={c.req.query('m')} back={{ href: base, label: 'Back to inbox' }}>
+    <Shell member={member} collective={collective} title="Collective" active="members" flash={c.req.query('m')} back={{ href: base, label: 'Back to inbox' }}>
       <div class="page">
-        <h1>Members</h1>
-        <p class="muted">Email sent to <b>{collective.slug}@{cfg.emailDomain}</b> lands here for the whole group. Readers follow along, commenters discuss internally, senders answer, admins run the place.</p>
+        <h1>Collective</h1>
+        <p class="muted">Manage the members of the <b>{collective.name}</b> collective and define who should be able to open this mailbox, add internal notes and reply as the collective.</p>
 
         <section class="card">
           <h2>Invite someone</h2>

@@ -65,7 +65,7 @@ test('contact view: only that sender\'s threads, with a compose shortcut', async
   assert.doesNotMatch(html, /Unrelated thing/, 'other senders stay out')
   assert.match(html, new RegExp(`/thread/${t1}`), 'threads link through')
   assert.match(html, /compose\?to=marie%40example\.org/, 'one click to email them')
-  assert.match(html, /class="participants"/)
+  assert.match(html, /class="snip-stack"/, 'contributors sit with the line they wrote')
   assert.match(html, /title="Leen"/, 'the member who replied/noted shows as a participant')
   assert.match(html, /class="r-d1"/, 'first + last dates rendered')
   assert.match(html, /class="row no-sender/, 'the shared ThreadRow, sender column dropped')
@@ -196,8 +196,12 @@ test('a thread row shows who wrote the line it quotes', async () => {
 
   const html = await (await page(`/inbox/${fx.slug}`, fx.sid)).text()
   const row = /<a class="row[^"]*"[^>]*>[\s\S]*?<\/a>/.exec(html)![0]
-  assert.match(row, /class="r-snip">\s*<span class="avatar"[^>]*title="Xavier"/, 'the replying member fronts their own line')
+  const stack = /<span class="snip-stack"[^>]*>([\s\S]*?)<\/span>\s*Here is/.exec(row)
+  assert.ok(stack, 'the quoted line carries a stack of who took part')
+  const avatars = [...stack![1].matchAll(/title="([^"]+)"/g)].map((m) => m[1])
+  assert.equal(avatars[avatars.length - 1], 'Xavier', 'the stack ENDS on whoever wrote this line')
   assert.match(row, /Here is the updated quote/)
+  assert.doesNotMatch(row, /class="participants"/, 'and the noisy right-hand column is gone')
 })
 
 test('contacts are listed alphabetically, accents and case folded', async () => {

@@ -1152,10 +1152,17 @@ button.row.new-thread-row {
   .row.new-thread-row.nt-dated { grid-template-columns: 22px 1fr; grid-template-areas: "dot label" "dot tip"; }
 }
 
-/* line 2 leads with the face of whoever wrote it */
+/* line 2 leads with who took part, ending on whoever wrote the quoted line */
 .r-snip { display: flex; align-items: center; gap: 6px; }
+.snip-stack { display: inline-flex; align-items: center; flex: none; }
 .r-snip .avatar {
   width: 18px; height: 18px; min-width: 18px; max-width: 18px; min-height: 18px; max-height: 18px;
   font-size: 8.5px; flex: none;
 }
+/* overlapped, so a long cast costs a few pixels rather than the whole line */
+.snip-stack .avatar { margin-right: -6px; box-shadow: 0 0 0 1.5px var(--paper); }
+/* the last one is the author of this line: full size, no overlap after it */
+.snip-stack .avatar:last-child { margin-right: 0; }
+.snip-stack .avatar:not(:last-child) { opacity: 0.75; }
 .r-snip .avatar.mini-out { background: var(--fill); color: var(--muted); border-style: dashed; }
+.unread .snip-stack .avatar:not(:last-child) { opacity: 0.85; }
