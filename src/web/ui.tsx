@@ -299,7 +299,7 @@ export const Page: FC<{ title?: string; flash?: string; bundle?: string; childre
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=53" />
+      <link rel="stylesheet" href="/static/style.css?v=54" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script
@@ -348,12 +348,17 @@ export const AuthCard: FC<{ title?: string; flash?: string; children?: Child }> 
   </Page>
 )
 
-const Menu: FC<{ base: string; active: string; isAdmin: boolean; canSend: boolean }> = ({ base, active, isAdmin, canSend }) => (
+/** The one navigation. `filters` (the inbox's Needs reply / Mine / …) nests
+ *  directly under Inbox, because that is what it filters. */
+const Menu: FC<{ base: string; active: string; isAdmin: boolean; canSend: boolean; filters?: Child; inboxCount?: number; inboxOn?: boolean }> = ({ base, active, isAdmin, canSend, filters, inboxCount, inboxOn }) => (
   <nav class="nav">
-    <a class={`nav-item ${active === 'inbox' ? 'active' : ''}`} href={base}><Icon name="inbox" /> Inbox</a>
     {canSend ? <a class={`nav-item ${active === 'compose' ? 'active' : ''}`} href={`${base}/compose`}><Icon name="pencil" /> New email</a> : null}
+    <a class={`nav-item ${active === 'inbox' && inboxOn !== false ? 'active' : ''}`} href={base}>
+      <Icon name="inbox" /> Inbox {inboxCount ? <span class="count">{inboxCount}</span> : null}
+    </a>
+    {filters}
     <a class={`nav-item ${active === 'contacts' ? 'active' : ''}`} href={`${base}/contacts`}><Icon name="book" /> Contacts</a>
-    <a class={`nav-item ${active === 'members' ? 'active' : ''}`} href={`${base}/members`}><Icon name="users" /> Members</a>
+    <a class={`nav-item ${active === 'members' ? 'active' : ''}`} href={`${base}/members`}><Icon name="users" /> Collective</a>
     <a class={`nav-item ${active === 'notifications' ? 'active' : ''}`} href={`${base}/notifications`}><Icon name="bell" /> Notifications</a>
     {isAdmin ? <a class={`nav-item ${active === 'rules' ? 'active' : ''}`} href={`${base}/rules`}><Icon name="zap" /> Rules</a> : null}
     {/* one entry for the three admin config pages: name, domain, billing */}
@@ -371,6 +376,10 @@ export const Shell: FC<{
   flash?: string
   bundle?: string
   sidebar?: Child
+  /** total in the inbox, shown on the Inbox item itself */
+  inboxCount?: number
+  /** false when a sub-filter is the active one, so Inbox doesn't also light up */
+  inboxOn?: boolean
   /** where "back" leads; on mobile the hamburger morphs into a left arrow */
   back?: { href: string; label: string }
   children?: Child
@@ -406,9 +415,7 @@ export const Shell: FC<{
             <div class="org-menu" hidden />
           </div>
           {props.back ? <nav class="nav"><a class="nav-item" href={props.back.href}>← {props.back.label}</a></nav> : null}
-          {props.sidebar}
-          <div class="label">Menu</div>
-          <Menu base={base} active={props.active} isAdmin={isAdmin} canSend={canSend} />
+          <Menu base={base} active={props.active} isAdmin={isAdmin} canSend={canSend} filters={props.sidebar} inboxCount={props.inboxCount} inboxOn={props.inboxOn} />
           <div class="side-foot">{userBlock}</div>
         </aside>
 
@@ -445,7 +452,7 @@ export const Shell: FC<{
               </a>
               <div class="org-menu" hidden />
             </div>
-            <Menu base={base} active={props.active} isAdmin={isAdmin} canSend={canSend} />
+            <Menu base={base} active={props.active} isAdmin={isAdmin} canSend={canSend} filters={props.sidebar} inboxCount={props.inboxCount} inboxOn={props.inboxOn} />
             <div class="drawer-foot">{userBlock}</div>
           </div>
         </div>

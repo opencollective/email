@@ -1104,3 +1104,24 @@ button.row.new-thread-row {
 .related-ev .ic { width: 13px; height: 13px; flex: none; color: var(--muted); }
 .related-ev a { color: var(--ink); font-weight: 600; text-decoration-color: var(--line); }
 .related-ev a:hover { color: var(--accent); }
+
+/* inbox filters, nested under Inbox in the menu */
+.sub-nav { display: flex; flex-direction: column; margin: 2px 0 6px; }
+.nav-item.sub-item {
+  padding-left: 34px; font-size: 13.5px; color: var(--muted); min-height: 30px;
+}
+.nav-item.sub-item.active { color: var(--ink); font-weight: 600; }
+
+/* tags: a filter bar under the search, scrollable rather than wrapping */
+.tag-bar {
+  display: flex; gap: 6px; align-items: center; overflow-x: auto; padding: 0 14px 10px;
+  scrollbar-width: none; -webkit-overflow-scrolling: touch;
+}
+.tag-bar::-webkit-scrollbar { display: none; }
+.tag-chip {
+  flex: none; text-decoration: none; height: 26px; display: inline-flex; align-items: center; gap: 5px;
+}
+.tag-chip:hover { border-color: var(--accent); color: var(--accent); }
+.tag-chip.on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.tag-chip.on .count { color: var(--paper); opacity: 0.7; }
+@media (min-width: 901px) { .tag-bar { padding: 0 18px 10px; } }

@@ -1028,24 +1028,20 @@ app.get('/inbox/:addr', async (c) => {
     tagsMap.get(r.thread_id)!.push({ id: r.id, name: r.name })
   }
 
+  // the inbox's own filters — nested under Inbox in the menu
   const sidebar = (
-    <nav class="nav">
-      {Object.entries(FILTERS).filter(([k]) => k !== 'spam' || counts.spam > 0).map(([key, def]) => (
-        <a class={`nav-item ${f === key && !tag ? 'active' : ''}`} href={`${base}?f=${key}`}>
+    <div class="sub-nav">
+      {Object.entries(FILTERS).filter(([k]) => k !== 'all' && (k !== 'spam' || counts.spam > 0)).map(([key, def]) => (
+        <a class={`nav-item sub-item ${f === key && !tag ? 'active' : ''}`} href={`${base}?f=${key}`}>
           {def.label} <span class="count">{counts[key]}</span>
         </a>
       ))}
-      {tagRows.length > 0 ? <div class="label">Tags</div> : null}
-      {tagRows.map((tr) => (
-        <a class={`nav-item ${tag === tr.name ? 'active' : ''}`} href={`${base}?f=all&tag=${encodeURIComponent(tr.name)}`}>
-          # {tr.name} <span class="count">{tr.n}</span>
-        </a>
-      ))}
-    </nav>
+    </div>
   )
 
   return c.html(
-    <Shell member={member} collective={collective} active="inbox" flash={c.req.query('m')} sidebar={sidebar}>
+    <Shell member={member} collective={collective} active="inbox" flash={c.req.query('m')} sidebar={sidebar}
+      inboxCount={counts.all} inboxOn={f === 'all' && !tag}>
       <div class="topbar">
         <form method="get" action={base} class="search-form">
           <input type="hidden" name="f" value={f} />
@@ -1059,6 +1055,17 @@ app.get('/inbox/:addr', async (c) => {
           </svg>
         </button>
       </div>
+      {tagRows.length > 0 ? (
+        <div class="tag-bar">
+          <a class={`chip tag-chip ${tag ? '' : 'on'}`} href={`${base}?f=${f}${q ? `&q=${encodeURIComponent(q)}` : ''}`}>All</a>
+          {tagRows.map((tr) => (
+            <a class={`chip tag-chip ${tag === tr.name ? 'on' : ''}`}
+              href={`${base}?f=all&tag=${encodeURIComponent(tr.name)}${q ? `&q=${encodeURIComponent(q)}` : ''}`}>
+              #{tr.name} <span class="count">{tr.n}</span>
+            </a>
+          ))}
+        </div>
+      ) : null}
       <dialog id="sort-modal" class="modal">
         <h2>Sort threads</h2>
         <form method="get" action={base} class="modal-form">
