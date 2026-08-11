@@ -220,3 +220,95 @@ test('thread sidebar reveals "create a rule for similar messages"; editor pre-fi
   const after = (await get<Thread>('SELECT * FROM threads WHERE id = ?', [thread.id]))!
   assert.equal(after.status, 'closed', 'retro-applied on creation')
 })
+
+// ---------- editing a rule ----------
+
+test('a rule can be edited in place, keeping its id and re-applying', async () => {
+  const slug = `edit${uniq()}`
+  const col = await createCollective(slug, 'Edit Co')
+  const admin = `admin-${uniq()}@example.org`
+  await addMember(col.id, admin, 'admin')
+  const leen = await addMember(col.id, `leen-${uniq()}@example.org`)
+  const sid = await createSession(admin)
+  const { rule } = await createRule(col, { from: '@news.example.com', tag: 'newsletter', close: true }, null)
+
+  // a thread the rule already matches, so the edit has something to re-apply to
+  await ingestInbound(col, await simpleParser([
+    'From: weekly <weekly@news.example.com>',
+    `To: ${slug}@collective.email`,
+    'Subject: Weekly digest',
+    `Message-ID: <edit-${uniq()}@news.example.com>`,
+    '', 'hello',
+  ].join('\r\n')))
+
+  const res = await app.request(`/inbox/${slug}/rules/${rule.id}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: `requests_sid=${sid}` },
+    body: new URLSearchParams({ from: '@news.example.com', subject: '', tag: 'updates', assign: String(leen), close: '1' }),
+  })
+  assert.equal(res.status, 302)
+  assert.match(decodeURIComponent(res.headers.get('location')!), /Rule saved/)
+
+  const after = (await get<any>('SELECT * FROM rules WHERE id = ?', [rule.id]))!
+  assert.equal(after.tag, 'updates', 'same row, new shape')
+  assert.equal(after.assign_member_id, leen)
+  assert.equal((await all('SELECT id FROM rules WHERE collective_id = ?', [col.id])).length, 1, 'edited, not duplicated')
+
+  // and the edit reached the thread that was already there
+  const th = await lastThread(col.id)
+  assert.equal(th.assignee_member_id, leen, 'existing matching thread got the new assignee')
+})
+
+test('editing a rule onto another rule\'s exact match is refused', async () => {
+  const slug = `clash${uniq()}`
+  const col = await createCollective(slug, 'Clash Co')
+  const admin = `admin-${uniq()}@example.org`
+  await addMember(col.id, admin, 'admin')
+  const sid = await createSession(admin)
+  await createRule(col, { from: '@a.example.com', tag: 'a', close: true }, null)
+  const { rule: second } = await createRule(col, { from: '@b.example.com', tag: 'b', close: true }, null)
+
+  const res = await app.request(`/inbox/${slug}/rules/${second.id}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: `requests_sid=${sid}` },
+    body: new URLSearchParams({ from: '@a.example.com', subject: '', tag: 'b', assign: '', close: '1' }),
+  })
+  assert.match(decodeURIComponent(res.headers.get('location')!), /Another rule already matches/)
+  assert.equal((await get<any>('SELECT match_from FROM rules WHERE id = ?', [second.id]))!.match_from, '@b.example.com', 'unchanged')
+})
+
+test('a non-admin cannot edit rules', async () => {
+  const slug = `perm${uniq()}`
+  const col = await createCollective(slug, 'Perm Co')
+  const plain = `member-${uniq()}@example.org`
+  await addMember(col.id, plain, 'member')
+  const sid = await createSession(plain)
+  const { rule } = await createRule(col, { from: '@c.example.com', tag: 'c', close: true }, null)
+
+  const res = await app.request(`/inbox/${slug}/rules/${rule.id}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: `requests_sid=${sid}` },
+    body: new URLSearchParams({ from: '@hijack.example.com', tag: 'x', assign: '', close: '1' }),
+  })
+  assert.equal(res.headers.get('location'), `/inbox/${slug}`)
+  assert.equal((await get<any>('SELECT tag FROM rules WHERE id = ?', [rule.id]))!.tag, 'c', 'untouched')
+})
+
+test('the rules page shows each rule as chips, with an editor per rule', async () => {
+  const slug = `page${uniq()}`
+  const col = await createCollective(slug, 'Page Co')
+  const admin = `admin-${uniq()}@example.org`
+  await addMember(col.id, admin, 'admin')
+  const sid = await createSession(admin)
+  const { rule } = await createRule(col, { from: 'updates@nws.eventplanner.net', tag: 'newsletter', close: true }, null)
+
+  const html = await (await app.request(`/inbox/${slug}/rules`, { headers: { cookie: `requests_sid=${sid}` } })).text()
+  assert.match(html, /Create rules to automatically tag or assign certain threads/)
+  const row = /<div class="row no-sender rule-row">.*?<\/span><\/div>/s.exec(html)![0]
+  assert.doesNotMatch(row, /unassigned/, 'a rule that assigns nobody says nothing about it')
+  assert.match(html, /from updates@nws\.eventplanner\.net/)
+  assert.match(html, /class="chip">#newsletter/)
+  assert.match(html, /no reply needed/)
+  assert.match(html, /Create a new rule/)
+  assert.match(html, new RegExp(`id="rule-edit-${rule.id}"`), 'each rule carries its own editor sheet')
+})

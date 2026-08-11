@@ -48,7 +48,11 @@ export interface RuleSpec {
 
 /** Create (or update, when the same criteria already exist) a rule, then
  *  apply it to everything already in the inbox that matches. */
-export async function createRule(collective: Collective, spec: RuleSpec, byMemberId: number | null): Promise<{ rule: Rule; applied: number }> {
+interface CleanSpec { from: string | null; subject: string | null; tag: string | null; assign: number | null; close: boolean }
+
+/** One validator for both create and edit — a rule you can save but not re-save
+ *  would be a trap. */
+function cleanSpec(spec: RuleSpec): CleanSpec {
   const from = (spec.from || '').toLowerCase().trim() || null
   const subject = (spec.subject || '').trim().slice(0, 200) || null
   const tag = spec.tag ? cleanTag(spec.tag) : null
@@ -60,6 +64,11 @@ export async function createRule(collective: Collective, spec: RuleSpec, byMembe
     throw new Error('Sender must be an email address or a domain like @news.example.com.')
   }
   if (!tag && !assign && !close) throw new Error("This rule wouldn't do anything — add a tag, an assignee, or close matching threads.")
+  return { from, subject, tag, assign, close }
+}
+
+export async function createRule(collective: Collective, spec: RuleSpec, byMemberId: number | null): Promise<{ rule: Rule; applied: number }> {
+  const { from, subject, tag, assign, close } = cleanSpec(spec)
 
   const existing = await get<Rule>(
     'SELECT * FROM rules WHERE collective_id = ? AND match_from IS ? AND match_subject IS ?',
@@ -71,8 +80,31 @@ export async function createRule(collective: Collective, spec: RuleSpec, byMembe
       [collective.id, from, subject, tag, assign, close ? 1 : 0, byMemberId, now()])
   }
   const rule = (await get<Rule>('SELECT * FROM rules WHERE collective_id = ? AND match_from IS ? AND match_subject IS ?', [collective.id, from, subject]))!
+  return { rule, applied: await applyRule(collective, rule, byMemberId) }
+}
 
-  // retro-apply to matching threads already in the inbox
+/** Edit a rule in place, keeping its id (and therefore its position in the
+ *  list), then apply the new shape to everything that already matches. */
+export async function updateRule(collective: Collective, ruleId: number, spec: RuleSpec, byMemberId: number | null): Promise<{ rule: Rule; applied: number }> {
+  const existing = await get<Rule>('SELECT * FROM rules WHERE id = ? AND collective_id = ?', [ruleId, collective.id])
+  if (!existing) throw new Error('That rule no longer exists.')
+  const { from, subject, tag, assign, close } = cleanSpec(spec)
+  // editing one rule onto another's exact match would leave two rules fighting
+  const clash = await get<Rule>(
+    'SELECT id FROM rules WHERE collective_id = ? AND match_from IS ? AND match_subject IS ? AND id != ?',
+    [collective.id, from, subject, ruleId])
+  if (clash) throw new Error('Another rule already matches exactly that — edit or delete it instead.')
+
+  await run('UPDATE rules SET match_from = ?, match_subject = ?, tag = ?, assign_member_id = ?, close = ? WHERE id = ? AND collective_id = ?',
+    [from, subject, tag, assign, close ? 1 : 0, ruleId, collective.id])
+  const rule = (await get<Rule>('SELECT * FROM rules WHERE id = ?', [ruleId]))!
+  return { rule, applied: await applyRule(collective, rule, byMemberId) }
+}
+
+/** Retro-apply a rule to the threads already in the inbox that match it. */
+async function applyRule(collective: Collective, rule: Rule, byMemberId: number | null): Promise<number> {
+  const from = rule.match_from
+  const subject = rule.match_subject
   const conds: string[] = []
   const args: (string | number)[] = [collective.id]
   if (from) {
@@ -94,7 +126,7 @@ export async function createRule(collective: Collective, spec: RuleSpec, byMembe
       await setAssignee((await getThread(t.id))!, null, byMemberId, 'manual')
     }
   }
-  return { rule, applied: threads.length }
+  return threads.length
 }
 
 /** Human sentences for a rule row: what it matches, what it does. */
@@ -105,7 +137,7 @@ export function describeRule(rule: Rule, memberName?: string): { when: string; t
   ].filter(Boolean).join(' and ')
   const then = [
     rule.tag ? `#${rule.tag}` : '',
-    rule.assign_member_id ? `assign to ${memberName || 'a member'}` : 'unassigned',
+    rule.assign_member_id ? `assign to ${memberName || 'a member'}` : '',
     rule.close ? 'closed — no reply needed' : '',
   ].filter(Boolean).join(' · ')
   return { when, then }

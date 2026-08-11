@@ -450,13 +450,6 @@ iframe.msg-frame {
 }
 
 /* Rules page */
-.rule-list { display: flex; flex-direction: column; gap: 8px; margin: 14px 0 22px; }
-.rule-row {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
-  border: 1.5px solid var(--line); border-radius: 12px; padding: 10px 14px; font-size: 14px;
-}
-.rule-row .rule-match { font-family: var(--mono); font-size: 13px; }
-.rule-row form { margin-left: auto; }
 
 /* Rule editor: WHEN … THEN … */
 .rule-editor {
@@ -1073,3 +1066,35 @@ iframe.msg-frame {
 
 /* file pickers: icon, then a text span the change handler may rewrite */
 .file-label .file-text { margin-left: 2px; }
+
+/* ---------- rules: one row per rule, read as chips like everywhere else ---------- */
+.rule-rows .row.rule-row {
+  grid-template-columns: 1fr auto; grid-template-areas: "what acts";
+  align-items: center; column-gap: 10px;
+}
+.rule-what { grid-area: what; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.rule-what > * { margin: 0; }
+.rule-match { font-family: var(--mono); font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; }
+.rule-what .chip { height: 24px; display: inline-flex; align-items: center; }
+.rule-what .chip.quiet { color: var(--muted); border-style: dashed; }
+.rule-what .chip.assignee .avatar { width: 16px; height: 16px; min-width: 16px; max-width: 16px; min-height: 16px; max-height: 16px; font-size: 8px; margin-right: 4px; }
+.rule-acts { grid-area: acts; display: flex; align-items: center; gap: 2px; flex: none; }
+.rule-acts form { margin: 0; display: inline-flex; }
+
+/* a bare icon affordance: quiet until you reach for it */
+.icon-btn {
+  background: none; border: none; padding: 6px; cursor: pointer; color: var(--muted);
+  display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; line-height: 0;
+}
+.icon-btn:hover { color: var(--accent); background: var(--fill); }
+.icon-btn.danger:hover { color: var(--danger); }
+.icon-btn:active { transform: scale(0.94); }
+.icon-btn .ic { width: 16px; height: 16px; margin: 0; }
+
+/* the create row is a <button>, so it needs the row's own look reasserted */
+button.row.new-thread-row {
+  width: 100%; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer;
+  border-left: none; border-right: none; border-top: none;
+}
+.rule-editor { display: grid; gap: 6px; }
+.rule-editor .btn-row { margin-top: 10px; }
