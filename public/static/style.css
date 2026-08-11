@@ -677,18 +677,7 @@ iframe.msg-frame {
     padding: 10px 12px 8px;
   }
   .m-row { display: flex; align-items: center; gap: 12px; }
-  .m-pills { margin-top: 8px; }
-  .m-pills .nav {
-    flex-direction: row; overflow-x: auto; gap: 6px;
-    padding-bottom: 2px; scrollbar-width: none;
-  }
-  .m-pills .nav::-webkit-scrollbar { display: none; }
-  .m-pills .nav-item {
-    white-space: nowrap; flex: none; padding: 6px 12px; min-height: 0;
-    border: 1.5px solid var(--line-soft); border-radius: 999px;
-  }
-  .m-pills .label { display: none; }
-
+          
   .topbar { gap: 8px; padding: 10px 14px; position: static; }
   .search-form { max-width: none; flex: 1; }
 

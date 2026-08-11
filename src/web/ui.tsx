@@ -322,7 +322,7 @@ export const Page: FC<{ title?: string; flash?: string; bundle?: string; childre
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=57" />
+      <link rel="stylesheet" href="/static/style.css?v=58" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script
@@ -443,7 +443,8 @@ export const Shell: FC<{
         </aside>
 
         {/* mobile header: hamburger (or a back arrow, morphing between the
-            two shapes on load) + address, then the optional page nav */}
+            two shapes on load) + the address. The inbox filters are NOT
+            repeated here — they're in the drawer, under Inbox. */}
         <div class="m-head">
           <div class="m-row">
             {props.back ? (
@@ -457,7 +458,6 @@ export const Shell: FC<{
             )}
             <a class="m-addr" href={base}>{addr}</a>
           </div>
-          {props.sidebar ? <div class="m-pills">{props.sidebar}</div> : null}
         </div>
 
         {/* drawer (mobile menu) */}
