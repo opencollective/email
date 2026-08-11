@@ -945,3 +945,68 @@ test('the friendly reply address round-trips: replying to it sends as the collec
     __observeAppMail(null)
   }
 })
+
+// ---------- forwarding carries the files ----------
+
+test('forwarding a message takes its attachments along, and logs which message', async () => {
+  const { forwardMessage, gatherAttachments } = await import('../src/outbound.js')
+  const { storeAttachment, messageAttachments } = await import('../src/db.js')
+  const { ingestInbound } = await import('../src/ingest.js')
+  const slug = `fwd${uniq()}`
+  const col = await createCollective(slug, 'Forward Co')
+  const admin = `admin-${uniq()}@example.org`
+  await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [col.id, admin, 'Xavier', 'admin', 'every', now()])
+  const me = (await get<any>('SELECT * FROM members WHERE email = ?', [admin]))!
+
+  await ingestInbound(col, await simpleParser([
+    'From: Ruta <ruta@europeancorrespondent.com>',
+    `To: ${slug}@collective.email`,
+    'Subject: Quotation',
+    `Message-ID: <fwd-src-${uniq()}@x>`,
+    '', 'The quote is attached.',
+  ].join('\r\n')))
+  const thread = (await get<Thread>('SELECT * FROM threads WHERE collective_id = ? ORDER BY id DESC LIMIT 1', [col.id]))!
+  const msg = (await get<Message>('SELECT * FROM messages WHERE thread_id = ? ORDER BY id LIMIT 1', [thread.id]))!
+  await storeAttachment(msg.id, 'quote.pdf', 'application/pdf', Buffer.from('%PDF-1.4 fake quote'))
+  assert.equal((await messageAttachments(msg.id)).length, 1)
+
+  // the gatherer hands the real bytes to the send
+  const got = await gatherAttachments(msg.id)
+  assert.equal(got.files.length, 1)
+  assert.equal(got.files[0].filename, 'quote.pdf')
+  assert.equal(got.files[0].content.toString(), '%PDF-1.4 fake quote')
+  assert.deepEqual(got.missing, [])
+
+  await forwardMessage(col, msg, 'colleague@example.org', 'FYI', me)
+  const ev = (await get<any>("SELECT * FROM events WHERE thread_id = ? AND type = 'forwarded'", [thread.id]))!
+  const data = JSON.parse(ev.data_json)
+  assert.equal(data.to, 'colleague@example.org')
+  assert.equal(data.message_id, msg.id, 'the log records WHICH message left')
+  assert.equal(data.from, 'Ruta', 'and whose it was')
+  assert.equal(data.files, 1, 'and that a file went with it')
+  assert.ok(data.at, 'and when it was sent')
+})
+
+test('a forward survives an attachment whose blob has gone missing', async () => {
+  const { gatherAttachments } = await import('../src/outbound.js')
+  const { ingestInbound } = await import('../src/ingest.js')
+  const slug = `fwdm${uniq()}`
+  const col = await createCollective(slug, 'Missing Co')
+  await ingestInbound(col, await simpleParser([
+    'From: Someone <someone@example.org>',
+    `To: ${slug}@collective.email`,
+    'Subject: With a ghost file',
+    `Message-ID: <fwd-ghost-${uniq()}@x>`,
+    '', 'body',
+  ].join('\r\n')))
+  const thread = (await get<Thread>('SELECT * FROM threads WHERE collective_id = ? ORDER BY id DESC LIMIT 1', [col.id]))!
+  const msg = (await get<Message>('SELECT * FROM messages WHERE thread_id = ? ORDER BY id LIMIT 1', [thread.id]))!
+  // a row pointing at a blob that isn't there
+  await run('INSERT INTO attachments (message_id, filename, content_type, size, path) VALUES (?, ?, ?, ?, ?)',
+    [msg.id, 'lost.pdf', 'application/pdf', 10, 'blobs/does-not-exist'])
+
+  const got = await gatherAttachments(msg.id)
+  assert.deepEqual(got.files, [], 'nothing to attach')
+  assert.deepEqual(got.missing, ['lost.pdf'], 'but the send knows to say so instead of failing')
+})

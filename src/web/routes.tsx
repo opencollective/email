@@ -1526,6 +1526,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   // WhatsApp-style: under each timeline entry, who has read up to there —
   // a reader sits under the last item older than their last opening
   const groupTs = groups.map((g) => Array.isArray(g) ? Math.max(...g.map((i) => i.ts)) : (g.sent_at || g.created_at))
+  const firstInternalIdx = groups.findIndex((g) => Array.isArray(g))
   const seenUpTo = new Map<number, ThreadRead[]>()
   for (const r of reads) {
     let idx = -1
@@ -1617,7 +1618,8 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               ) : null}
               {Array.isArray(g) ? (
                 <div class="internal">
-                  <span class="internal-tag">⌁ Internal — not visible to {counterpartFirst}</span>
+                  {/* said once, on the first internal block — the styling carries it after that */}
+                  {gi === firstInternalIdx ? <span class="internal-tag"><Icon name="note" /> Internal — not visible to {counterpartFirst}</span> : null}
                   {g.map((item) =>
                     item.kind === 'note' ? (
                       <div class={`note${mentionsMe.has(item.id) ? ' note-mine' : ''}`}>
@@ -1835,7 +1837,6 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             </form>
             ) : null}
             <form method="post" action={`${base}/thread/${thread.id}/note`} data-pane="note" class={canSendRole(member.role) ? 'hidden' : ''}>
-              <div class="to note-to">⌁ Only members of {collective.name} will see this</div>
               <textarea
                 name="body" rows={4} placeholder="Add context, ask a teammate, leave a note… type @ to pull someone in"
                 data-draft="note" required

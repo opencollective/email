@@ -1,9 +1,10 @@
 import crypto from 'node:crypto'
 import { cfg } from './config.js'
 import {
-  addEvent, get, getThread, lastInboundMessage, run, setStatus, storeAttachment,
+  addEvent, get, getThread, lastInboundMessage, messageAttachments, run, setStatus, storeAttachment,
   type Collective, type Member, type Message,
 } from './db.js'
+import { readBlob } from './storage.js'
 import { escapeHtml, now } from './util.js'
 import { assertCanSend, assertRecipientCap } from './billing.js'
 
@@ -139,6 +140,22 @@ export async function sendCollectiveReply(
  *  Sent as the collective, quoting the original with its own header, and
  *  recorded on the thread so the collective can see it went out — without
  *  flipping the thread to answered: forwarding isn't replying. */
+/** Load a message's stored attachments as sendable buffers.
+ *  A blob that has gone missing must not sink the send: the text is still
+ *  worth delivering, and the recipient can be told what didn't come along. */
+export async function gatherAttachments(messageId: number): Promise<{
+  files: { filename: string; content: Buffer }[]; missing: string[]
+}> {
+  const files: { filename: string; content: Buffer }[] = []
+  const missing: string[] = []
+  for (const a of await messageAttachments(messageId)) {
+    const content = a.path ? await readBlob(a.path).catch(() => null) : null
+    if (content) files.push({ filename: a.filename, content })
+    else missing.push(a.filename)
+  }
+  return { files, missing }
+}
+
 export async function forwardMessage(
   collective: Collective,
   message: Message,
@@ -167,20 +184,33 @@ export async function forwardMessage(
   const subject = /^fwd:/i.test(thread.subject) ? thread.subject : `Fwd: ${thread.subject}`
   const messageId = `<fwd-${message.id}-${crypto.randomBytes(8).toString('hex')}@${cfg.emailDomain}>`
 
+  const { files, missing } = await gatherAttachments(message.id)
+  const outBody = missing.length
+    ? `${body}\n\n[Could not attach: ${missing.join(', ')} — open the thread to download.]`
+    : body
+
   if (!cfg.resendKey) {
-    console.log(`\n[outbound:dev] FORWARD to ${dest}\n[outbound:dev] Subject: ${subject}\n${body}\n`)
+    console.log(`\n[outbound:dev] FORWARD to ${dest}\n[outbound:dev] Subject: ${subject}\n${outBody}\n[outbound:dev] attachments: ${files.map((f) => f.filename).join(', ') || 'none'}\n`)
   } else {
     const res = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { Authorization: `Bearer ${cfg.resendKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        from: fromHeader, to: [dest], reply_to: [fromAddress], subject, text: body,
+        from: fromHeader, to: [dest], reply_to: [fromAddress], subject, text: outBody,
         headers: { 'Message-ID': messageId },
+        attachments: files.map((f) => ({ filename: f.filename, content: f.content.toString('base64') })),
       }),
     })
     if (!res.ok) throw new Error(`Could not forward (${res.status}): ${(await res.text()).slice(0, 200)}`)
   }
-  await addEvent(thread.id, member.id, 'forwarded', { to: dest, message_id: message.id })
+  // the log has to name WHICH message: a long thread has many
+  await addEvent(thread.id, member.id, 'forwarded', {
+    to: dest,
+    message_id: message.id,
+    from: message.from_name || message.from_email || null,
+    at: message.sent_at || message.created_at || null,
+    files: files.length,
+  })
 }
 
 /** Send a composed draft: a fresh outbound thread the collective started,

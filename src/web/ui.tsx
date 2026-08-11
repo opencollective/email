@@ -296,7 +296,13 @@ export function eventText(
       }
     }
     case 'unassigned': return `${a ?? 'Someone'} unassigned ${name(data.from)}`
-    case 'forwarded': return `${a ?? 'Someone'} forwarded a message to ${data.to}`
+    case 'forwarded': {
+      // name the message being forwarded — "a message" is useless on a long thread
+      const who = data.from ? `${data.from}'s message` : 'a message'
+      const when = data.at ? ` of ${new Date(Number(data.at) * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}` : ''
+      const files = Number(data.files) > 0 ? ` with ${data.files} attachment${Number(data.files) === 1 ? '' : 's'}` : ''
+      return `${a ?? 'Someone'} forwarded ${who}${when}${files} to ${data.to}`
+    }
     case 'status': {
       if (data.to === 'needs_reply' && data.auto) return 'Reopened — new message from the sender'
       if (data.to === 'answered' && data.auto) return 'Marked answered'
