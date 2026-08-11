@@ -1,11 +1,11 @@
 import crypto from 'node:crypto'
 import { cfg } from './config.js'
 import {
-  addEvent, get, getThread, lastInboundMessage, messageAttachments, run, setStatus, storeAttachment,
+  addEvent, all, get, getThread, lastInboundMessage, messageAttachments, run, setStatus, storeAttachment,
   type Collective, type Member, type Message,
 } from './db.js'
 import { readBlob } from './storage.js'
-import { escapeHtml, now } from './util.js'
+import { escapeHtml, now, splitQuotedTail } from './util.js'
 import { assertCanSend, assertRecipientCap } from './billing.js'
 
 /** Who a reply goes out as. Verified Pro domains send as the custom address;
@@ -140,6 +140,44 @@ export async function sendCollectiveReply(
  *  Sent as the collective, quoting the original with its own header, and
  *  recorded on the thread so the collective can see it went out — without
  *  flipping the thread to answered: forwarding isn't replying. */
+/** What came before the forwarded message, quoted underneath it so the
+ *  recipient can read the conversation instead of one page of it.
+ *
+ *  Sent messages only — internal notes stay internal, which is the whole
+ *  point of them. Each body is stripped of the history its own sender quoted
+ *  (we are rebuilding that chain ourselves, and nesting it would repeat the
+ *  same text once per hop). Oldest messages are dropped rather than sending
+ *  a megabyte of mail; the recipient is told when that happens. */
+const HISTORY_MAX = 12
+const HISTORY_CHARS = 60000
+
+async function threadHistory(threadId: number, forwarded: Message, collectiveName: string): Promise<string> {
+  const earlier = await all<Message>(
+    'SELECT * FROM messages WHERE thread_id = ? AND id != ? AND (sent_at IS NOT NULL OR direction = ?) AND COALESCE(sent_at, created_at) <= ? ORDER BY COALESCE(sent_at, created_at) DESC, id DESC',
+    [threadId, forwarded.id, 'inbound', (forwarded.sent_at || forwarded.created_at) as number])
+  if (!earlier.length) return ''
+
+  const kept = earlier.slice(0, HISTORY_MAX)
+  const blocks: string[] = []
+  let budget = HISTORY_CHARS
+  let dropped = earlier.length - kept.length
+
+  for (const m of kept) {
+    const main = splitQuotedTail(m.body_text || '').main.trim()
+    const name = m.from_name || (m.direction === 'outbound' ? collectiveName : '') || m.from_email || 'someone'
+    const attribution = `On ${new Date(((m.sent_at || m.created_at) as number) * 1000).toUTCString()}, ${name} wrote:`
+    const block = `${attribution}\n${main.split('\n').map((l) => `> ${l}`.trimEnd()).join('\n')}`
+    if (block.length > budget) { dropped++; continue }
+    budget -= block.length
+    blocks.push(block)
+  }
+  if (!blocks.length) return ''
+  const tail = dropped > 0
+    ? `\n\n[${dropped} earlier message${dropped === 1 ? '' : 's'} not included — open the thread for the full history.]`
+    : ''
+  return `\n\n${blocks.join('\n\n')}${tail}`
+}
+
 /** Load a message's stored attachments as sendable buffers.
  *  A blob that has gone missing must not sink the send: the text is still
  *  worth delivering, and the recipient can be told what didn't come along. */
@@ -170,17 +208,26 @@ export async function forwardMessage(
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(dest)) throw new Error('That email address doesn\'t look right.')
 
   const { fromAddress, fromHeader } = outboundFrom(collective)
-  const when = new Date((message.sent_at || now()) * 1000).toUTCString()
+  // outbound rows carry the address but not always a display name
+  const label = (m: Message) => m.from_name || (m.direction === 'outbound' ? collective.name : '') || m.from_email || 'unknown'
+  const who = (m: Message) => m.from_email ? `${label(m)} <${m.from_email}>` : label(m)
+  const stamp = (m: Message) => new Date(((m.sent_at || m.created_at) as number) * 1000).toUTCString()
+  const history = await threadHistory(thread.id, message, collective.name)
+  // when we rebuild the chain below, the sender's own quoted tail is the same
+  // text a second time — keep it only when there is no history to replace it
+  const forwardedBody = history
+    ? (splitQuotedTail(message.body_text || '').main || message.body_text || '')
+    : (message.body_text || '')
   const quoted = [
     '---------- Forwarded message ----------',
-    `From: ${message.from_name ? `${message.from_name} <${message.from_email}>` : message.from_email || 'unknown'}`,
-    `Date: ${when}`,
+    `From: ${who(message)}`,
+    `Date: ${stamp(message)}`,
     `Subject: ${thread.subject}`,
-    `To: ${(JSON.parse(message.to_json || '[]') as string[]).join(', ')}`,
+    `To: ${(JSON.parse(message.to_json || '[]') as string[]).join(', ') || `${collective.slug}@${cfg.emailDomain}`}`,
     '',
-    message.body_text || '',
+    forwardedBody,
   ].join('\n')
-  const body = `${note.trim() ? `${note.trim()}\n\n` : ''}${quoted}`
+  const body = `${note.trim() ? `${note.trim()}\n\n` : ''}${quoted}${history}`
   const subject = /^fwd:/i.test(thread.subject) ? thread.subject : `Fwd: ${thread.subject}`
   const messageId = `<fwd-${message.id}-${crypto.randomBytes(8).toString('hex')}@${cfg.emailDomain}>`
 

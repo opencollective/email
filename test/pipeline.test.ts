@@ -1010,3 +1010,90 @@ test('a forward survives an attachment whose blob has gone missing', async () =>
   assert.deepEqual(got.files, [], 'nothing to attach')
   assert.deepEqual(got.missing, ['lost.pdf'], 'but the send knows to say so instead of failing')
 })
+
+test('a forward quotes the thread history under the forwarded message', async () => {
+  const { forwardMessage } = await import('../src/outbound.js')
+  const { ingestInbound } = await import('../src/ingest.js')
+  const slug = `fwdh${uniq()}`
+  const col = await createCollective(slug, 'History Co')
+  const admin = `admin-${uniq()}@example.org`
+  await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [col.id, admin, 'Xavier', 'admin', 'every', now()])
+  const me = (await get<any>('SELECT * FROM members WHERE email = ?', [admin]))!
+
+  const mid = `<h1-${uniq()}@x>`
+  await ingestInbound(col, await simpleParser([
+    'From: Ruta <ruta@example.org>', `To: ${slug}@collective.email`, 'Subject: Quotation',
+    `Message-ID: ${mid}`, '', 'Could you send a quote for the big room?',
+  ].join('\r\n')))
+  const thread = (await get<Thread>('SELECT * FROM threads WHERE collective_id = ? ORDER BY id DESC LIMIT 1', [col.id]))!
+
+  // our reply, then her follow-up which quotes it the way a mail client would
+  await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_email, from_name, to_json, body_text, sent_by_member_id, sent_at, created_at)
+    VALUES (?, ?, 'outbound', ?, 'History Co', '["ruta@example.org"]', ?, ?, ?, ?)`,
+    [thread.id, `<h2-${uniq()}@x>`, `${slug}@collective.email`, 'Here is the quote: 300 EUR per day.', me.id, now() + 60, now() + 60])
+  await ingestInbound(col, await simpleParser([
+    'From: Ruta <ruta@example.org>', `To: ${slug}@collective.email`, 'Subject: Re: Quotation',
+    `Message-ID: <h3-${uniq()}@x>`, `In-Reply-To: ${mid}`, '',
+    ['Perfect, we will take it.', '', 'On Mon, 3 Aug 2026, History Co wrote:', '> Here is the quote: 300 EUR per day.'].join('\n'),
+  ].join('\r\n')))
+
+  // her follow-up lands after our reply
+  await run("UPDATE messages SET sent_at = ?, created_at = ? WHERE thread_id = ? AND direction = 'inbound' AND body_text LIKE 'Perfect%'",
+    [now() + 120, now() + 120, thread.id])
+  const msgs = await all<Message>('SELECT * FROM messages WHERE thread_id = ? ORDER BY COALESCE(sent_at, created_at)', [thread.id])
+  assert.equal(msgs.length, 3)
+  const last = msgs[2]
+  assert.match(last.body_text || '', /Perfect/, 'forwarding her latest')
+
+  const logs: string[] = []
+  const orig = console.log
+  console.log = (...a: unknown[]) => { logs.push(a.join(' ')) }
+  try {
+    await forwardMessage(col, last, 'colleague@example.org', 'FYI', me)
+  } finally {
+    console.log = orig
+  }
+  const sent = logs.find((l) => l.includes('FORWARD to colleague@example.org'))!
+  assert.ok(sent, 'the forward went out')
+  assert.match(sent, /Forwarded message/)
+  assert.match(sent, /Perfect, we will take it/, 'the message being forwarded')
+  assert.match(sent, /> Here is the quote: 300 EUR per day\./, 'our earlier reply, quoted')
+  assert.match(sent, /> Could you send a quote for the big room\?/, 'and the message that started it')
+  assert.match(sent, /wrote:/, 'each with an attribution line')
+  // the follow-up already quoted our reply; that copy must not be re-sent
+  assert.equal((sent.match(/Here is the quote: 300 EUR per day/g) || []).length, 1,
+    'history is rebuilt once, not nested once per hop')
+})
+
+test('internal notes never leave in a forward', async () => {
+  const { forwardMessage } = await import('../src/outbound.js')
+  const { ingestInbound } = await import('../src/ingest.js')
+  const slug = `fwdn${uniq()}`
+  const col = await createCollective(slug, 'Notes Co')
+  const admin = `admin-${uniq()}@example.org`
+  await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [col.id, admin, 'Xavier', 'admin', 'every', now()])
+  const me = (await get<any>('SELECT * FROM members WHERE email = ?', [admin]))!
+
+  await ingestInbound(col, await simpleParser([
+    'From: Someone <someone@example.org>', `To: ${slug}@collective.email`, 'Subject: Ask',
+    `Message-ID: <n1-${uniq()}@x>`, '', 'Any chance of a discount?',
+  ].join('\r\n')))
+  const thread = (await get<Thread>('SELECT * FROM threads WHERE collective_id = ? ORDER BY id DESC LIMIT 1', [col.id]))!
+  const msg = (await get<Message>('SELECT * FROM messages WHERE thread_id = ? ORDER BY id LIMIT 1', [thread.id]))!
+  await run('INSERT INTO notes (thread_id, member_id, body, created_at) VALUES (?, ?, ?, ?)',
+    [thread.id, me.id, 'They always haggle — hold at 300.', now() - 10])
+
+  const logs: string[] = []
+  const orig = console.log
+  console.log = (...a: unknown[]) => { logs.push(a.join(' ')) }
+  try {
+    await forwardMessage(col, msg, 'outsider@example.org', '', me)
+  } finally {
+    console.log = orig
+  }
+  const sent = logs.find((l) => l.includes('FORWARD to outsider@example.org'))!
+  assert.match(sent, /Any chance of a discount\?/)
+  assert.doesNotMatch(sent, /always haggle/, 'an internal note is not thread history')
+})
