@@ -199,3 +199,18 @@ test('a thread row shows who wrote the line it quotes', async () => {
   assert.match(row, /class="r-snip">\s*<span class="avatar"[^>]*title="Xavier"/, 'the replying member fronts their own line')
   assert.match(row, /Here is the updated quote/)
 })
+
+test('contacts are listed alphabetically, accents and case folded', async () => {
+  const fx = await fixture()
+  // seeded newest-first so date order and alphabetical order disagree
+  await fx.thread('zoe@last.test', 'zoe lowercase', 'Z', 'answered', 0)
+  await fx.thread('aponce@etui.org', 'PONCE, Aída', 'P', 'answered', 100)
+  await fx.thread('joni@beanmachine.be', 'Joni Junes', 'J', 'answered', 200)
+
+  const html = await (await page(`/inbox/${fx.slug}/contacts`, fx.sid)).text()
+  const order = ['Joni Junes', 'PONCE, Aída', 'zoe lowercase'].map((n) => html.indexOf(n))
+  assert.ok(order.every((v) => v > -1), 'all three listed')
+  assert.deepEqual([...order].sort((a, b) => a - b), order, 'J before P before z, regardless of recency')
+  // the rows carry what the live filter matches on
+  assert.match(html, /data-find="joni junes joni@beanmachine\.be"/)
+})

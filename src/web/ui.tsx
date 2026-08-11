@@ -68,6 +68,27 @@ document.querySelectorAll('iframe.msg-frame').forEach((f) => {
   fit();
   setTimeout(fit, 400); // once more after images load enough to size
 });
+// Filter-as-you-type lists: the form still submits (and still works without
+// JS), but typing hides non-matching rows straight away.
+document.querySelectorAll('[data-filter]').forEach((form) => {
+  const input = form.querySelector('input[name=q]');
+  const sel = form.getAttribute('data-filter');
+  if (!input) return;
+  const empty = document.querySelector('[data-filter-empty]');
+  const apply = () => {
+    const q = input.value.trim().toLowerCase();
+    let shown = 0;
+    document.querySelectorAll(sel).forEach((row) => {
+      const hit = !q || (row.getAttribute('data-find') || '').indexOf(q) !== -1;
+      row.hidden = !hit;
+      if (hit) shown++;
+    });
+    if (empty) empty.hidden = shown > 0;
+  };
+  input.addEventListener('input', apply);
+  form.addEventListener('submit', (e) => { e.preventDefault(); apply(); });
+});
+
 document.querySelectorAll('.file-input').forEach((inp) => {
   inp.addEventListener('change', () => {
     const label = inp.closest('.file-label');
@@ -299,7 +320,7 @@ export const Page: FC<{ title?: string; flash?: string; bundle?: string; childre
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=55" />
+      <link rel="stylesheet" href="/static/style.css?v=56" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script

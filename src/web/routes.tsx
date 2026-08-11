@@ -1255,16 +1255,20 @@ app.get('/inbox/:addr/contacts', async (c) => {
   }
   const cq = (c.req.query('q') || '').trim()
   const needle = cq.toLowerCase()
+  // alphabetical by the name you actually see; accents and case ignored so
+  // "Aída" files under A and "rūta" next to "Ruta"
+  const label = (x: { name: string; email: string }) => x.name || x.email
   const list = [...contacts.values()]
     .filter((x) => !needle || x.name.toLowerCase().includes(needle) || x.email.toLowerCase().includes(needle))
-    .sort((a, b) => b.last - a.last)
+    .sort((a, b) => label(a).localeCompare(label(b), undefined, { sensitivity: 'base', numeric: true }))
 
   return c.html(
     <Shell member={member} collective={collective} title="Contacts" active="contacts" flash={c.req.query('m')} back={{ href: base, label: 'Back to inbox' }}>
       <div class="page wide">
         <h1>Contacts</h1>
         <p class="muted">Everyone this inbox has a conversation with — tap one to see your whole history together.</p>
-        <form method="get" action={`${base}/contacts`} class="topbar contact-filter">
+        {/* filters as you type; submitting (or JS off) falls back to the server */}
+        <form method="get" action={`${base}/contacts`} class="topbar contact-filter" data-filter=".contact-row">
           <input class="search" name="q" value={cq} placeholder="Filter by name or address…" autocomplete="off" />
           {cq ? <a class="btn small ghost" href={`${base}/contacts`}>Clear</a> : null}
         </form>
@@ -1272,7 +1276,7 @@ app.get('/inbox/:addr/contacts', async (c) => {
           {list.length === 0 ? (
             <div class="empty-state">Nobody yet — contacts appear with the first conversation.</div>
           ) : list.map((p) => (
-            <a class="row contact-row" href={contactUrl(base, p.email)}>
+            <a class="row contact-row" href={contactUrl(base, p.email)} data-find={`${p.name} ${p.email}`.toLowerCase()}>
               <span class="avatar" aria-hidden="true">{initials(p.name, p.email)}</span>
               <span class="from">
                 {p.name || p.email.split('@')[0]}
@@ -1285,6 +1289,7 @@ app.get('/inbox/:addr/contacts', async (c) => {
               <span class="age">{relTime(p.last)}</span>
             </a>
           ))}
+          <div class="empty-state" data-filter-empty hidden>Nobody here by that name.</div>
         </div>
       </div>
     </Shell>,

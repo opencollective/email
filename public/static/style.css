@@ -49,6 +49,9 @@ h2 { font-size: 16px; margin: 0 0 10px; }
 p { margin: 0 0 10px; }
 .muted { color: var(--muted); }
 .hidden { display: none !important; }
+/* any explicit display (grid rows, flex chips) beats the UA's [hidden] rule,
+   so state it once and loudly — JS toggles .hidden on real layout elements */
+[hidden] { display: none !important; }
 .inline { display: inline; }
 small { color: var(--muted); }
 
