@@ -1194,6 +1194,11 @@ const ThreadRow: FC<{
 }> = (p) => {
   const th = p.thread
   const showSender = p.sender !== false
+  // whose words line 2 quotes: a member for our replies, the contact otherwise
+  const lastBy = p.lastMsg?.sent_by_member_id ? p.members.get(p.lastMsg.sent_by_member_id) : undefined
+  const lastWho = lastBy
+    ? { title: memberName(lastBy), member: lastBy }
+    : { title: p.lastMsg?.from_name || p.lastMsg?.from_email || th.counterpart_name || th.counterpart_email || 'the sender', member: undefined }
   const sameDay = shortDate(th.first_message_at) === shortDate(th.last_message_at)
   // a REAL two-row grid (named areas), so line 1 aligns across every column
   // and line 2 does too — stacked cells only pretend to be rows
@@ -1205,7 +1210,13 @@ const ThreadRow: FC<{
       {showSender ? <span class="r-name">{th.counterpart_name || th.counterpart_email || '—'}</span> : null}
       {showSender ? <span class="r-mail">{th.counterpart_email}</span> : null}
       <span class="r-subj">{th.subject}{(p.tags ?? []).slice(0, 2).map((tg) => <span class="chip">#{tg.name}</span>)}</span>
-      <span class="r-snip">{excerpt(p.lastMsg?.body_text || '', 110)}</span>
+      <span class="r-snip">
+        {p.lastMsg ? (lastBy
+          ? <Avatar member={lastBy} />
+          : <span class="avatar mini-out" title={lastWho.title}>{initials(p.lastMsg.from_name || '', p.lastMsg.from_email || th.counterpart_email || '?')}</span>
+        ) : null}
+        {excerpt(p.lastMsg?.body_text || '', 110)}
+      </span>
       <span class="r-meta1">
         <AssigneeChip thread={th} members={p.members} />
         <StatusChip status={th.status} />
@@ -1242,13 +1253,21 @@ app.get('/inbox/:addr/contacts', async (c) => {
     entry.last = Math.max(entry.last, r.last_message_at ?? 0)
     contacts.set(key, entry)
   }
-  const list = [...contacts.values()].sort((a, b) => b.last - a.last)
+  const cq = (c.req.query('q') || '').trim()
+  const needle = cq.toLowerCase()
+  const list = [...contacts.values()]
+    .filter((x) => !needle || x.name.toLowerCase().includes(needle) || x.email.toLowerCase().includes(needle))
+    .sort((a, b) => b.last - a.last)
 
   return c.html(
     <Shell member={member} collective={collective} title="Contacts" active="contacts" flash={c.req.query('m')} back={{ href: base, label: 'Back to inbox' }}>
-      <div class="page">
+      <div class="page wide">
         <h1>Contacts</h1>
         <p class="muted">Everyone this inbox has a conversation with — tap one to see your whole history together.</p>
+        <form method="get" action={`${base}/contacts`} class="topbar contact-filter">
+          <input class="search" name="q" value={cq} placeholder="Filter by name or address…" autocomplete="off" />
+          {cq ? <a class="btn small ghost" href={`${base}/contacts`}>Clear</a> : null}
+        </form>
         <div class="rows">
           {list.length === 0 ? (
             <div class="empty-state">Nobody yet — contacts appear with the first conversation.</div>
@@ -1303,7 +1322,7 @@ app.get('/inbox/:addr/contact/:email', async (c) => {
   return c.html(
     <Shell member={member} collective={collective} title={name} active="contacts" flash={c.req.query('m')}
       back={cameFrom ? { href: cameFrom, label: 'Back to thread' } : { href: `${base}/contacts`, label: 'All contacts' }}>
-      <div class="page">
+      <div class="page wide">
         <div class="contact-head">
           <span class="avatar contact-avatar" aria-hidden="true">{initials(name, email)}</span>
           <div class="contact-id">
@@ -1329,7 +1348,7 @@ app.get('/inbox/:addr/contact/:email', async (c) => {
         <div class="rows">
           {canSendRole(member.role) ? (<>
             {/* mobile: a drawer; desktop: link straight to the full composer */}
-            <a class="row no-sender new-thread-row" href={`${base}/compose?to=${encodeURIComponent(email)}`} data-sheet="#new-thread-sheet">
+            <a class="row no-sender new-thread-row nt-dated" href={`${base}/compose?to=${encodeURIComponent(email)}`} data-sheet="#new-thread-sheet">
               <span class="nt-plus" aria-hidden="true"><Icon name="pencil" /></span>
               <span class="nt-label">Start a new thread with {name}…</span>
               <small class="nt-tip">You can save it as a draft and share it with the collective before sending.</small>

@@ -161,3 +161,41 @@ test('the timeline cross-references threads with the same contact, GitHub-style'
   const sibHtml = await (await page(`/inbox/${fx.slug}/thread/${sib.lastId}`, fx.sid)).text()
   assert.doesNotMatch(sibHtml, /related-ev/, 'older sibling threads stay in the sidebar, not the timeline')
 })
+
+test('the contacts page filters by name or address', async () => {
+  const fx = await fixture()
+  await fx.thread('ruta@europeancorrespondent.com', 'Ruta Puodziukynaite', 'Quotation')
+  await fx.thread('joni@beanmachine.be', 'Joni Junes', 'Coworking')
+  await fx.thread('membership@pwi.be', 'Membership', 'Renewal')
+
+  const all = await (await page(`/inbox/${fx.slug}/contacts`, fx.sid)).text()
+  assert.match(all, /Ruta Puodziukynaite/)
+  assert.match(all, /Joni Junes/)
+
+  // by name
+  const byName = await (await page(`/inbox/${fx.slug}/contacts?q=joni`, fx.sid)).text()
+  assert.match(byName, /Joni Junes/)
+  assert.doesNotMatch(byName, /Ruta Puodziukynaite/)
+  assert.match(byName, /Clear/, 'an active filter offers a way out')
+
+  // by address fragment, including the domain
+  const byDomain = await (await page(`/inbox/${fx.slug}/contacts?q=pwi.be`, fx.sid)).text()
+  assert.match(byDomain, /membership@pwi\.be/)
+  assert.doesNotMatch(byDomain, /beanmachine/)
+})
+
+test('a thread row shows who wrote the line it quotes', async () => {
+  const fx = await fixture()
+  const tid = await fx.thread('ruta@europeancorrespondent.com', 'Ruta', 'Quotation')
+  // the collective replies last — line 2 should carry the member, not the contact
+  const me = (await get<any>('SELECT id FROM members WHERE collective_id = ?', [fx.collective.id]))!.id
+  await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_email, from_name, to_json, body_text, sent_by_member_id, sent_at, created_at)
+    VALUES (?, ?, 'outbound', 'x@y.test', 'Commons', '[]', 'Here is the updated quote.', ?, ?, ?)`,
+    [tid, `<out-${uniq()}@x>`, me, now() + 60, now() + 60])
+  await run('UPDATE threads SET last_message_at = ? WHERE id = ?', [now() + 60, tid])
+
+  const html = await (await page(`/inbox/${fx.slug}`, fx.sid)).text()
+  const row = /<a class="row[^"]*"[^>]*>[\s\S]*?<\/a>/.exec(html)![0]
+  assert.match(row, /class="r-snip">\s*<span class="avatar"[^>]*title="Xavier"/, 'the replying member fronts their own line')
+  assert.match(row, /Here is the updated quote/)
+})

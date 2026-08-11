@@ -1125,3 +1125,34 @@ button.row.new-thread-row {
 .tag-chip.on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 .tag-chip.on .count { color: var(--paper); opacity: 0.7; }
 @media (min-width: 901px) { .tag-bar { padding: 0 18px 10px; } }
+
+/* ---------- one width envelope for every surface ---------- */
+/* the thread view filled the viewport while list pages stopped at 860px; both
+   now share this, so switching pages doesn't reflow the whole window */
+.main > .topbar, .main > .tag-bar, .main > .rows, .main > .page, .thread-wrap { max-width: 1180px; }
+ /* list pages: rows run edge-to-edge inside the envelope, exactly like the
+    inbox's, and everything else lines up with the row text (20px) */
+.page.wide { max-width: 1180px; padding-left: 0; padding-right: 0; }
+.page.wide > *:not(.rows) { padding-left: 20px; padding-right: 20px; }
+.page.wide > .rows { margin-left: 0; margin-right: 0; }
+
+/* contacts: the filter sits where the inbox search sits */
+.contact-filter { padding: 0 20px; margin: -4px 0 2px; border-bottom: none; position: static; }
+.contact-filter .search { max-width: 340px; }
+
+/* the create row lines its label up with the subjects underneath it */
+.row.new-thread-row.nt-dated {
+  grid-template-columns: 22px 64px minmax(0, 1fr) auto;
+  grid-template-areas: "dot d1 label meta" "dot d2 tip meta";
+}
+@media (max-width: 900px) {
+  .row.new-thread-row.nt-dated { grid-template-columns: 22px 1fr; grid-template-areas: "dot label" "dot tip"; }
+}
+
+/* line 2 leads with the face of whoever wrote it */
+.r-snip { display: flex; align-items: center; gap: 6px; }
+.r-snip .avatar {
+  width: 18px; height: 18px; min-width: 18px; max-width: 18px; min-height: 18px; max-height: 18px;
+  font-size: 8.5px; flex: none;
+}
+.r-snip .avatar.mini-out { background: var(--fill); color: var(--muted); border-style: dashed; }
