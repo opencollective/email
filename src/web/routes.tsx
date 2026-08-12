@@ -33,7 +33,7 @@ import { emailHtmlDocument } from '../sanitize.js'
 import { sendAppEmail } from '../appmail.js'
 import { readBlob, saveBlob } from '../storage.js'
 import { createCheckoutSession, createPortalSession, stripeUsable } from '../stripe.js'
-import { billingState, canSend, planLimits, repliesThisMonth, trialDaysLeft, GRACE_DAYS } from '../billing.js'
+import { billingState, canSend, planLimits, recipientLimit, repliesThisMonth, trialDaysLeft, GRACE_DAYS } from '../billing.js'
 import { escapeHtml, excerpt, fmtDate, fmtDateTime, initials, now, randomToken, relTime, signToken, slugify, splitQuotedTail, verifyToken, waitingFor } from '../util.js'
 import { AssigneeChip, AuthCard, Avatar, eventText, Icon, Shell, StatusChip, TimeAgo } from './ui.js'
 import { HomePage } from './home.js'
@@ -653,14 +653,133 @@ app.post('/join/:token', async (c) => {
 
 // ---------- one-click action links (from notification emails) ----------
 
+/** Load a reply the collision guard held back, with everything needed to send
+ *  it: the thread, who wrote it, the text and any files. */
+async function heldReply(key: string): Promise<{
+  thread: Thread; collective: Collective; member: Member
+  data: { draft: string; files?: { filename: string; contentType: string; path: string }[]; blockedBy: string }
+} | null> {
+  if (!key.startsWith('held:')) return null
+  const raw = await kvGet(key)
+  if (!raw) return null
+  const data = JSON.parse(raw)
+  const thread = await getThread(Number(data.threadId))
+  const member = await getMember(Number(data.memberId))
+  if (!thread || !member || member.removed_at) return null
+  const collective = await getCollective(thread.collective_id)
+  if (!collective || member.collective_id !== collective.id) return null
+  return { thread, collective, member, data }
+}
+
+/** Send (or discard) a held reply. POST only: opening a link must never send
+ *  mail, and mail clients prefetch links. */
+app.post('/a/:token', async (c) => {
+  const payload = verifyToken(c.req.param('token'))
+  if (!payload || payload.a !== 'held') return c.redirect('/')
+  const held = await heldReply(String(payload.k || ''))
+  if (!held) {
+    return c.html(
+      <AuthCard title="Nothing held">
+        <h1>This reply is no longer waiting</h1>
+        <p class="muted">It was already sent, discarded, or the link has expired.</p>
+        <a class="btn" href="/">Open collective.email</a>
+      </AuthCard>,
+    )
+  }
+  const { thread, collective, member, data } = held
+  const body = await c.req.parseBody()
+  const key = String(payload.k)
+
+  if (body.action === 'discard') {
+    await run('DELETE FROM kv WHERE k = ?', [key])
+    return c.html(
+      <AuthCard title="Discarded">
+        <h1>Discarded</h1>
+        <p class="muted">Nothing was sent. The thread is untouched.</p>
+        <a class="btn" href={`/inbox/${collective.slug}/thread/${thread.id}`}>Open the thread</a>
+      </AuthCard>,
+    )
+  }
+
+  const text = String(body.body || '').trim()
+  if (!text && !(data.files?.length)) return c.redirect(`/a/${c.req.param('token')}`)
+  try {
+    const files = []
+    for (const f of data.files ?? []) {
+      const content = await readBlob(f.path).catch(() => null)
+      if (content) files.push({ filename: f.filename, contentType: f.contentType, content })
+    }
+    await sendCollectiveReply(collective, thread.id, text, member, 'email', files)
+    // one-shot: the same link must not send twice
+    await run('DELETE FROM kv WHERE k = ?', [key])
+    const fresh = (await getThread(thread.id))!
+    if (!fresh.assignee_member_id) await setAssignee(fresh, member.id, member.id, 'email_reply')
+    return c.html(
+      <AuthCard title="Sent">
+        <h1>✓ Sent to {thread.counterpart_email}</h1>
+        <p class="muted">Your reply went out as {collective.slug}@{cfg.emailDomain}, and is now in the thread.</p>
+        <a class="btn" href={`/inbox/${collective.slug}/thread/${thread.id}`}>Open the thread</a>
+      </AuthCard>,
+    )
+  } catch (err) {
+    return c.html(
+      <AuthCard title="Not sent">
+        <h1>Still not sent</h1>
+        <p class="error">{err instanceof Error ? err.message : 'Unknown error while sending.'}</p>
+        <p class="muted">Your reply is still held — nothing was lost. Fix the problem above and try again.</p>
+        <a class="btn" href={`/a/${c.req.param('token')}`}>Back to your reply</a>
+      </AuthCard>,
+    )
+  }
+})
+
 app.get('/a/:token', async (c) => {
   const payload = verifyToken(c.req.param('token'))
-  if (!payload || !['assign', 'spam', 'approve', 'approvepro', 'credits', 'mute', 'unmute'].includes(payload.a)) {
+  if (!payload || !['assign', 'spam', 'approve', 'approvepro', 'credits', 'mute', 'unmute', 'held'].includes(payload.a)) {
     return c.html(
       <AuthCard title="Link expired">
         <h1>This link has expired</h1>
         <p class="muted">Action links in notification emails are valid for 14 days. Open the app instead.</p>
         <a class="btn" href="/">Open collective.email</a>
+      </AuthCard>,
+    )
+  }
+  // A reply held back by the collision guard: show both sides and let the
+  // person who wrote it decide. Nothing is sent by opening this page — link
+  // scanners and prefetchers must not be able to send mail.
+  if (payload.a === 'held') {
+    const held = await heldReply(String(payload.k || ''))
+    if (!held) {
+      return c.html(
+        <AuthCard title="Nothing held">
+          <h1>This reply is no longer waiting</h1>
+          <p class="muted">It was already sent, discarded, or the link is older than 30 days.</p>
+          <a class="btn" href="/">Open collective.email</a>
+        </AuthCard>,
+      )
+    }
+    const { thread, collective, member, data } = held
+    return c.html(
+      <AuthCard title="Your reply is waiting">
+        <h1>{data.blockedBy} already replied</h1>
+        <p class="muted">
+          Your reply to “{thread.subject}” was held back in case you were both answering the same message.
+          You decide: send it as it is, change it first, or drop it.
+        </p>
+        <form method="post" action={`/a/${c.req.param('token')}`} class="held-form">
+          <label class="lbl">Your reply</label>
+          <textarea class="input" name="body" rows={10}>{data.draft}</textarea>
+          {data.files?.length ? (
+            <p class="fineprint">Attached: {data.files.map((f) => f.filename).join(', ')}</p>
+          ) : null}
+          <p class="fineprint">Goes to {thread.counterpart_email} as {collective.slug}@{cfg.emailDomain}, signed by {memberName(member)}.</p>
+          <div class="btn-row">
+            <button class="btn" type="submit" name="action" value="send" data-busy="Sending…">Send it now</button>
+            <button class="linkish danger" type="submit" name="action" value="discard"
+              data-confirm="Discard this reply? The text above will be gone.">Discard it</button>
+          </div>
+        </form>
+        <p class="fineprint"><a href={`${cfg.baseUrl}/inbox/${collective.slug}/thread/${thread.id}`}>Open the thread instead →</a></p>
       </AuthCard>,
     )
   }
@@ -831,6 +950,19 @@ app.get('/admin', async (c) => {
     <AuthCard title="Platform admin" flash={c.req.query('m')}>
       <h1>Platform admin</h1>
 
+      <h2 class="admin-h">Set a plan</h2>
+      <form method="post" action="/admin/plan">
+        <label class="lbl">Address</label>
+        <span class="wl-addr"><input name="slug" placeholder="commonshub" required /><span class="domain">@{cfg.emailDomain}</span></span>
+        <label class="lbl">Plan</label>
+        <select class="input" name="plan">
+          <option value="collective">Collective — 20 recipients per email</option>
+          <option value="pro">Pro — 50 recipients per email, custom domain</option>
+        </select>
+        <label class="check-row"><input type="checkbox" name="comped" value="1" /> Comped — free forever, no trial clock</label>
+        <div class="btn-row"><button class="btn small" type="submit">Apply</button></div>
+      </form>
+
       <h2 class="admin-h">Create a collective</h2>
       <form method="post" action="/admin/collectives">
         <label class="lbl">Address</label>
@@ -902,6 +1034,22 @@ app.get('/admin', async (c) => {
       </div>
     </AuthCard>,
   )
+})
+
+/** Platform admin: put a collective on a plan. The only way to change this
+ *  used to be a discount code or a direct database write, and the database is
+ *  not reachable from anywhere but the app. */
+app.post('/admin/plan', async (c) => {
+  if (!platformAdminAccount(c)) return c.notFound()
+  const body = await c.req.parseBody()
+  const target = await getCollectiveBySlug(String(body.slug || '').trim().toLowerCase())
+  if (!target) return c.redirect('/admin?m=' + encodeURIComponent('No collective with that address.'))
+  const plan = String(body.plan || '') === 'pro' ? 'pro' : 'collective'
+  const comped = body.comped === '1'
+  await run('UPDATE collectives SET plan = ?, comped = ? WHERE id = ?', [plan, comped ? 1 : 0, target.id])
+  const fresh = (await getCollective(target.id))!
+  return c.redirect('/admin?m=' + encodeURIComponent(
+    `${target.slug} is on the ${plan} plan${comped ? ' (comped)' : ''} — ${billingState(fresh)}, up to ${recipientLimit(fresh)} recipients per email.`))
 })
 
 app.post('/admin/credits', async (c) => {

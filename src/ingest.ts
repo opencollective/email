@@ -4,12 +4,13 @@ import {
   activeMembers, addEvent, addTag, all, get, getCollective, getMember, getMemberIn, getThread, run, setAssignee, setStatus, storeAttachment,
   suggestedAssigneeFor, type Collective, type Member, type Message, type Thread,
 } from './db.js'
-import { htmlToText, normalizeSubject, now, stripQuotedReply } from './util.js'
+import { htmlToText, normalizeSubject, now, randomToken, stripQuotedReply } from './util.js'
 import { matchingRule, type Rule } from './rules.js'
 import { sanitizeEmailHtml } from './sanitize.js'
 import { notifyInbound, sendCollisionNotice, sendReplyConfirmation, sendReplyFailure } from './notify.js'
 import { sendCollectiveReply } from './outbound.js'
 import { kvGet, kvSet } from './db.js'
+import { saveBlob } from './storage.js'
 import { addNote } from './notes.js'
 import type { ReplyRef } from './reply-tokens.js'
 
@@ -341,10 +342,6 @@ export async function handleEmailNote(parsed: ParsedMail, ref: ReplyRef) {
   console.log(`[ingest] ${writer.email} added a note by email on thread ${thread.id}${mentioned.length ? ` (notified ${mentioned.length})` : ''}`)
 }
 
-/** How long an answer keeps the floor. Past this, a member writing in is
- *  adding to the conversation, not racing someone to answer it. */
-const COLLISION_WINDOW = 6 * 3600
-
 export async function handleEmailReply(
   parsed: ParsedMail,
   ref: { slug: string; threadId: number; memberId: number; msgId: number },
@@ -402,17 +399,29 @@ export async function handleEmailReply(
     ORDER BY sent_at DESC LIMIT 1
   `, [ref.threadId, orig?.sent_at ?? 0])
   const answeredByOther = !!newer && newer.sent_by_member_id !== member.id
-  const stillFresh = !!newer && now() - (newer.sent_at ?? 0) < COLLISION_WINDOW
-  // did the outside world reply after that answer? then it is no longer the last word
+  // is that answer still the last word? if anything has landed since — the
+  // client writing back, anyone sending again — there is nothing to collide with
   const movedOn = newer ? !!(await get<Message>(
-    "SELECT id FROM messages WHERE thread_id = ? AND direction = 'inbound' AND COALESCE(sent_at, created_at) > ? LIMIT 1",
-    [ref.threadId, newer.sent_at ?? 0])) : false
+    'SELECT id FROM messages WHERE thread_id = ? AND COALESCE(sent_at, created_at) > ? AND id != ? LIMIT 1',
+    [ref.threadId, newer.sent_at ?? 0, newer.id])) : false
 
-  if (newer && answeredByOther && stillFresh && !movedOn) {
+  if (newer && answeredByOther && !movedOn) {
     const by = newer.sent_by_member_id ? await getMember(newer.sent_by_member_id) : undefined
     await addEvent(thread.id, member.id, 'reply_blocked', { answered_by: newer.sent_by_member_id, via: 'email' })
-    await sendCollisionNotice(collective, member, thread, by, newer.sent_at, draft)
-    console.log(`[ingest] blocked duplicate email reply from ${member.email} on thread ${thread.id}`)
+    // A held reply must survive intact — including the contract someone
+    // attached — or "send it anyway" would send something lesser.
+    const key = `held:${randomToken(18)}`
+    const files = []
+    for (const [i, a] of attachments.entries()) {
+      const safe = (a.filename || `attachment-${i + 1}`).replace(/[^\w.\-() ]+/g, '_').slice(0, 120)
+      files.push({ filename: safe, contentType: a.contentType, path: await saveBlob(`${key}/${safe}`, a.content, a.contentType) })
+    }
+    await kvSet(key, JSON.stringify({
+      threadId: thread.id, memberId: member.id, draft, files,
+      blockedBy: by ? (by.name || by.email.split('@')[0]) : 'Someone', at: now(),
+    }))
+    await sendCollisionNotice(collective, member, thread, by, newer.sent_at, draft, newer.body_text || '', key)
+    console.log(`[ingest] held email reply from ${member.email} on thread ${thread.id} (${key})`)
     return
   }
 

@@ -1102,25 +1102,128 @@ test('internal notes never leave in a forward', async () => {
 // Reported by a user: "I am trying to send a contract to a client but there has
 // already been a reply to them. I get a message that my email has not been sent."
 
-test('a follow-up days after someone else answered is sent, not blocked', async () => {
+test('a held reply can always be sent anyway, attachments and all', async () => {
   const { col, memberId, thread, addr } = await replySetup('c1')
   const otherId = await addMember(col.id, 'colleague@personal.test')
-  // the client wrote three days ago
   await run("UPDATE messages SET sent_at = ?, created_at = ? WHERE thread_id = ? AND direction = 'inbound'",
     [now() - 3 * 86400, now() - 3 * 86400, thread.id])
-  // a colleague answered two days ago
   await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_email, from_name, to_json, body_text, sent_by_member_id, sent_at, created_at)
     VALUES (?, ?, 'outbound', ?, 'Reply Col', '[]', 'Thanks, looking into it.', ?, ?, ?)`,
     [thread.id, `<c1-${uniq()}@t>`, `${col.slug}@collective.email`, otherId, now() - 2 * 86400, now() - 2 * 86400])
 
-  const { body } = await webhook({
-    email_id: `test-${uniq()}`, from: 'member@personal.test',
-    to: [addr], subject: 'Re:', message_id: `<c1b-${uniq()}@t>`, text: 'Here is the contract, please sign.',
+  // she emails the contract in; a colleague's answer is still the last word
+  const rawWithPdf = [
+    'From: Xavier <member@personal.test>',
+    `To: ${addr}`,
+    'Subject: Re: contract',
+    `Message-ID: <c1b-${uniq()}@personal.test>`,
+    'MIME-Version: 1.0',
+    'Content-Type: multipart/mixed; boundary="CC"',
+    '',
+    '--CC',
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    'Here is the contract, please sign.',
+    '--CC',
+    'Content-Type: application/pdf; name="contract.pdf"',
+    'Content-Transfer-Encoding: base64',
+    'Content-Disposition: attachment; filename="contract.pdf"',
+    '',
+    Buffer.from('%PDF-1.4 contract').toString('base64'),
+    '--CC--',
+    '',
+  ].join('\r\n')
+  await handleEmailReply(await simpleParser(rawWithPdf),
+    { slug: col.slug, threadId: thread.id, memberId, msgId: (await threadMessages(thread.id))[0].id })
+  assert.equal((await threadMessages(thread.id)).filter((m) => m.direction === 'outbound').length, 1, 'held, not sent')
+
+  // the hold keeps the text AND the file
+  const row = (await get<{ k: string; v: string }>("SELECT k, v FROM kv WHERE k LIKE 'held:%' ORDER BY rowid DESC LIMIT 1"))!
+  const heldData = JSON.parse(row.v)
+  assert.equal(heldData.threadId, thread.id)
+  assert.match(heldData.draft, /Here is the contract/)
+  assert.equal(heldData.files.length, 1, 'the contract was kept with the draft')
+  assert.equal(heldData.files[0].filename, 'contract.pdf')
+
+  const { signToken } = await import('../src/util.js')
+  const token = signToken({ a: 'held', k: row.k }, 3600)
+
+  // opening the link must NOT send: mail clients prefetch links
+  const page = await app.request(`/a/${token}`)
+  assert.equal(page.status, 200)
+  assert.match(await page.text(), /Here is the contract/, 'the draft is shown, editable')
+  assert.equal((await threadMessages(thread.id)).filter((m) => m.direction === 'outbound').length, 1, 'still not sent')
+
+  // sending is an explicit POST, and it goes out with the attachment
+  const sent = await app.request(`/a/${token}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ action: 'send', body: 'Here is the contract, please sign.' }),
   })
-  assert.equal(body.handled, 'member_reply')
+  assert.equal(sent.status, 200)
   const out = (await threadMessages(thread.id)).filter((m) => m.direction === 'outbound')
-  assert.equal(out.length, 2, 'the contract goes out — this is a new message, not a duplicate answer')
+  assert.equal(out.length, 2, 'the override sent it')
   assert.match(out[1].body_text!, /Here is the contract/)
+  const atts = await all<{ filename: string }>('SELECT filename FROM attachments WHERE message_id = ?', [out[1].id])
+  assert.deepEqual(atts.map((a) => a.filename), ['contract.pdf'], 'the file went too')
+
+  // one-shot: the same link cannot send twice
+  const again = await app.request(`/a/${token}`, {
+    method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ action: 'send', body: 'again' }),
+  })
+  assert.match(await again.text(), /no longer waiting/)
+  assert.equal((await threadMessages(thread.id)).filter((m) => m.direction === 'outbound').length, 2)
+})
+
+test('a held reply can be edited before it goes, or discarded', async () => {
+  const { col, thread, addr } = await replySetup('c5')
+  const otherId = await addMember(col.id, 'colleague@personal.test')
+  await run("UPDATE messages SET sent_at = ?, created_at = ? WHERE thread_id = ? AND direction = 'inbound'",
+    [now() - 86400, now() - 86400, thread.id])
+  await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_email, from_name, to_json, body_text, sent_by_member_id, sent_at, created_at)
+    VALUES (?, ?, 'outbound', ?, 'Reply Col', '[]', 'Handled.', ?, ?, ?)`,
+    [thread.id, `<c5-${uniq()}@t>`, `${col.slug}@collective.email`, otherId, now() - 3600, now() - 3600])
+  await webhook({
+    email_id: `test-${uniq()}`, from: 'member@personal.test',
+    to: [addr], subject: 'Re:', message_id: `<c5b-${uniq()}@t>`, text: 'original wording',
+  })
+  const { signToken } = await import('../src/util.js')
+  const row = (await get<{ k: string }>("SELECT k FROM kv WHERE k LIKE 'held:%' ORDER BY rowid DESC LIMIT 1"))!
+  const token = signToken({ a: 'held', k: row.k }, 3600)
+
+  await app.request(`/a/${token}`, {
+    method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ action: 'send', body: 'edited wording, with the contract terms' }),
+  })
+  const out = (await threadMessages(thread.id)).filter((m) => m.direction === 'outbound')
+  assert.match(out[out.length - 1].body_text!, /edited wording/, 'what she edited is what went out')
+  assert.doesNotMatch(out[out.length - 1].body_text!, /original wording/)
+})
+
+test('discarding a held reply sends nothing and clears it', async () => {
+  const { col, thread, addr } = await replySetup('c6')
+  const otherId = await addMember(col.id, 'colleague@personal.test')
+  await run("UPDATE messages SET sent_at = ?, created_at = ? WHERE thread_id = ? AND direction = 'inbound'",
+    [now() - 86400, now() - 86400, thread.id])
+  await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_email, from_name, to_json, body_text, sent_by_member_id, sent_at, created_at)
+    VALUES (?, ?, 'outbound', ?, 'Reply Col', '[]', 'Handled.', ?, ?, ?)`,
+    [thread.id, `<c6-${uniq()}@t>`, `${col.slug}@collective.email`, otherId, now() - 3600, now() - 3600])
+  await webhook({
+    email_id: `test-${uniq()}`, from: 'member@personal.test',
+    to: [addr], subject: 'Re:', message_id: `<c6b-${uniq()}@t>`, text: 'never mind',
+  })
+  const { signToken } = await import('../src/util.js')
+  const row = (await get<{ k: string }>("SELECT k FROM kv WHERE k LIKE 'held:%' ORDER BY rowid DESC LIMIT 1"))!
+  const token = signToken({ a: 'held', k: row.k }, 3600)
+
+  const res = await app.request(`/a/${token}`, {
+    method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ action: 'discard' }),
+  })
+  assert.match(await res.text(), /Discarded/)
+  assert.equal((await threadMessages(thread.id)).filter((m) => m.direction === 'outbound').length, 1)
+  assert.equal(await get('SELECT k FROM kv WHERE k = ?', [row.k]), undefined, 'the hold is cleared')
 })
 
 test('a genuine race — someone else answered minutes ago — is still blocked', async () => {

@@ -43,8 +43,10 @@ export const planLimits = (plan: string) => PLAN_LIMITS[plan] || PLAN_LIMITS.col
 /** How many people one outbound email may address, To + Cc + Bcc combined.
  *  Trials get 3 — enough to write to a real person, useless for a spam run. */
 export function recipientLimit(c: Pick<Collective, 'plan' | 'stripe_status' | 'trial_ends_at' | 'comped'>): number {
-  if (billingState(c) === 'trial') return 3
-  return c.plan === 'pro' ? 50 : 20
+  // the plan wins over the billing state: a Pro inbox is Pro on day one, even
+  // mid-trial. Otherwise "put them on Pro" would silently still cap them at 3.
+  if (c.plan === 'pro') return 50
+  return billingState(c) === 'trial' ? 3 : 20
 }
 
 export function assertRecipientCap(collective: Collective, count: number): void {

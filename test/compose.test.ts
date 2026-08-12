@@ -161,3 +161,45 @@ test('the reply cap counts the sender plus Cc and Bcc', async () => {
   assert.match(decodeURIComponent(res.headers.get('location')!), /at most 3 people/)
   assert.equal(await get("SELECT id FROM messages WHERE thread_id = ? AND direction = 'outbound'", [threadId]), undefined, 'nothing went out')
 })
+
+test('a Pro inbox gets 50 recipients even while its trial is running', async () => {
+  const { recipientLimit } = await import('../src/billing.js')
+  const base = { stripe_status: null, comped: 0, trial_ends_at: now() + 20 * 86400 }
+  assert.equal(recipientLimit({ ...base, plan: 'collective' }), 3, 'a trialing collective is capped tight')
+  assert.equal(recipientLimit({ ...base, plan: 'pro' }), 50, 'the plan decides for Pro, trial or not')
+  assert.equal(recipientLimit({ ...base, plan: 'collective', stripe_status: 'active' }), 20, 'paying, non-Pro')
+  assert.equal(recipientLimit({ ...base, plan: 'pro', comped: 1 }), 50, 'comped Pro')
+})
+
+test('the platform admin can put a collective on Pro', async () => {
+  const { createSession } = await import('../src/auth.js')
+  const slug = `plan${uniq()}`
+  const col = await createCollective(slug, 'Plan Co')
+  const adminEmail = process.env.ADMIN_EMAIL || 'admin@collective.email'
+  const sid = await createSession(adminEmail)
+
+  const res = await app.request('/admin/plan', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: `requests_sid=${sid}` },
+    body: new URLSearchParams({ slug, plan: 'pro', comped: '1' }),
+  })
+  assert.equal(res.status, 302)
+  assert.match(decodeURIComponent(res.headers.get('location')!), /up to 50 recipients/)
+  const fresh = (await get<any>('SELECT plan, comped FROM collectives WHERE id = ?', [col.id]))!
+  assert.equal(fresh.plan, 'pro')
+  assert.equal(fresh.comped, 1)
+})
+
+test('a non-platform-admin cannot change plans', async () => {
+  const { createSession } = await import('../src/auth.js')
+  const slug = `plan${uniq()}`
+  await createCollective(slug, 'Plan Co')
+  const sid = await createSession(`nobody-${uniq()}@example.org`)
+  const res = await app.request('/admin/plan', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: `requests_sid=${sid}` },
+    body: new URLSearchParams({ slug, plan: 'pro' }),
+  })
+  assert.equal(res.status, 404)
+  assert.equal((await get<any>('SELECT plan FROM collectives WHERE slug = ?', [slug]))!.plan, 'collective')
+})

@@ -1155,3 +1155,8 @@ button.row.new-thread-row {
 .snip-stack .avatar:not(:last-child) { opacity: 0.75; }
 .r-snip .avatar.mini-out { background: var(--fill); color: var(--muted); border-style: dashed; }
 .unread .snip-stack .avatar:not(:last-child) { opacity: 0.85; }
+
+/* held-reply review: their answer, yours, and what you decide */
+.held-form { display: grid; gap: 8px; margin: 14px 0 8px; }
+.held-form textarea { font: inherit; min-height: 180px; }
+.held-form .btn-row { align-items: center; margin-top: 4px; }
