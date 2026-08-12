@@ -314,16 +314,17 @@ export async function notifyMention(
 export async function sendCollisionNotice(collective: Collective, member: Member, thread: Thread, answeredBy: Member | undefined, answeredAt: number | null, draft: string) {
   const who = answeredBy ? memberLabel(answeredBy) : 'Someone'
   const html = shell(collective.name, `
-    <p style="margin:0 0 8px;font-size:15px"><b>${escapeHtml(who)} already replied</b> to “${escapeHtml(thread.subject)}” ${answeredAt ? `(${fmtDateTime(answeredAt)})` : ''} — <b>your reply was NOT sent</b>, to avoid answering twice.</p>
-    <p style="margin:0 0 8px;font-size:13px;color:#6b7280">Your draft, in case you still need it:</p>
+    <p style="margin:0 0 8px;font-size:15px"><b>${escapeHtml(who)} just replied</b> to “${escapeHtml(thread.subject)}” ${answeredAt ? `(${fmtDateTime(answeredAt)})` : ''} — <b>your reply was NOT sent</b>, in case you were both answering the same message.</p>
+    <p style="margin:0 0 14px;font-size:13px;color:#6b7280">If you meant to add something new, open the thread and send it from there — it will go out.</p>
+    <p style="margin:0 0 8px;font-size:13px;color:#6b7280">Your draft, so nothing is lost:</p>
     <div style="border:1.5px dashed #d3d6da;border-radius:12px;padding:14px;font-size:14px;white-space:pre-wrap;background:#f5f7fa;margin-bottom:18px">${escapeHtml(draft)}</div>
     ${btn(threadUrl(collective, thread.id), 'Open the thread', false)}`)
   await sendAppEmail({
     to: member.email,
-    subject: `Not sent — ${who} already replied: ${thread.subject}`,
+    subject: `Not sent — ${who} just replied: ${thread.subject}`,
     from: notifyFrom(collective),
     html,
-    text: `${who} already replied to "${thread.subject}" — your reply was NOT sent.\n\nYour draft:\n${draft}\n\nOpen the thread: ${threadUrl(collective, thread.id)}`,
+    text: `${who} just replied to "${thread.subject}" — your reply was NOT sent, in case you were both answering the same message.\n\nIf you meant to add something new, open the thread and send it from there — it will go out.\n\nYour draft:\n${draft}\n\nOpen the thread: ${threadUrl(collective, thread.id)}`,
   })
 }
 

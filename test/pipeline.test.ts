@@ -1097,3 +1097,83 @@ test('internal notes never leave in a forward', async () => {
   assert.match(sent, /Any chance of a discount\?/)
   assert.doesNotMatch(sent, /always haggle/, 'an internal note is not thread history')
 })
+
+// ---------- the collision guard must not block a deliberate follow-up ----------
+// Reported by a user: "I am trying to send a contract to a client but there has
+// already been a reply to them. I get a message that my email has not been sent."
+
+test('a follow-up days after someone else answered is sent, not blocked', async () => {
+  const { col, memberId, thread, addr } = await replySetup('c1')
+  const otherId = await addMember(col.id, 'colleague@personal.test')
+  // the client wrote three days ago
+  await run("UPDATE messages SET sent_at = ?, created_at = ? WHERE thread_id = ? AND direction = 'inbound'",
+    [now() - 3 * 86400, now() - 3 * 86400, thread.id])
+  // a colleague answered two days ago
+  await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_email, from_name, to_json, body_text, sent_by_member_id, sent_at, created_at)
+    VALUES (?, ?, 'outbound', ?, 'Reply Col', '[]', 'Thanks, looking into it.', ?, ?, ?)`,
+    [thread.id, `<c1-${uniq()}@t>`, `${col.slug}@collective.email`, otherId, now() - 2 * 86400, now() - 2 * 86400])
+
+  const { body } = await webhook({
+    email_id: `test-${uniq()}`, from: 'member@personal.test',
+    to: [addr], subject: 'Re:', message_id: `<c1b-${uniq()}@t>`, text: 'Here is the contract, please sign.',
+  })
+  assert.equal(body.handled, 'member_reply')
+  const out = (await threadMessages(thread.id)).filter((m) => m.direction === 'outbound')
+  assert.equal(out.length, 2, 'the contract goes out — this is a new message, not a duplicate answer')
+  assert.match(out[1].body_text!, /Here is the contract/)
+})
+
+test('a genuine race — someone else answered minutes ago — is still blocked', async () => {
+  const { col, memberId, thread, addr } = await replySetup('c2')
+  const otherId = await addMember(col.id, 'colleague@personal.test')
+  await run("UPDATE messages SET sent_at = ?, created_at = ? WHERE thread_id = ? AND direction = 'inbound'",
+    [now() - 3600, now() - 3600, thread.id])
+  await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_email, from_name, to_json, body_text, sent_by_member_id, sent_at, created_at)
+    VALUES (?, ?, 'outbound', ?, 'Reply Col', '[]', 'I got this one!', ?, ?, ?)`,
+    [thread.id, `<c2-${uniq()}@t>`, `${col.slug}@collective.email`, otherId, now() - 120, now() - 120])
+
+  await webhook({
+    email_id: `test-${uniq()}`, from: 'member@personal.test',
+    to: [addr], subject: 'Re:', message_id: `<c2b-${uniq()}@t>`, text: 'My late answer',
+  })
+  const out = (await threadMessages(thread.id)).filter((m) => m.direction === 'outbound')
+  assert.equal(out.length, 1, 'the duplicate answer is still stopped')
+  assert.ok(await get("SELECT id FROM events WHERE thread_id = ? AND type = 'reply_blocked'", [thread.id]))
+})
+
+test('your own recent reply never blocks your next one', async () => {
+  const { col, memberId, thread, addr } = await replySetup('c3')
+  await run("UPDATE messages SET sent_at = ?, created_at = ? WHERE thread_id = ? AND direction = 'inbound'",
+    [now() - 3600, now() - 3600, thread.id])
+  await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_email, from_name, to_json, body_text, sent_by_member_id, sent_at, created_at)
+    VALUES (?, ?, 'outbound', ?, 'Reply Col', '[]', 'One moment.', ?, ?, ?)`,
+    [thread.id, `<c3-${uniq()}@t>`, `${col.slug}@collective.email`, memberId, now() - 60, now() - 60])
+
+  await webhook({
+    email_id: `test-${uniq()}`, from: 'member@personal.test',
+    to: [addr], subject: 'Re:', message_id: `<c3b-${uniq()}@t>`, text: 'And here is the contract.',
+  })
+  const out = (await threadMessages(thread.id)).filter((m) => m.direction === 'outbound')
+  assert.equal(out.length, 2, 'adding to your own reply is not a collision')
+})
+
+test('once the client writes again, a reply is answering the newest message', async () => {
+  const { col, memberId, thread, addr } = await replySetup('c4')
+  const otherId = await addMember(col.id, 'colleague@personal.test')
+  await run("UPDATE messages SET sent_at = ?, created_at = ? WHERE thread_id = ? AND direction = 'inbound'",
+    [now() - 3600, now() - 3600, thread.id])
+  await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_email, from_name, to_json, body_text, sent_by_member_id, sent_at, created_at)
+    VALUES (?, ?, 'outbound', ?, 'Reply Col', '[]', 'Thanks!', ?, ?, ?)`,
+    [thread.id, `<c4-${uniq()}@t>`, `${col.slug}@collective.email`, otherId, now() - 300, now() - 300])
+  // the client has since replied — the conversation moved on
+  await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_email, from_name, to_json, body_text, sent_at, created_at)
+    VALUES (?, ?, 'inbound', 'client@example.org', 'Client', '[]', 'Any update?', ?, ?)`,
+    [thread.id, `<c4in-${uniq()}@t>`, now() - 60, now() - 60])
+
+  await webhook({
+    email_id: `test-${uniq()}`, from: 'member@personal.test',
+    to: [addr], subject: 'Re:', message_id: `<c4b-${uniq()}@t>`, text: 'Yes — contract attached.',
+  })
+  const out = (await threadMessages(thread.id)).filter((m) => m.direction === 'outbound')
+  assert.equal(out.length, 2, 'not a duplicate of an answer the client has already responded to')
+})

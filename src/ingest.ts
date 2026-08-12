@@ -341,6 +341,10 @@ export async function handleEmailNote(parsed: ParsedMail, ref: ReplyRef) {
   console.log(`[ingest] ${writer.email} added a note by email on thread ${thread.id}${mentioned.length ? ` (notified ${mentioned.length})` : ''}`)
 }
 
+/** How long an answer keeps the floor. Past this, a member writing in is
+ *  adding to the conversation, not racing someone to answer it. */
+const COLLISION_WINDOW = 6 * 3600
+
 export async function handleEmailReply(
   parsed: ParsedMail,
   ref: { slug: string; threadId: number; memberId: number; msgId: number },
@@ -381,14 +385,30 @@ export async function handleEmailReply(
     return
   }
 
-  // Collision: has anyone answered since the message this notification was about?
+  // Collision: two people answering the SAME message at the same time. That is
+  // a race, and it is worth stopping. What is NOT a collision — and used to be
+  // blocked all the same, permanently, because any outbound after the
+  // referenced message counted — is someone deliberately writing again later:
+  // sending a contract days after a colleague acknowledged the request.
+  //
+  // So a block now needs all four: somebody else answered, recently, after the
+  // message this notification was about, and the conversation has not moved on
+  // since. Anything else goes out. A wrongly-blocked message is a contract that
+  // never reached a client; a wrongly-allowed one is a second email from people
+  // who both meant to write.
   const orig = await get<Message>('SELECT * FROM messages WHERE id = ?', [ref.msgId])
   const newer = await get<Message>(`
     SELECT * FROM messages WHERE thread_id = ? AND direction = 'outbound' AND sent_at > ?
     ORDER BY sent_at DESC LIMIT 1
   `, [ref.threadId, orig?.sent_at ?? 0])
+  const answeredByOther = !!newer && newer.sent_by_member_id !== member.id
+  const stillFresh = !!newer && now() - (newer.sent_at ?? 0) < COLLISION_WINDOW
+  // did the outside world reply after that answer? then it is no longer the last word
+  const movedOn = newer ? !!(await get<Message>(
+    "SELECT id FROM messages WHERE thread_id = ? AND direction = 'inbound' AND COALESCE(sent_at, created_at) > ? LIMIT 1",
+    [ref.threadId, newer.sent_at ?? 0])) : false
 
-  if (newer) {
+  if (newer && answeredByOther && stillFresh && !movedOn) {
     const by = newer.sent_by_member_id ? await getMember(newer.sent_by_member_id) : undefined
     await addEvent(thread.id, member.id, 'reply_blocked', { answered_by: newer.sent_by_member_id, via: 'email' })
     await sendCollisionNotice(collective, member, thread, by, newer.sent_at, draft)
