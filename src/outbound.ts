@@ -45,6 +45,10 @@ export async function sendCollectiveReply(
   attachments: OutAttachment[] = [],
   cc: string[] = [],
   bcc: string[] = [],
+  /** People already holding a copy — a member's own Cc from their mail client.
+   *  Stored on the message so the archive is honest about who is in the
+   *  conversation, deliberately NOT sent to: they were served by Gmail. */
+  alreadyCopied: string[] = [],
 ): Promise<Message> {
   const thread = await getThread(threadId)
   if (!thread || thread.collective_id !== collective.id) throw new Error('Thread not found')
@@ -124,7 +128,9 @@ export async function sendCollectiveReply(
     VALUES (?, ?, ?, 'outbound', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     threadId, messageId, lastIn?.rfc822_message_id ?? null,
-    fromAddress, collective.name, JSON.stringify([to]), JSON.stringify(cc), JSON.stringify(bcc),
+    fromAddress, collective.name, JSON.stringify([to]),
+    // what the record must show: everyone holding this message, however it reached them
+    JSON.stringify([...new Set([...cc, ...alreadyCopied])]), JSON.stringify(bcc),
     body, member.id, resendEmailId, ts, ts,
   ])
   for (const [i, a] of attachments.entries()) await storeAttachment(r.lastId, a.filename, a.contentType, a.content, i)

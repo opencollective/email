@@ -7,7 +7,7 @@ import {
 import { htmlToText, normalizeSubject, now, randomToken, stripQuotedReply } from './util.js'
 import { matchingRule, type Rule } from './rules.js'
 import { sanitizeEmailHtml } from './sanitize.js'
-import { notifyInbound, sendCollisionNotice, sendReplyConfirmation, sendReplyFailure } from './notify.js'
+import { notifyInbound, receivingAddress, sendCollisionNotice, sendReplyConfirmation, sendReplyFailure } from './notify.js'
 import { sendCollectiveReply } from './outbound.js'
 import { kvGet, kvSet } from './db.js'
 import { saveBlob } from './storage.js'
@@ -342,6 +342,34 @@ export async function handleEmailNote(parsed: ParsedMail, ref: ReplyRef) {
   console.log(`[ingest] ${writer.email} added a note by email on thread ${thread.id}${mentioned.length ? ` (notified ${mentioned.length})` : ''}`)
 }
 
+/** Addresses a member put in To/Cc/Bcc when replying from their own client,
+ *  minus everyone who is already in the loop: the reply address itself, the
+ *  collective's own addresses, the person we are answering, and fellow members
+ *  (who follow the thread in the app, not as outside recipients).
+ *
+ *  Bcc is usually invisible to us — it is stripped before delivery — so this
+ *  captures whatever the headers actually carry, and no more. */
+async function recipientsAddedBy(
+  parsed: ParsedMail, collective: Collective, member: Member, thread: Thread,
+): Promise<string[]> {
+  const ours = new Set<string>([
+    receivingAddress(collective).toLowerCase(),
+    `${collective.slug}@${cfg.emailDomain}`.toLowerCase(),
+    member.email.toLowerCase(),
+    (thread.counterpart_email || '').toLowerCase(),
+  ])
+  for (const m of await activeMembers(collective.id)) ours.add(m.email.toLowerCase())
+  const out: string[] = []
+  for (const a of [...addrList(parsed.to), ...addrList(parsed.cc), ...addrList(parsed.bcc)]) {
+    const addr = (a.address || '').toLowerCase().trim()
+    if (!addr || ours.has(addr) || out.includes(addr)) continue
+    // our own reply-token addresses live on the mail domain — never a participant
+    if (addr.endsWith(`@${cfg.emailDomain.toLowerCase()}`)) continue
+    if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(addr)) out.push(addr)
+  }
+  return out.slice(0, 25)
+}
+
 export async function handleEmailReply(
   parsed: ParsedMail,
   ref: { slug: string; threadId: number; memberId: number; msgId: number },
@@ -425,8 +453,21 @@ export async function handleEmailReply(
     return
   }
 
+  // Anyone the member added in their own mail client is part of this
+  // conversation now. Their copy was delivered by their provider, so we record
+  // them and never re-send — but the thread stops being a partial record, and
+  // the next reply from the app copies them like any other participant.
+  const added = await recipientsAddedBy(parsed, collective, member, thread)
+  if (added.length) {
+    const known: string[] = JSON.parse(thread.cc_json || '[]')
+    const merged = [...new Set([...known, ...added])]
+    if (merged.length !== known.length) {
+      await run('UPDATE threads SET cc_json = ? WHERE id = ?', [JSON.stringify(merged), thread.id])
+    }
+  }
+
   try {
-    await sendCollectiveReply(collective, thread.id, draft, member, 'email', attachments)
+    await sendCollectiveReply(collective, thread.id, draft, member, 'email', attachments, [], [], added)
     const fresh = (await getThread(thread.id))!
     if (!fresh.assignee_member_id) await setAssignee(fresh, member.id, member.id, 'email_reply')
     await sendReplyConfirmation(collective, member, thread, thread.counterpart_email || 'the sender')

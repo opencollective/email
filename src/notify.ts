@@ -138,8 +138,19 @@ export async function notifyInbound(
   const muted = new Set((await all<{ member_id: number }>(
     'SELECT member_id FROM member_mutes WHERE collective_id = ? AND match_from = ?',
     [collective.id, (message.from_email || '').toLowerCase()])).map((r) => r.member_id))
+  // Reply-all: anyone the sender addressed directly already has this message
+  // in their own inbox. A second copy from us is noise, and it arrives looking
+  // like news. They still see it in the app, unread, like everyone else.
+  const directlyAddressed = new Set<string>([
+    ...(JSON.parse(message.to_json || '[]') as string[]),
+    ...(JSON.parse(message.cc_json || '[]') as string[]),
+    ...(JSON.parse(message.bcc_json || '[]') as string[]),
+  ].map((a) => (a || '').toLowerCase().trim()).filter(Boolean))
+
   const recipients = members.filter(
-    (m) => m.role !== 'reader' && !muted.has(m.id) && (m.notify_level === 'every' || m.id === assigneeId) && m.email !== message.from_email?.toLowerCase(),
+    (m) => m.role !== 'reader' && !muted.has(m.id) && (m.notify_level === 'every' || m.id === assigneeId)
+      && m.email !== message.from_email?.toLowerCase()
+      && !directlyAddressed.has(m.email.toLowerCase()),
   )
   if (recipients.length === 0) return
 

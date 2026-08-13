@@ -1280,3 +1280,83 @@ test('once the client writes again, a reply is answering the newest message', as
   const out = (await threadMessages(thread.id)).filter((m) => m.direction === 'outbound')
   assert.equal(out.length, 2, 'not a duplicate of an answer the client has already responded to')
 })
+
+// ---------- a member's own Cc joins the thread, without a second copy ----------
+
+test("recipients a member adds in their mail client join the thread but are not re-sent to", async () => {
+  const { col, memberId, thread, addr } = await replySetup('x1')
+  const teammate = await addMember(col.id, 'teammate@personal.test')
+  assert.ok(teammate)
+
+  const raw = [
+    'From: Xavier <member@personal.test>',
+    `To: ${addr}, accounting@bureau.test`,
+    'Cc: carla.allenbach@europeancorrespondent.test, teammate@personal.test',
+    'Subject: Re: contract',
+    `Message-ID: <x1-${uniq()}@personal.test>`,
+    '', 'Contract attached, copying accounting.',
+  ].join('\r\n')
+
+  const logs: string[] = []
+  const orig = console.log
+  console.log = (...a: unknown[]) => { logs.push(a.join(' ')) }
+  try {
+    await handleEmailReply(await simpleParser(raw),
+      { slug: col.slug, threadId: thread.id, memberId, msgId: (await threadMessages(thread.id))[0].id })
+  } finally {
+    console.log = orig
+  }
+
+  // the thread now knows who is in the conversation
+  const fresh = (await getThread(thread.id))!
+  const threadCc: string[] = JSON.parse(fresh.cc_json || '[]')
+  assert.ok(threadCc.includes('accounting@bureau.test'), 'the address she added in To')
+  assert.ok(threadCc.includes('carla.allenbach@europeancorrespondent.test'), 'and in Cc')
+  assert.ok(!threadCc.includes('teammate@personal.test'), 'fellow members follow in the app, not as outside recipients')
+  assert.ok(!threadCc.some((a) => a.endsWith('@collective.email')), 'never our own addresses')
+  assert.ok(!threadCc.includes('member@personal.test'), 'nor the sender herself')
+
+  // the outbound record shows them, and the send did not go to them
+  const out = (await threadMessages(thread.id)).filter((m) => m.direction === 'outbound')
+  const recorded: string[] = JSON.parse(out[out.length - 1].cc_json || '[]')
+  assert.ok(recorded.includes('accounting@bureau.test') && recorded.includes('carla.allenbach@europeancorrespondent.test'),
+    'the archive is honest about who holds this message')
+  const sendLog = logs.find((l) => l.includes('[outbound:dev] To:'))!
+  assert.ok(sendLog, 'a send happened')
+  assert.doesNotMatch(sendLog, /accounting@bureau\.test/, 'their mail client already delivered it')
+  assert.doesNotMatch(sendLog, /carla\.allenbach/, 'no duplicate from us')
+})
+
+test('a reply-all does not notify the people it was already addressed to', async () => {
+  const { __observeAppMail } = await import('../src/appmail.js')
+  const col = await createCollective(`x2-${Date.now() % 100000}`, 'Notify Col')
+  const onCopy = await addMember(col.id, 'miriam@personal.test')
+  const notOnCopy = await addMember(col.id, 'leen@personal.test')
+  assert.ok(onCopy && notOnCopy)
+
+  const sent: { to: string; subject: string }[] = []
+  __observeAppMail((m) => sent.push({ to: m.to, subject: m.subject }))
+  try {
+    // Carla replies to everyone: the collective, and Miriam directly
+    await webhook({
+      email_id: `test-${uniq()}`,
+      from: 'carla.allenbach@europeancorrespondent.test',
+      to: [`${col.slug}@collective.email`, 'miriam@personal.test'],
+      cc: ['accounting@bureau.test'],
+      subject: 'Re: contract', message_id: `<x2-${uniq()}@t>`,
+      text: 'Signed and returned.',
+    })
+  } finally {
+    __observeAppMail(null)
+  }
+
+  const notified = sent.map((m) => m.to)
+  assert.ok(notified.includes('leen@personal.test'), 'someone who was not on the copy still hears about it')
+  assert.ok(!notified.includes('miriam@personal.test'), 'she already has it in her own inbox')
+
+  // and it is still fully recorded
+  const thread = await lastThread(col.id)
+  const msgs = await threadMessages(thread.id)
+  assert.equal(msgs.length, 1)
+  assert.match(msgs[0].body_text!, /Signed and returned/)
+})
