@@ -181,8 +181,16 @@ test('who has seen a thread is said by name, up to three of them', async () => {
 
   await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, extra[1])
   await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, extra[2])
+  const four = await seen()
+  assert.ok(four.some((s) => /Ruta/.test(s) && !/other/.test(s)),
+    `four readers all named — "and 1 other" is never shorter than the name — got ${JSON.stringify(four)}`)
+
+  await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [fx.collective.id, `eve-${uniq()}@example.org`, 'Eve Dean', 'member', 'every', now()])
+  const eve = await createSession((await get<any>('SELECT email FROM members WHERE collective_id = ? ORDER BY id DESC LIMIT 1', [fx.collective.id])).email)
+  await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, eve)
   const many = await seen()
-  assert.ok(many.some((s) => /and 1 other$/.test(s)), `four readers: three names then a count — got ${JSON.stringify(many)}`)
+  assert.ok(many.some((s) => /and \d+ others$/.test(s)), `five+ readers: three names then a plural count — got ${JSON.stringify(many)}`)
   assert.ok(many.every((s) => !s.includes('Dean')), 'first names only')
 })
 
@@ -224,4 +232,63 @@ test('an answer from an address that is neither ours nor a member\'s is shown un
   const card = html.slice(html.lastIndexOf('person-card'))
   assert.match(card, /hello@theirdomain\.test/, 'the card carries the address we actually stored')
   assert.doesNotMatch(card.slice(0, 400), /Thread View Co<\/b>/, 'not presented as the collective')
+})
+
+test('each message has a menu: copy link, reply, forward — and the link opens focused', async () => {
+  const fx = await fixture()
+  await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)
+  await run('UPDATE thread_reads SET last_seen_at = ? WHERE thread_id = ?', [fx.t0 + 5 * 3600, fx.threadId])
+  const html = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
+  assert.doesNotMatch(html, /class="icon-btn fold-btn"/, 'the caret is gone')
+  assert.match(html, new RegExp(`data-copy="[^"]*/thread/${fx.threadId}\\?focus=${fx.ids[2]}#m${fx.ids[2]}"`), 'copy link, anchored at the message')
+  assert.match(html, /class="menu-item" href="#composer">Reply</)
+  assert.match(html, /Forward…/)
+
+  // the copied link opens with everything else folded, whatever was read
+  const focused = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}?focus=${fx.ids[2]}`, fx.alice.sid)).text()
+  assert.deepEqual(folded(focused), [fx.ids[0], fx.ids[1], fx.ids[3], fx.ids[4]], 'only the focused message is open')
+})
+
+test('bare URLs in a message become links; the text around them stays escaped', async () => {
+  const fx = await fixture()
+  await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_name, from_email, to_json, body_text, sent_at, created_at)
+    VALUES (?, ?, 'inbound', 'Miriam Dean', 'miriam@out.test', '[]', ?, ?, ?)`,
+    [fx.threadId, `<l${uniq()}@x>`,
+      'See photos here: https://commonshub.brussels/rooms/satoshi. Also <script>alert(1)</script> should stay text.',
+      now(), now()])
+  const html = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
+  assert.match(html, /<a href="https:\/\/commonshub\.brussels\/rooms\/satoshi" target="_blank" rel="noopener noreferrer nofollow">/,
+    'the URL is a link, without the sentence full stop')
+  assert.doesNotMatch(html, /<script>alert/, 'surrounding text is still escaped')
+})
+
+test('HTML or text is a per-member choice remembered for the sender', async () => {
+  const fx = await fixture()
+  await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_name, from_email, to_json, body_text, body_html, sent_at, created_at)
+    VALUES (?, ?, 'inbound', 'Miriam Dean', 'miriam@out.test', '[]', 'plain fallback', '<table><tr><td>fancy newsletter layout</td></tr></table>', ?, ?)`,
+    [fx.threadId, `<h${uniq()}@x>`, now(), now()])
+
+  // default for ordinary mail: text, with the option to switch
+  let html = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
+  assert.doesNotMatch(html, /class="msg-frame"/)
+  assert.match(html, /Show HTML email/)
+
+  const r = await post(`/inbox/${fx.slug}/thread/${fx.threadId}/view`, fx.alice.sid, 'email=miriam%40out.test&mode=html')
+  assert.equal(r.status, 302)
+  html = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
+  assert.match(html, /class="msg-frame"/, 'now rendered as HTML')
+  assert.match(html, /Show text email/, 'and the menu offers the way back')
+
+  // Bob never chose anything — he still gets text
+  const bobs = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.bob.sid)).text()
+  assert.doesNotMatch(bobs, /class="msg-frame"/, 'the preference is per member')
+})
+
+test('the assign modal carries the create-a-rule form; the sidebar no longer does', async () => {
+  const fx = await fixture()
+  const html = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
+  const modal = html.slice(html.indexOf('assign-modal'), html.indexOf('</dialog>'))
+  assert.match(modal, /Create a rule for similar messages/)
+  const aside = html.slice(html.indexOf('class="thread-side"'))
+  assert.doesNotMatch(aside, /Create a rule for similar messages/)
 })

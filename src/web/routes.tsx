@@ -1312,6 +1312,24 @@ const threadCountQuery = (collectiveId: number, email: string, excludeId: number
   return { sql: `SELECT COUNT(DISTINCT t.id) AS n FROM ${q.from} WHERE ${q.where}`, args: q.args }
 }
 
+/** Bare URLs in a plain-text body become links. Text stays text — hono/jsx
+ *  escapes every non-URL part — and links open away from the inbox. */
+const URL_RE = /(https?:\/\/[^\s<>()"'\u201c\u201d]+)/g
+function linkify(text: string): (string | ReturnType<typeof jsxFragment>)[] {
+  const parts: any[] = []
+  let last = 0
+  for (const m of text.matchAll(URL_RE)) {
+    // trailing punctuation belongs to the sentence, not the URL
+    let url = m[0].replace(/[.,;:!?…]+$/, '')
+    parts.push(text.slice(last, m.index))
+    parts.push(<a href={url} target="_blank" rel="noopener noreferrer nofollow">{url}</a>)
+    last = m.index! + url.length
+  }
+  parts.push(text.slice(last))
+  return parts
+}
+const jsxFragment = () => null // only for the return type above
+
 /** "Miriam", "Miriam and Xavier", "Miriam, Xavier and Anna", then
  *  "Miriam, Xavier, Anna and 2 others". First names only — the full names sit
  *  in the title attribute, where there is room for them. */
@@ -1319,9 +1337,10 @@ function nameList(people: (Member | undefined)[]): string {
   const firsts = people.filter(Boolean).map((m) => memberName(m).split(' ')[0])
   if (firsts.length === 0) return 'nobody'
   if (firsts.length === 1) return firsts[0]
-  if (firsts.length <= 3) return `${firsts.slice(0, -1).join(', ')} and ${firsts[firsts.length - 1]}`
-  const rest = firsts.length - 3
-  return `${firsts.slice(0, 3).join(', ')} and ${rest} other${rest === 1 ? '' : 's'}`
+  // "and 1 other" is never shorter than the name itself, so four names show
+  // in full; the count starts at five people ("and 2 others")
+  if (firsts.length <= 4) return `${firsts.slice(0, -1).join(', ')} and ${firsts[firsts.length - 1]}`
+  return `${firsts.slice(0, 3).join(', ')} and ${firsts.length - 3} others`
 }
 
 // ---------- the one way a thread appears in a list ----------
@@ -1653,8 +1672,13 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
     [...msgs].reverse().find((m) => m.direction === 'inbound')?.id ?? 0,
     [...msgs].reverse().find((m) => m.direction === 'outbound' && m.sent_at)?.id ?? 0,
   ])
-  const isFolded = (m: Message) => folds.get(m.id)
-    ?? (prevSeen > 0 && (m.sent_at || m.created_at) <= prevSeen && !keepOpen.has(m.id))
+  // a copied message link opens with everything ELSE folded — the anchor jumps
+  // there and the rest of the thread stays out of the way
+  const focusId = Number(c.req.query('focus')) || 0
+  const isFolded = (m: Message) => focusId
+    ? m.id !== focusId
+    : folds.get(m.id)
+      ?? (prevSeen > 0 && (m.sent_at || m.created_at) <= prevSeen && !keepOpen.has(m.id))
 
   // one count per distinct sender, for the card that opens on their name
   const senderEmails = [...new Set(msgs
@@ -1670,7 +1694,18 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
     const rows = await batchAll(senderEmails.map((e) => threadCountQuery(collective.id, e, thread.id)))
     senderEmails.forEach((e, i) => otherByEmail.set(e, (rows[i][0] as { n: number }).n))
   }
-  const firstInboundId = msgs.find((m) => m.direction === 'inbound' && m.from_email && m.from_email.toLowerCase() === (thread.counterpart_email || '').toLowerCase())?.id
+  // how this member prefers mail from each sender: real HTML or plain text.
+  // No preference → HTML only for rule-filed mail (newsletters), text otherwise.
+  const viewPref = new Map<string, string>()
+  for (const e of senderEmails) {
+    const v = await kvGet(`view:${member.id}:${e}`)
+    if (v) viewPref.set(e, v)
+  }
+  const showAsHtml = (m: Message) => {
+    if (m.direction !== 'inbound' || !m.body_html || !m.from_email) return false
+    const pref = viewPref.get(m.from_email.toLowerCase())
+    return pref ? pref === 'html' : !!rule?.close
+  }
   // who did something on the thread (replied or left a note), for the sidebar
   const contributed = new Set<number>([
     ...msgs.filter((m) => m.sent_by_member_id).map((m) => m.sent_by_member_id!),
@@ -1970,45 +2005,55 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                       {g.direction === 'outbound' && g.sent_by_member_id ? (
                         <small class="sentby">· sent by {memberName(members.get(g.sent_by_member_id))}</small>
                       ) : null}
-                      {otherCount > 0 && g.direction === 'inbound' && g.id === firstInboundId ? (
-                        <a class="chip other-chip" href={contactUrl(base, g.from_email!, `${base}/thread/${thread.id}`)}>{otherCount} other thread{otherCount === 1 ? '' : 's'}</a>
-                      ) : null}
                     </span>
                     <span class="when">{fmtDateTime(g.sent_at)}</span>
-                    <form class="msg-fold" method="post" action={`${base}/thread/${thread.id}/fold`}>
-                      <input type="hidden" name="message_id" value={String(g.id)} />
-                      <input type="hidden" name="collapsed" value={isFolded(g) ? '0' : '1'} />
-                      <button class="icon-btn fold-btn" type="submit" data-fold
-                        title={isFolded(g) ? 'Expand this message' : 'Collapse this message'}
-                        aria-label={isFolded(g) ? 'Expand this message' : 'Collapse this message'}><Icon name="chevron" /></button>
-                    </form>
-                    {canSendRole(member.role) ? (
-                      <details class="fwd">
-                        <summary title="Forward" aria-label="Forward this message"><Icon name="forward" /></summary>
-                        <form method="post" action={`${base}/thread/${thread.id}/forward`}>
+                    {/* everything about this one message lives behind one quiet menu */}
+                    <details class="msg-menu">
+                      <summary title="Message options" aria-label="Message options">⋯</summary>
+                      <div class="menu-pop">
+                        <button class="menu-item" type="button" data-copy={`${cfg.baseUrl}${base}/thread/${thread.id}?focus=${g.id}#m${g.id}`}>Copy link</button>
+                        {canSendRole(member.role) ? <a class="menu-item" href="#composer">Reply</a> : null}
+                        {canSendRole(member.role) ? (
+                          <details class="menu-sub">
+                            <summary class="menu-item">Forward…</summary>
+                            <form method="post" action={`${base}/thread/${thread.id}/forward`} class="fwd-form">
+                              <input type="hidden" name="message_id" value={String(g.id)} />
+                              <input class="input small" type="email" name="to" placeholder="colleague@example.com" required />
+                              <input class="input small" name="note" placeholder="Add a note (optional)" />
+                              <button class="btn small ghost" type="submit" data-busy="Forwarding…">Forward</button>
+                            </form>
+                          </details>
+                        ) : null}
+                        {g.direction === 'inbound' && g.body_html && g.from_email ? (
+                          <form method="post" action={`${base}/thread/${thread.id}/view`} class="view-form">
+                            <input type="hidden" name="email" value={g.from_email} />
+                            <input type="hidden" name="mode" value={showAsHtml(g) ? 'text' : 'html'} />
+                            <button class="menu-item" type="submit">{showAsHtml(g) ? 'Show text email' : 'Show HTML email'}</button>
+                          </form>
+                        ) : null}
+                        {/* also the no-JS fallback for folding, now that the head does it */}
+                        <form class="msg-fold" method="post" action={`${base}/thread/${thread.id}/fold`}>
                           <input type="hidden" name="message_id" value={String(g.id)} />
-                          <input class="input small" type="email" name="to" placeholder="colleague@example.com" required />
-                          <input class="input small" name="note" placeholder="Add a note (optional)" />
-                          <button class="btn small ghost" type="submit" data-busy="Forwarding…">Forward</button>
+                          <input type="hidden" name="collapsed" value={isFolded(g) ? '0' : '1'} />
+                          <button class="menu-item" type="submit" data-fold>{isFolded(g) ? 'Expand' : 'Collapse'}</button>
                         </form>
-                      </details>
-                    ) : null}
+                      </div>
+                    </details>
                   </div>
                   <div class="msg-peek" data-peek>{excerpt(splitQuotedTail(g.body_text || '').main, 140) || '(no text content)'}</div>
-                  {rule?.close && g.direction === 'inbound' && g.body_html ? (
-                    // Rule-filed mail renders its real (sanitized) HTML in a
-                    // sandboxed frame: no scripts, opaque to the app, links
-                    // open in a new tab.
-                    <iframe class="msg-frame" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" srcdoc={emailHtmlDocument(g.body_html)}></iframe>
+                  {showAsHtml(g) ? (
+                    // Real (sanitized) HTML renders in a sandboxed frame: no
+                    // scripts, opaque to the app, links open in a new tab.
+                    <iframe class="msg-frame" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" srcdoc={emailHtmlDocument(g.body_html!)}></iframe>
                   ) : (() => {
                     const q = splitQuotedTail(g.body_text || '')
                     return (
                       <div class="msg-body">
-                        {q.main || '(no text content)'}
+                        {q.main ? linkify(q.main) : '(no text content)'}
                         {q.quoted ? (
                           <details class="qhist">
                             <summary>Show quoted history</summary>
-                            {'\n'}{q.quoted}
+                            {'\n'}{linkify(q.quoted)}
                           </details>
                         ) : null}
                       </div>
@@ -2200,6 +2245,33 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                   </form>
                 ) : null}
               </div>
+              {member.role === 'admin' ? (
+                // automating the same decision: a rule is "always assign these"
+                rule ? (
+                  <p class="fineprint">⚡ A rule already matches this thread ({describeRule(rule).when}). <a href={`${base}/rules`}>Manage rules</a></p>
+                ) : thread.counterpart_email ? (
+                  <details class="rule-reveal">
+                    <summary>Create a rule for similar messages</summary>
+                    {(() => {
+                      const bareSubject = thread.subject.replace(/^\s*((re|fwd?|aw)\s*:\s*)+/i, '').trim()
+                      return (
+                        <form method="get" action={`${base}/rules`} class="rule-similar">
+                          <input type="hidden" name="thread" value={String(thread.id)} />
+                          <label class="check-row">
+                            <input type="checkbox" name="from" value={thread.counterpart_email} checked />
+                            <span>from <b>{thread.counterpart_email}</b></span>
+                          </label>
+                          <label class="check-row">
+                            <input type="checkbox" name="subject" value={bareSubject} />
+                            <span>subject contains <b>“{bareSubject}”</b></span>
+                          </label>
+                          <button class="btn small ghost" type="submit">Create rule →</button>
+                        </form>
+                      )
+                    })()}
+                  </details>
+                ) : null
+              ) : null}
               <div class="btn-row"><button class="btn ghost" type="button" data-close>Cancel</button></div>
             </dialog>
           ) : null}
@@ -2224,7 +2296,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               if (thread.status === 'spam') return <p class="next-text">Marked as spam — nothing to do.</p>
               if (thread.status === 'draft') return (
                 <>
-                  <a class="btn small" href="#composer"><Icon name="pencil" /> Finish the draft</a>
+                  <a class="next-link" href="#composer"><Icon name="pencil" /> Finish the draft →</a>
                   <p class="next-when">Not sent yet.</p>
                 </>
               )
@@ -2237,7 +2309,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               return (
                 <>
                   {canSendRole(member.role)
-                    ? <a class="btn small" href="#composer">Reply to {counterpartFirst} →</a>
+                    ? <a class="next-link" href="#composer">Reply to {counterpartFirst} →</a>
                     : null}
                   <p class="next-when">
                     Last message {when}
@@ -2282,13 +2354,13 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             <span class="label">Log</span>
             <div class="side-log">
               {logItems.slice(0, 5).map((li) => (
-                <div class="log-row"><span>{li.text}</span><small>{relTime(li.ts)}</small></div>
+                <div class="log-row"><span title={li.text}>{li.text}</span><small>{relTime(li.ts)}</small></div>
               ))}
               {logItems.length > 5 ? (
                 <details class="log-more">
                   <summary>Show all {logItems.length} →</summary>
                   {logItems.slice(5).map((li) => (
-                    <div class="log-row"><span>{li.text}</span><small>{relTime(li.ts)}</small></div>
+                    <div class="log-row"><span title={li.text}>{li.text}</span><small>{relTime(li.ts)}</small></div>
                   ))}
                 </details>
               ) : null}
@@ -2301,7 +2373,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               <span class="label">More by this sender</span>
               <div class="side-threads">
                 {otherThreads.slice(0, 3).map((o) => (
-                  <a class="side-thread" href={`${base}/thread/${o.id}`}>
+                  <a class="side-thread" href={`${base}/thread/${o.id}`} title={o.subject}>
                     <span class={`dot ${o.status === 'needs_reply' ? 'open' : 'done'}`} />
                     <span class="st-subj">{o.subject}</span>
                     <small>{shortDate(o.last_message_at)}</small>
@@ -2310,34 +2382,6 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               </div>
               {otherCount > 3 ? (
                 <p class="fineprint"><a href={contactUrl(base, thread.counterpart_email, `${base}/thread/${thread.id}`)}>All {otherCount + 1} conversations →</a></p>
-              ) : null}
-            </div>
-          ) : null}
-                  {member.role === 'admin' ? (
-            <div class="side-block">
-              {rule ? (
-                <p class="fineprint">⚡ A rule already matches this thread ({describeRule(rule).when}). <a href={`${base}/rules`}>Manage rules</a></p>
-              ) : thread.counterpart_email ? (
-                <details class="rule-reveal">
-                  <summary>Create a rule for similar messages</summary>
-                  {(() => {
-                    const bareSubject = thread.subject.replace(/^\s*((re|fwd?|aw)\s*:\s*)+/i, '').trim()
-                    return (
-                      <form method="get" action={`${base}/rules`} class="rule-similar">
-                        <input type="hidden" name="thread" value={String(thread.id)} />
-                        <label class="check-row">
-                          <input type="checkbox" name="from" value={thread.counterpart_email} checked />
-                          <span>from <b>{thread.counterpart_email}</b></span>
-                        </label>
-                        <label class="check-row">
-                          <input type="checkbox" name="subject" value={bareSubject} />
-                          <span>subject contains <b>“{bareSubject}”</b></span>
-                        </label>
-                        <button class="btn small ghost" type="submit">Create rule →</button>
-                      </form>
-                    )
-                  })()}
-                </details>
               ) : null}
             </div>
           ) : null}
@@ -2685,6 +2729,22 @@ app.post('/inbox/:addr/thread/:id/fold', async (c) => {
   await setMessageFold(t.member.id, messageId, String(body.collapsed) === '1')
   if (c.req.header('x-fold') === '1') return c.body(null, 204)
   return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}#m${messageId}`)
+})
+
+// "Show me mail from this sender as HTML / as text" — a per-member viewing
+// preference for a sender, not a property of the thread.
+app.post('/inbox/:addr/thread/:id/view', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const thread = await threadOf(c, t)
+  if (!thread) return c.notFound()
+  const body = await c.req.parseBody()
+  const email = String(body.email || '').toLowerCase().trim()
+  const mode = String(body.mode || '')
+  if (email.includes('@') && (mode === 'html' || mode === 'text')) {
+    await kvSet(`view:${t.member.id}:${email}`, mode)
+  }
+  return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}`)
 })
 
 app.post('/inbox/:addr/thread/:id/tags/remove', async (c) => {

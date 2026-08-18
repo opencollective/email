@@ -110,6 +110,16 @@ export function splitQuotedTail(text: string): { main: string; quoted: string } 
   // "… wrote:" to land up to two lines below the "On …" opener.
   outer: for (let i = 0; i < lines.length; i++) {
     if (/^\s*-{2,}\s*(Original Message|Ursprüngliche Nachricht|Forwarded message|Message d'origine)/i.test(lines[i])) { cut = i; break }
+    // a bare ruler of dashes/underscores introducing header lines ("From: …",
+    // "Von: …") — Outlook's way of quoting, with no attribution sentence
+    if (/^\s*[-_]{6,}\s*$/.test(lines[i])) {
+      for (let k = 1; k <= 3 && i + k < lines.length; k++) {
+        const l = lines[i + k]
+        if (l.trim() === '') continue
+        if (/^\s*[\w][\w /-]{1,30}:\s/.test(l)) { cut = i; break outer }
+        break
+      }
+    }
     if (/^\s*(On|Le|Op|Am)\b\s.{3,}/.test(lines[i])) {
       for (let k = 0; k <= 2 && i + k < lines.length; k++) {
         if (k > 0 && lines[i + k].trim() === '') break

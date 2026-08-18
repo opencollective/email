@@ -674,7 +674,7 @@ test('any message can be forwarded, without marking the thread answered', async 
   const msg = (await threadMessages(thread.id))[0]
 
   const page = await app.request(`/inbox/${col.slug}/thread/${thread.id}`, { headers: { cookie: `requests_sid=${sid}` } })
-  assert.match(await page.text(), /title="Forward"/, 'a forward affordance on the message itself')
+  assert.match(await page.text(), /Forward…<\/summary>/, 'a forward affordance in the message menu')
 
   const res = await app.request(`/inbox/${col.slug}/thread/${thread.id}/forward`, {
     method: 'POST',

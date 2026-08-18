@@ -99,8 +99,9 @@ test('the thread sidebar lists other threads with the sender, and the name carri
   const html = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
   assert.match(html, /More by this sender/, 'the sidebar block exists')
   assert.match(html, new RegExp(`/thread/${t2.lastId}`), 'and links the other thread')
-  assert.match(html, /1 other thread</, 'the count badge sits next to the sender name')
-  assert.match(html, /other thread.*see them all|1 other thread/, 'hover title carries it too')
+  // the count lives in the sender card now, not in a chip next to the name
+  assert.doesNotMatch(html, /class="chip other-chip"/, 'no chip in the message head')
+  assert.match(html, /class="pc-link"[^>]*>1 other thread/, 'the sender card carries the count')
 })
 
 test('compose: the quiet combined line, Apple Mail style', async () => {

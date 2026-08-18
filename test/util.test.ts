@@ -128,3 +128,24 @@ test('splitQuotedTail: prose starting with "On" does not false-trigger', () => {
   const text = 'On Monday we will meet at 10.\n\nAs Marc wrote: the plan is fine.\nSee you then — long enough tail here.'
   assert.deepEqual(splitQuotedTail(text), { main: text, quoted: '' })
 })
+
+test('splitQuotedTail: an Outlook dash ruler introducing header lines is quoted history', () => {
+  const { main, quoted } = splitQuotedTail(
+    'We have a meeting room available on the 16th.\n\nKind regards,\nMiriam\n\n'
+    + '------------------------------\n'
+    + 'From: Marlen Kaaserer <kaaserer@globalnature.org>\n'
+    + 'Sent: Thursday, August 14\n'
+    + 'To: hello@commonshub.brussels\n'
+    + 'Subject: Meeting room booking\n\n'
+    + 'Dear Commons Hub team, ...')
+  assert.match(main, /Kind regards,\nMiriam$/)
+  assert.match(quoted, /^-{6,}/)
+  assert.match(quoted, /From: Marlen/)
+})
+
+test('splitQuotedTail: a dash ruler that is just a signature divider stays in the message', () => {
+  const { main, quoted } = splitQuotedTail(
+    'See you tomorrow!\n\n----------\nMiriam Dean\nCommons Hub Brussels\n0456399829')
+  assert.equal(quoted, '', 'no header line after the ruler — not a quote')
+  assert.match(main, /Miriam Dean/)
+})

@@ -152,10 +152,9 @@ document.querySelectorAll('[data-msg]').forEach((msg) => {
     const folded = !msg.classList.contains('folded');
     msg.classList.toggle('folded', folded);
     flag.value = folded ? '0' : '1'; // the value posted is the NEXT state
-    if (btn) {
-      btn.title = folded ? 'Expand this message' : 'Collapse this message';
-      btn.setAttribute('aria-label', btn.title);
-    }
+    if (btn) btn.textContent = folded ? 'Expand' : 'Collapse';
+    const menu = msg.querySelector('.msg-menu');
+    if (menu) menu.open = false;
     fetch(form.getAttribute('action'), {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-fold': '1' },
@@ -166,13 +165,18 @@ document.querySelectorAll('[data-msg]').forEach((msg) => {
   form.addEventListener('submit', toggle);
   const peek = msg.querySelector('[data-peek]');
   if (peek) peek.addEventListener('click', toggle);
-  // on a touchscreen the whole head is the fold control — except the sender,
-  // which opens their card, and the controls that do their own thing
+  // the whole head is the fold control — except the sender, which opens their
+  // card, and the message menu, which does its own thing
   const head = msg.querySelector('.msg-head');
   if (head) head.addEventListener('click', (e) => {
-    if (!matchMedia('(hover: none)').matches) return;
-    if (e.target.closest('.person, .fwd, a, button, input, select, textarea, label')) return;
+    if (e.target.closest('.person, .msg-menu, a, button, input, select, textarea, label')) return;
     toggle(e);
+  });
+});
+// one message menu open at a time; any click elsewhere closes it
+document.addEventListener('click', (e) => {
+  document.querySelectorAll('.msg-menu[open]').forEach((d) => {
+    if (!d.contains(e.target)) d.open = false;
   });
 });
 
@@ -201,7 +205,14 @@ document.querySelectorAll('[data-copy]').forEach((b) => {
       b.title = 'Copied';
       setTimeout(() => { b.classList.remove('copied'); b.title = 'Copy address'; }, 1400);
     };
-    if (navigator.clipboard) navigator.clipboard.writeText(b.getAttribute('data-copy')).then(done, () => {});
+    if (navigator.clipboard) navigator.clipboard.writeText(b.getAttribute('data-copy')).then(() => {
+      done();
+      if (b.classList.contains('menu-item')) {
+        const t = b.textContent;
+        b.textContent = 'Copied ✓';
+        setTimeout(() => { b.textContent = t; const d = b.closest('details'); if (d) d.open = false; }, 700);
+      }
+    }, () => {});
   });
 });
 
@@ -446,7 +457,7 @@ export const Page: FC<{ title?: string; flash?: string; bundle?: string; childre
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=66" />
+      <link rel="stylesheet" href="/static/style.css?v=67" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script
