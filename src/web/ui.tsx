@@ -166,6 +166,14 @@ document.querySelectorAll('[data-msg]').forEach((msg) => {
   form.addEventListener('submit', toggle);
   const peek = msg.querySelector('[data-peek]');
   if (peek) peek.addEventListener('click', toggle);
+  // on a touchscreen the whole head is the fold control — except the sender,
+  // which opens their card, and the controls that do their own thing
+  const head = msg.querySelector('.msg-head');
+  if (head) head.addEventListener('click', (e) => {
+    if (!matchMedia('(hover: none)').matches) return;
+    if (e.target.closest('.person, .fwd, a, button, input, select, textarea, label')) return;
+    toggle(e);
+  });
 });
 
 // Sender cards: CSS opens them on hover where there is a pointer; on a
@@ -438,7 +446,7 @@ export const Page: FC<{ title?: string; flash?: string; bundle?: string; childre
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=64" />
+      <link rel="stylesheet" href="/static/style.css?v=66" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script

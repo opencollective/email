@@ -155,6 +155,20 @@ export function relTime(ts: number | null | undefined): string {
   return new Date(ts * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
 }
 
+/** When the last message landed, said plainly: "today", "yesterday",
+ *  "3 days ago", "on 12 Aug". No urgency implied — a thread that has been
+ *  sitting a while is a fact, not an alarm. */
+export function dayPhrase(ts: number | null | undefined): string {
+  if (!ts) return ''
+  const d = new Date(ts * 1000)
+  const midnight = (x: Date) => Date.UTC(x.getFullYear(), x.getMonth(), x.getDate())
+  const days = Math.round((midnight(new Date()) - midnight(d)) / 86400000)
+  if (days <= 0) return 'today'
+  if (days === 1) return 'yesterday'
+  if (days < 7) return `${days} days ago`
+  return `on ${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`
+}
+
 export function waitingFor(ts: number | null | undefined): string {
   if (!ts) return ''
   const d = now() - ts

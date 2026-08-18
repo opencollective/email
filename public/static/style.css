@@ -1198,11 +1198,14 @@ button.row.new-thread-row {
 .side-file small { color: var(--muted); font-family: var(--mono); font-size: 10px; flex: none; }
 
 /* sender card: hover on a pointer device, tap on a touchscreen */
-.person { position: relative; display: inline-flex; align-items: center; flex: none; }
+/* shrinkable (0 1 auto), never stretchy: a long sender name must give way
+   to the date and the fold control rather than push them off-screen */
+.person { position: relative; display: inline-flex; align-items: center; flex: 0 1 auto; min-width: 0; }
 .person-hit {
-  display: inline-flex; align-items: center; gap: 9px;
+  display: inline-flex; align-items: center; gap: 9px; min-width: 0;
   text-decoration: none; color: inherit; border-radius: 8px;
 }
+.person-hit b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .person-card {
   display: none; position: absolute; top: calc(100% + 7px); left: 0; z-index: 60;
   width: 268px; max-width: calc(100vw - 40px); cursor: default; text-align: left;
@@ -1240,8 +1243,29 @@ button.row.new-thread-row {
    the time, not on a row of its own */
 @media (max-width: 900px) {
   .msg-head { flex-wrap: nowrap; gap: 7px; }
-  .msg-head .person { min-width: 0; }
+  .msg-head .person, .msg-head .person-hit, .msg-head .person-hit b { min-width: 0; }
   .msg-head .person-hit b, .msg-head .who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .msg-head .who { min-width: 0; flex: 1; }
   .msg-head .when, .msg-head .msg-fold, .msg-head .fwd { flex: none; }
 }
+
+/* One long filename used to set the width of the whole thread: the chip could
+   not wrap, so the timeline column grew past the screen and every message with
+   it. The name ellipsizes now, and the column refuses to be pushed. */
+.thread-main, .thread-side, .tl, .msg, .msg-atts, .side-block, .side-files, .side-file, .side-log, .log-row { min-width: 0; }
+.chip.att { max-width: 100%; min-width: 0; }
+.chip.att .ic { width: 14px; height: 14px; flex: none; }
+.att-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.chip.att small { flex: none; }
+
+/* Next: one action and a plain statement of when the last message landed */
+.next-when { font-size: 12.5px; color: var(--muted); margin: 8px 0 0; }
+.next-close { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
+.next-close .linkish { font-size: 12.5px; }
+/* the compose form carries the UA's 1em bottom margin, which left a gap
+   between its footer and the composer's own border */
+.composer form { margin: 0; }
+.pc-form { display: flex; flex-direction: column; gap: 5px; border-top: 1.5px solid var(--line-soft); padding-top: 9px; margin: 0; }
+.pc-label { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+.pc-btns { display: flex; gap: 6px; }
+@media (max-width: 900px) { .msg-head { cursor: pointer; } .msg-head .person, .msg-head .fwd { cursor: auto; } }

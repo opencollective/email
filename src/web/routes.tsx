@@ -34,7 +34,7 @@ import { sendAppEmail } from '../appmail.js'
 import { readBlob, saveBlob } from '../storage.js'
 import { createCheckoutSession, createPortalSession, stripeUsable } from '../stripe.js'
 import { billingState, canSend, planLimits, recipientLimit, repliesThisMonth, trialDaysLeft, GRACE_DAYS } from '../billing.js'
-import { escapeHtml, excerpt, fmtDate, fmtDateTime, initials, now, randomToken, relTime, signToken, slugify, splitQuotedTail, verifyToken, waitingFor } from '../util.js'
+import { dayPhrase, escapeHtml, excerpt, fmtDate, fmtDateTime, initials, now, randomToken, relTime, signToken, slugify, splitQuotedTail, verifyToken } from '../util.js'
 import { AssigneeChip, AuthCard, Avatar, eventText, Icon, Shell, StatusChip, TimeAgo } from './ui.js'
 import { HomePage } from './home.js'
 import { AboutPage, DocsPage, FaqPage } from './pages.js'
@@ -1266,18 +1266,22 @@ app.post('/inbox/:addr/contact/:email/auto-assign', async (c) => {
   if (!email.includes('@')) return c.redirect(base)
   const body = await c.req.parseBody()
   const memberId = Number(body.member_id) || null
+  // the same control now exists on a thread's sender card; go back to whichever
+  // page asked (never off-site: only paths inside this inbox)
+  const asked = String(body.back || '')
+  const back2 = asked.startsWith(`${base}/`) ? asked : back
 
   const existing = await get<{ id: number }>(
     "SELECT id FROM rules WHERE collective_id = ? AND lower(match_from) = ? AND (match_subject IS NULL OR match_subject = '') AND assign_member_id IS NOT NULL ORDER BY id DESC LIMIT 1",
     [t.collective.id, email])
   if (!memberId) {
     if (existing) await deleteRule(t.collective.id, existing.id)
-    return c.redirect(`${back}?m=` + encodeURIComponent('New threads from this contact are no longer auto-assigned.'))
+    return c.redirect(`${back2}?m=` + encodeURIComponent('New threads from this contact are no longer auto-assigned.'))
   }
   // reuse createRule so the change also applies to any open, unassigned threads
   await createRule(t.collective, { from: email, assignMemberId: memberId, close: false }, t.member.id)
   const m = await getMember(memberId)
-  return c.redirect(`${back}?m=` + encodeURIComponent(`New threads from this contact will be assigned to ${m ? memberName(m) : 'them'}.`))
+  return c.redirect(`${back2}?m=` + encodeURIComponent(`New threads from this contact will be assigned to ${m ? memberName(m) : 'them'}.`))
 })
 
 /** Threads where an address is the counterpart OR appears in any message's
@@ -1306,6 +1310,18 @@ async function threadsInvolving(collectiveId: number, email: string, excludeId =
 const threadCountQuery = (collectiveId: number, email: string, excludeId: number) => {
   const q = involves(collectiveId, email, excludeId)
   return { sql: `SELECT COUNT(DISTINCT t.id) AS n FROM ${q.from} WHERE ${q.where}`, args: q.args }
+}
+
+/** "Miriam", "Miriam and Xavier", "Miriam, Xavier and Anna", then
+ *  "Miriam, Xavier, Anna and 2 others". First names only — the full names sit
+ *  in the title attribute, where there is room for them. */
+function nameList(people: (Member | undefined)[]): string {
+  const firsts = people.filter(Boolean).map((m) => memberName(m).split(' ')[0])
+  if (firsts.length === 0) return 'nobody'
+  if (firsts.length === 1) return firsts[0]
+  if (firsts.length <= 3) return `${firsts.slice(0, -1).join(', ')} and ${firsts[firsts.length - 1]}`
+  const rest = firsts.length - 3
+  return `${firsts.slice(0, 3).join(', ')} and ${rest} other${rest === 1 ? '' : 's'}`
 }
 
 // ---------- the one way a thread appears in a list ----------
@@ -1644,6 +1660,11 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   const senderEmails = [...new Set(msgs
     .filter((m) => m.direction === 'inbound' && m.from_email)
     .map((m) => m.from_email!.toLowerCase()))]
+  // from-only, assign-only rules: "mail from this address goes to that member"
+  const autoAssignByEmail = new Map<string, number>((await all<{ f: string; a: number }>(
+    `SELECT lower(match_from) AS f, assign_member_id AS a FROM rules
+     WHERE collective_id = ? AND match_from IS NOT NULL AND (match_subject IS NULL OR match_subject = '')
+       AND assign_member_id IS NOT NULL`, [collective.id])).map((r) => [r.f, r.a]))
   const otherByEmail = new Map<string, number>()
   if (senderEmails.length) {
     const rows = await batchAll(senderEmails.map((e) => threadCountQuery(collective.id, e, thread.id)))
@@ -1736,7 +1757,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
       <div class="seen-row" title={rs.map((r: ThreadRead) => `${memberName(members.get(r.member_id))} · ${relTime(r.last_seen_at)}`).join('\n')}>
         <span class="seen-eye" aria-hidden="true">✓</span>
         {rs.map((r: ThreadRead) => <Avatar member={members.get(r.member_id)} />)}
-        <small>seen {rs.length === 1 ? `by ${memberName(members.get(rs[0].member_id))} ${relTime(rs[0].last_seen_at)}` : `by ${rs.length} people`}</small>
+        <small>seen by {nameList(rs.map((r: ThreadRead) => members.get(r.member_id)))}</small>
       </div>
     )
   }
@@ -1768,7 +1789,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               {reads.length > 0 ? (
                 <span class="hp-group" title={reads.map((r) => `${memberName(members.get(r.member_id))} · ${relTime(r.last_seen_at)}`).join('\n')}>
                   <span class="participants">{reads.slice(0, 5).map((r) => <Avatar member={members.get(r.member_id)} />)}</span>
-                  <small>seen</small>
+                  <small>seen by {nameList(reads.map((r) => members.get(r.member_id)))}</small>
                 </span>
               ) : null}
             </div>
@@ -1859,7 +1880,14 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                       {g.direction === 'outbound' || !g.from_email ? (
                         <span class="person-hit">
                           <Avatar member={g.sent_by_member_id ? members.get(g.sent_by_member_id) : null} empty={g.direction === 'inbound'} />
-                          <b>{g.direction === 'outbound' ? collective.name : g.from_name || g.from_email}</b>
+                          {/* an answer filed from an address that is not ours and
+                              not a member's is shown under THAT name: presenting it
+                              as the collective would put words in our mouth */}
+                          <b>{g.direction !== 'outbound' ? (g.from_name || g.from_email)
+                            : (!g.sent_by_member_id && g.from_email && g.from_email !== collectiveAddr
+                               && g.from_email !== `${collective.slug}@${cfg.emailDomain}`)
+                              ? (g.from_name || g.from_email)
+                              : collective.name}</b>
                         </span>
                       ) : (
                         <a class="person-hit sender-link" href={contactUrl(base, g.from_email, `${base}/thread/${thread.id}`)}
@@ -1869,36 +1897,70 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                         </a>
                       )}
                       {(() => {
-                        // the card: who this is, their full address to copy,
-                        // and the rest of their history in one click
-                        const email = g.direction === 'inbound'
+                        // the card: who this is, their real address, the rest of
+                        // their history, and the two things an admin might want
+                        // to fix about them
+                        const inbound = g.direction === 'inbound'
+                        // never a stand-in address: what we show is what we stored
+                        const email = inbound
                           ? g.from_email
-                          : g.sent_by_member_id ? members.get(g.sent_by_member_id)?.email : collectiveAddr
+                          : g.sent_by_member_id ? members.get(g.sent_by_member_id)?.email : g.from_email || collectiveAddr
                         if (!email) return null
-                        const name = g.direction === 'inbound'
+                        const name = inbound
                           ? (g.from_name || email)
-                          : g.sent_by_member_id ? memberName(members.get(g.sent_by_member_id)) : collective.name
+                          : g.sent_by_member_id ? memberName(members.get(g.sent_by_member_id)) : (g.from_name || collective.name)
                         const n = otherByEmail.get(email.toLowerCase()) ?? 0
+                        const autoTo = autoAssignByEmail.get(email.toLowerCase())
+                        // an answer that came from an address we cannot match to
+                        // anyone — the admin can say who it was, here
+                        const unlinked = !inbound && !g.sent_by_member_id && !!g.from_email
+                          && g.from_email !== collectiveAddr && g.from_email !== `${collective.slug}@${cfg.emailDomain}`
                         return (
                           <div class="person-card">
                             <div class="pc-top">
-                              {g.direction === 'inbound'
+                              {inbound
                                 // an outside sender has no avatar here, but a monogram
                                 // still identifies them the way the inbox rows do
                                 ? <span class="avatar">{initials(g.from_name || '', email)}</span>
-                                : <Avatar member={g.sent_by_member_id ? members.get(g.sent_by_member_id) : null} />}
+                                : <Avatar member={g.sent_by_member_id ? members.get(g.sent_by_member_id) : null} empty={!g.sent_by_member_id} />}
                               <b>{name}</b>
                             </div>
                             <div class="pc-mail">
                               <span class="pc-addr">{email}</span>
                               <button class="icon-btn" type="button" data-copy={email} title="Copy address" aria-label="Copy address"><Icon name="copy" /></button>
                             </div>
-                            {g.direction === 'inbound' ? (
+                            {inbound ? (
                               n > 0
                                 ? <a class="pc-link" href={contactUrl(base, email, `${base}/thread/${thread.id}`)}>{n} other thread{n === 1 ? '' : 's'} →</a>
                                 : <span class="pc-none">No other thread here yet</span>
                             ) : g.sent_by_member_id ? (
                               <span class="pc-none">{members.get(g.sent_by_member_id)?.role === 'admin' ? 'Admin' : 'Member'} of {collective.name}</span>
+                            ) : null}
+                            {inbound && member.role === 'admin' ? (
+                              <form class="pc-form" method="post" action={`${base}/contact/${encodeURIComponent(email)}/auto-assign`}>
+                                <input type="hidden" name="back" value={`${base}/thread/${thread.id}`} />
+                                <label class="pc-label">New threads from them go to</label>
+                                <select name="member_id" class="input small" onchange="this.form.requestSubmit()">
+                                  <option value="">— nobody —</option>
+                                  {activeList.map((m) => (
+                                    <option value={String(m.id)} selected={m.id === autoTo}>{memberName(m)}</option>
+                                  ))}
+                                </select>
+                                <noscript><button class="btn small ghost" type="submit">Save</button></noscript>
+                              </form>
+                            ) : null}
+                            {unlinked && member.role === 'admin' ? (
+                              <form class="pc-form" method="post" action={`${base}/thread/${thread.id}/sender`}>
+                                <input type="hidden" name="email" value={g.from_email!} />
+                                <label class="pc-label">Not linked to any member yet</label>
+                                <select class="input small" name="member_id">
+                                  {activeList.map((m) => <option value={String(m.id)}>{memberName(m)}</option>)}
+                                </select>
+                                <div class="pc-btns">
+                                  <button class="btn small" name="act" value="link" type="submit" data-busy="Linking…">It's them</button>
+                                  <button class="btn small ghost" name="act" value="external" type="submit" data-busy="Saving…">Not a teammate</button>
+                                </div>
+                              </form>
                             ) : null}
                           </div>
                         )
@@ -1952,19 +2014,6 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                       </div>
                     )
                   })()}
-                  {g.direction === 'outbound' && !g.sent_by_member_id && g.from_email
-                    && g.from_email !== collectiveAddr && g.from_email !== `${collective.slug}@${cfg.emailDomain}`
-                    && member.role === 'admin' ? (
-                    <form class="link-sender" method="post" action={`/inbox/${collective.slug}/thread/${thread.id}/sender`}>
-                      <input type="hidden" name="email" value={g.from_email} />
-                      <span>This answer came from <b>{g.from_email}</b>, which isn't linked to any member.</span>
-                      <select class="input" name="member_id">
-                        {activeList.map((m) => <option value={String(m.id)}>{memberName(m)}</option>)}
-                      </select>
-                      <button class="btn small" name="act" value="link" type="submit" data-busy="Linking…">It's them — link</button>
-                      <button class="btn small ghost" name="act" value="external" type="submit" data-busy="Saving…">Not a teammate</button>
-                    </form>
-                  ) : null}
                   {(attsMap.get(g.id) || []).length > 0 ? (
                     <div class="msg-atts">
                       {(attsMap.get(g.id) || []).map((a) =>
@@ -1973,7 +2022,9 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                             <img class="att-img" src={`/attachment/${a.id}`} alt={a.filename} loading="lazy" />
                           </a>
                         ) : (
-                          <a class="chip att" href={`/attachment/${a.id}`}>📎 {a.filename} <small>{Math.ceil(a.size / 1024)} KB</small></a>
+                          <a class="chip att" href={`/attachment/${a.id}`} title={a.filename}>
+                            <Icon name="clip" /><span class="att-name">{a.filename}</span> <small>{Math.ceil(a.size / 1024)} KB</small>
+                          </a>
                         ),
                       )}
                     </div>
@@ -2161,29 +2212,40 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
           <div class="side-block next-block">
             <span class="label">Next</span>
             {(() => {
-              const waiting = waitingFor(thread.last_message_at)
-              if (thread.status === 'draft') return <p class="next-text"><Icon name="pencil" /> Finish the draft and send it{thread.counterpart_email ? ` to ${counterpartFirst}` : ''}.</p>
+              // one action, and when the last message landed. A thread that has
+              // been sitting a while is a fact, not something to be warned about.
+              const when = dayPhrase(thread.last_message_at)
+              const closeIt = member.role !== 'reader' && thread.status !== 'closed' ? (
+                <form method="post" action={`${base}/thread/${thread.id}/status`} class="next-close">
+                  <input type="hidden" name="status" value="closed" />
+                  or <button class="linkish" type="submit">mark as closed</button>
+                </form>
+              ) : null
               if (thread.status === 'spam') return <p class="next-text">Marked as spam — nothing to do.</p>
-              if (thread.status === 'closed') return <p class="next-text"><Icon name="check" /> Closed — nothing to do.</p>
-              if (thread.status === 'answered') return <p class="next-text"><Icon name="clock" /> Waiting on {counterpartFirst} to answer — you're up to date.</p>
-              if (!assignee) return (
+              if (thread.status === 'draft') return (
                 <>
-                  <p class="next-text next-warn"><Icon name="warn" /> Reply to {counterpartFirst} — waiting {waiting}. Nobody has this yet.</p>
-                  {member.role !== 'reader' ? (
-                    <form method="post" action={`${base}/thread/${thread.id}/assign`}>
-                      <input type="hidden" name="member_id" value={String(member.id)} />
-                      <button class="btn small" type="submit"><Icon name="hand" /> I'll take it</button>
-                    </form>
-                  ) : null}
+                  <a class="btn small" href="#composer"><Icon name="pencil" /> Finish the draft</a>
+                  <p class="next-when">Not sent yet.</p>
                 </>
               )
-              if (assignee.id === member.id) return (
+              if (thread.status === 'closed') return (
                 <>
-                  <p class="next-text"><Icon name="hand" /> Assigned to you — reply to {counterpartFirst}. Waiting {waiting}.</p>
-                  <a class="btn small" href="#composer">Reply →</a>
+                  <p class="next-text"><Icon name="check" /> Closed.</p>
+                  <p class="next-when">Last message {when}.</p>
                 </>
               )
-              return <p class="next-text"><Icon name="clock" /> {memberName(assignee)} has this — waiting {waiting}.</p>
+              return (
+                <>
+                  {canSendRole(member.role)
+                    ? <a class="btn small" href="#composer">Reply to {counterpartFirst} →</a>
+                    : null}
+                  <p class="next-when">
+                    Last message {when}
+                    {assignee && assignee.id !== member.id ? <> · {memberName(assignee)} has this</> : null}
+                  </p>
+                  {closeIt}
+                </>
+              )
             })()}
           </div>
 

@@ -143,3 +143,85 @@ test('the sender card carries the full address and the rest of their history', a
   assert.match(mine, /Alice/)
   assert.match(mine, /Admin of Thread View Co/)
 })
+
+test('the Next block states one action and when the last message landed', async () => {
+  const fx = await fixture()
+  const html = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
+  const next = html.slice(html.indexOf('next-block'), html.indexOf('next-block') + 900)
+  assert.match(next, /Reply to Miriam/)
+  assert.match(next, /Last message today/)
+  assert.match(next, /mark as closed/)
+  assert.doesNotMatch(next, /waiting|Waiting|⚠/, 'no countdown, no warning sign')
+
+  // closed threads say so, and stop offering to close again
+  await post(`/inbox/${fx.slug}/thread/${fx.threadId}/status`, fx.alice.sid, 'status=closed')
+  const closed = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
+  const nextClosed = closed.slice(closed.indexOf('next-block'), closed.indexOf('next-block') + 900)
+  assert.match(nextClosed, /Closed/)
+  assert.doesNotMatch(nextClosed, /mark as closed/)
+})
+
+test('who has seen a thread is said by name, up to three of them', async () => {
+  const fx = await fixture()
+  const extra = []
+  for (const name of ['Miriam', 'Carla', 'Ruta']) {
+    const email = `${name.toLowerCase()}-${uniq()}@example.org`
+    await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [fx.collective.id, email, `${name} Dean`, 'member', 'every', now()])
+    extra.push(await createSession(email))
+  }
+  await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)
+  const seen = async () => {
+    const html = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
+    return [...html.matchAll(/seen by ([^<]+)</g)].map((m) => m[1])
+  }
+  await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, extra[0])
+  assert.ok((await seen()).every((s) => /Alice|Miriam/.test(s)), 'two readers, named')
+  assert.ok((await seen()).some((s) => s.includes(' and ')), '"X and Y", not "2 people"')
+
+  await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, extra[1])
+  await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, extra[2])
+  const many = await seen()
+  assert.ok(many.some((s) => /and 1 other$/.test(s)), `four readers: three names then a count — got ${JSON.stringify(many)}`)
+  assert.ok(many.every((s) => !s.includes('Dean')), 'first names only')
+})
+
+test('an admin can set who mail from this sender goes to, straight from their card', async () => {
+  const fx = await fixture()
+  const html = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
+  const card = html.slice(html.indexOf('person-card'), html.indexOf('person-card') + 2000)
+  assert.match(card, /New threads from them go to/)
+
+  const r = await post(`/inbox/${fx.slug}/contact/miriam%40out.test/auto-assign`, fx.alice.sid,
+    `member_id=${fx.bob.id}&back=${encodeURIComponent(`/inbox/${fx.slug}/thread/${fx.threadId}`)}`)
+  assert.equal(r.status, 302)
+  assert.match(r.headers.get('location')!, new RegExp(`/inbox/${fx.slug}/thread/${fx.threadId}\\?m=`), 'back to the thread, not the contact page')
+  const rule = await get<any>('SELECT * FROM rules WHERE collective_id = ? AND lower(match_from) = ?', [fx.collective.id, 'miriam@out.test'])
+  assert.equal(rule.assign_member_id, fx.bob.id)
+
+  // and the card comes back with that member selected
+  const after = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
+  const card2 = after.slice(after.indexOf('person-card'), after.indexOf('person-card') + 2000)
+  assert.match(card2, new RegExp(`<option value="${fx.bob.id}" selected="">Bob</option>`))
+
+  // an off-site "back" is ignored
+  const evil = await post(`/inbox/${fx.slug}/contact/miriam%40out.test/auto-assign`, fx.alice.sid,
+    `member_id=${fx.bob.id}&back=${encodeURIComponent('https://evil.test/steal')}`)
+  assert.doesNotMatch(evil.headers.get('location')!, /evil\.test/)
+})
+
+test('an answer from an address that is neither ours nor a member\'s is shown under that address', async () => {
+  const fx = await fixture()
+  // exactly the shape ingest files as an "unknown answer": not from a member,
+  // not from our own address, but addressed to the thread's counterpart
+  await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_name, from_email, to_json, body_text, sent_at, created_at, sent_by_member_id)
+    VALUES (?, ?, 'outbound', 'Front Desk', 'hello@theirdomain.test', '["miriam@out.test"]', 'Forwarding this on.', ?, ?, NULL)`,
+    [fx.threadId, `<u${uniq()}@x>`, now(), now()])
+  const html = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
+
+  const heads = [...html.matchAll(/class="person-hit"[\s\S]{0,600}?<b>([^<]+)<\/b>/g)].map((m) => m[1])
+  assert.ok(heads.includes('Front Desk'), `shown under its real sender — got ${JSON.stringify(heads)}`)
+  const card = html.slice(html.lastIndexOf('person-card'))
+  assert.match(card, /hello@theirdomain\.test/, 'the card carries the address we actually stored')
+  assert.doesNotMatch(card.slice(0, 400), /Thread View Co<\/b>/, 'not presented as the collective')
+})
