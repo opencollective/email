@@ -97,16 +97,103 @@ document.querySelectorAll('[data-tagpop]').forEach((form) => {
   const box = form.querySelector('.tag-sugs');
   const det = form.closest('details');
   if (det) det.addEventListener('toggle', () => { if (det.open && input) input.focus(); });
-  if (!input || !box) return;
+  if (!input) return;
+  let at = -1; // which suggestion the arrow keys are on; -1 = the typed text
+  const live = () => box ? [].slice.call(box.querySelectorAll('.tag-sug')).filter((b) => !b.hidden) : [];
+  const mark = () => {
+    const list = live();
+    list.forEach((b, i) => b.classList.toggle('on', i === at));
+    if (at >= 0 && list[at] && list[at].scrollIntoView) list[at].scrollIntoView({ block: 'nearest' });
+  };
   input.addEventListener('input', () => {
-    const q = input.value.trim().toLowerCase().replace(/^#/, '');
+    // a leading # is how people write tags; we store them without it
+    if (input.value.charAt(0) === '#') input.value = input.value.slice(1);
+    const q = input.value.trim().toLowerCase();
+    at = -1;
     let shown = 0;
-    box.querySelectorAll('.tag-sug').forEach((b) => {
-      const hit = !q || (b.getAttribute('data-find') || '').indexOf(q) !== -1;
-      b.hidden = !hit;
-      if (hit) shown++;
-    });
-    box.hidden = shown === 0;
+    if (box) {
+      box.querySelectorAll('.tag-sug').forEach((b) => {
+        const hit = !q || (b.getAttribute('data-find') || '').indexOf(q) !== -1;
+        b.hidden = !hit;
+        b.classList.remove('on');
+        if (hit) shown++;
+      });
+      box.hidden = shown === 0;
+    }
+  });
+  input.addEventListener('keydown', (e) => {
+    const list = live();
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      if (!list.length) return;
+      e.preventDefault();
+      at = e.key === 'ArrowDown'
+        ? (at + 1 >= list.length ? -1 : at + 1)
+        : (at - 1 < -1 ? list.length - 1 : at - 1);
+      mark();
+    } else if (e.key === 'Enter') {
+      // on a highlighted suggestion, Enter takes it; otherwise the typed text
+      // submits as usual, so a brand-new tag is one Enter away too
+      if (at >= 0 && list[at]) { e.preventDefault(); list[at].click(); }
+    } else if (e.key === 'Escape') {
+      if (det) { det.open = false; input.blur(); }
+    }
+  });
+});
+
+// Folding a message: instant here, remembered on the server. Without JS the
+// same control is a form post that reloads the thread.
+document.querySelectorAll('[data-msg]').forEach((msg) => {
+  const form = msg.querySelector('.msg-fold');
+  if (!form) return;
+  const flag = form.querySelector('input[name=collapsed]');
+  const btn = form.querySelector('[data-fold]');
+  const toggle = (e) => {
+    e.preventDefault();
+    const folded = !msg.classList.contains('folded');
+    msg.classList.toggle('folded', folded);
+    flag.value = folded ? '0' : '1'; // the value posted is the NEXT state
+    if (btn) {
+      btn.title = folded ? 'Expand this message' : 'Collapse this message';
+      btn.setAttribute('aria-label', btn.title);
+    }
+    fetch(form.getAttribute('action'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-fold': '1' },
+      body: 'message_id=' + encodeURIComponent(form.querySelector('input[name=message_id]').value)
+        + '&collapsed=' + (folded ? '1' : '0'),
+    }).catch(() => {});
+  };
+  form.addEventListener('submit', toggle);
+  const peek = msg.querySelector('[data-peek]');
+  if (peek) peek.addEventListener('click', toggle);
+});
+
+// Sender cards: CSS opens them on hover where there is a pointer; on a
+// touchscreen the first tap opens the card instead of following the link.
+document.querySelectorAll('[data-person]').forEach((p) => {
+  const hit = p.querySelector('.person-hit');
+  if (!hit) return;
+  hit.addEventListener('click', (e) => {
+    if (!matchMedia('(hover: none)').matches) return;
+    e.preventDefault();
+    const wasOpen = p.classList.contains('open');
+    document.querySelectorAll('[data-person].open').forEach((o) => o.classList.remove('open'));
+    if (!wasOpen) p.classList.add('open');
+  });
+});
+document.addEventListener('click', (e) => {
+  if (e.target.closest && e.target.closest('[data-person]')) return;
+  document.querySelectorAll('[data-person].open').forEach((o) => o.classList.remove('open'));
+});
+document.querySelectorAll('[data-copy]').forEach((b) => {
+  b.addEventListener('click', (e) => {
+    e.preventDefault();
+    const done = () => {
+      b.classList.add('copied');
+      b.title = 'Copied';
+      setTimeout(() => { b.classList.remove('copied'); b.title = 'Copy address'; }, 1400);
+    };
+    if (navigator.clipboard) navigator.clipboard.writeText(b.getAttribute('data-copy')).then(done, () => {});
   });
 });
 
@@ -261,6 +348,8 @@ const ICON_PATHS: Record<string, string> = {
   rotate: '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>',
   warn: '<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
   clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+  chevron: '<polyline points="6 9 12 15 18 9"/>',
   hand: '<path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>',
 }
 
@@ -349,7 +438,7 @@ export const Page: FC<{ title?: string; flash?: string; bundle?: string; childre
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=61" />
+      <link rel="stylesheet" href="/static/style.css?v=64" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script

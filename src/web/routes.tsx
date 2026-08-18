@@ -5,7 +5,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import type { Context } from 'hono'
 import { cfg } from '../config.js'
 import {
-  activeMembers, addTag, all, allCollectives, attachmentsByMessage, batchAll, createCollective, get, getCollective, popularTagsQuery,
+  activeMembers, addTag, all, allCollectives, attachmentsByMessage, batchAll, createCollective, get, getCollective, messageFoldsQuery, popularTagsQuery, setMessageFold,
   getCollectiveBySlug, getMember, getMemberIn, getThread, kvGet, kvSet, lastMessageByThread, memberMap,
   renameCollectiveSlug,
   markThreadSeen, membershipsByEmail, readsForMember, removeTag, run, setAssignee, setStatus, tagsByThread, threadMessages, threadReads, threadTags,
@@ -1283,17 +1283,29 @@ app.post('/inbox/:addr/contact/:email/auto-assign', async (c) => {
 /** Threads where an address is the counterpart OR appears in any message's
  *  from / to / cc — so "with Marie" includes the ones she was only copied on.
  *  Matches the quoted address inside the JSON arrays, lowercased both sides. */
-async function threadsInvolving(collectiveId: number, email: string, excludeId = 0): Promise<Thread[]> {
+/** "this address is part of that thread" — as sender, counterpart, or merely
+ *  copied. LEFT JOIN: a thread whose only tie is its counterpart (no messages
+ *  yet, e.g. a fresh draft) still counts. */
+function involves(collectiveId: number, email: string, excludeId: number) {
   const like = `%"${email}"%`
-  // LEFT JOIN: a thread whose only tie is its counterpart (no messages yet,
-  // e.g. a fresh draft) still counts
-  return all<Thread>(
-    `SELECT DISTINCT t.* FROM threads t LEFT JOIN messages m ON m.thread_id = t.id
-     WHERE t.collective_id = ? AND t.status != 'spam' AND t.id != ?
+  return {
+    from: 'threads t LEFT JOIN messages m ON m.thread_id = t.id',
+    where: `t.collective_id = ? AND t.status != 'spam' AND t.id != ?
        AND (lower(t.counterpart_email) = ? OR lower(m.from_email) = ?
-            OR lower(m.to_json) LIKE ? OR lower(m.cc_json) LIKE ? OR lower(m.bcc_json) LIKE ?)
-     ORDER BY t.last_message_at DESC`,
-    [collectiveId, excludeId, email, email, like, like, like])
+            OR lower(m.to_json) LIKE ? OR lower(m.cc_json) LIKE ? OR lower(m.bcc_json) LIKE ?)`,
+    args: [collectiveId, excludeId, email, email, like, like, like] as (string | number)[],
+  }
+}
+
+async function threadsInvolving(collectiveId: number, email: string, excludeId = 0): Promise<Thread[]> {
+  const q = involves(collectiveId, email, excludeId)
+  return all<Thread>(`SELECT DISTINCT t.* FROM ${q.from} WHERE ${q.where} ORDER BY t.last_message_at DESC`, q.args)
+}
+
+/** How many other threads this address is part of — for the sender card. */
+const threadCountQuery = (collectiveId: number, email: string, excludeId: number) => {
+  const q = involves(collectiveId, email, excludeId)
+  return { sql: `SELECT COUNT(DISTINCT t.id) AS n FROM ${q.from} WHERE ${q.where}`, args: q.args }
 }
 
 // ---------- the one way a thread appears in a list ----------
@@ -1592,6 +1604,11 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   const tagSugs = (batch[6] as { name: string; n: number }[])
     .filter((s) => !tags.some((tg) => tg.name === s.name))
   const attsMap = await attachmentsByMessage(msgs.map((m) => m.id))
+  // everything ever attached here, oldest first — the sidebar lists it so you
+  // don't have to scroll the thread hunting for the contract
+  const allAtts = msgs.flatMap((m) => (attsMap.get(m.id) || []).map((a) => ({ a, ts: m.sent_at || m.created_at })))
+  const sideImages = allAtts.filter((x) => x.a.content_type.startsWith('image/'))
+  const sideFiles = allAtts.filter((x) => !x.a.content_type.startsWith('image/'))
   // where this member had read up to BEFORE this visit — that boundary is
   // where the page auto-scrolls and where the "new" divider sits
   const prevSeen = (await get<{ last_seen_at: number }>(
@@ -1606,6 +1623,32 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
     ? await threadsInvolving(collective.id, thread.counterpart_email.toLowerCase(), thread.id) : []
   const otherThreads = otherAll.slice(0, 5)
   const otherCount = otherAll.length
+  // Folding: a message you have already read is folded away, except the two
+  // that carry the conversation — the other party's last word and the last
+  // answer. An explicit fold or unfold by this member always wins.
+  const folds = new Map<number, boolean>()
+  if (msgs.length) {
+    const rows = await all<{ message_id: number; collapsed: number }>(
+      messageFoldsQuery(member.id, msgs.map((m) => m.id)).sql,
+      messageFoldsQuery(member.id, msgs.map((m) => m.id)).args)
+    for (const r of rows) folds.set(r.message_id, r.collapsed === 1)
+  }
+  const keepOpen = new Set<number>([
+    [...msgs].reverse().find((m) => m.direction === 'inbound')?.id ?? 0,
+    [...msgs].reverse().find((m) => m.direction === 'outbound' && m.sent_at)?.id ?? 0,
+  ])
+  const isFolded = (m: Message) => folds.get(m.id)
+    ?? (prevSeen > 0 && (m.sent_at || m.created_at) <= prevSeen && !keepOpen.has(m.id))
+
+  // one count per distinct sender, for the card that opens on their name
+  const senderEmails = [...new Set(msgs
+    .filter((m) => m.direction === 'inbound' && m.from_email)
+    .map((m) => m.from_email!.toLowerCase()))]
+  const otherByEmail = new Map<string, number>()
+  if (senderEmails.length) {
+    const rows = await batchAll(senderEmails.map((e) => threadCountQuery(collective.id, e, thread.id)))
+    senderEmails.forEach((e, i) => otherByEmail.set(e, (rows[i][0] as { n: number }).n))
+  }
   const firstInboundId = msgs.find((m) => m.direction === 'inbound' && m.from_email && m.from_email.toLowerCase() === (thread.counterpart_email || '').toLowerCase())?.id
   // who did something on the thread (replied or left a note), for the sidebar
   const contributed = new Set<number>([
@@ -1763,7 +1806,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                   {tagSugs.length ? (
                     <div class="tag-sugs">
                       {tagSugs.map((s) => (
-                        <button class="chip tag-sug" type="submit" name="pick" value={s.name} data-find={s.name}>#{s.name}</button>
+                        <button class="chip tag-sug" type="submit" name="pick" value={s.name} data-find={s.name}>{s.name}</button>
                       ))}
                     </div>
                   ) : null}
@@ -1810,20 +1853,58 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                   )}
                 </div>
               ) : (
-                <div class={`msg ${g.direction}`}>
+                <div class={`msg ${g.direction}${isFolded(g) ? ' folded' : ''}`} id={`m${g.id}`} data-msg={String(g.id)}>
                   <div class="msg-head">
-                    <Avatar member={g.sent_by_member_id ? members.get(g.sent_by_member_id) : null} empty={g.direction === 'inbound'} />
-                    <span class="who">
+                    <span class="person" data-person>
                       {g.direction === 'outbound' || !g.from_email ? (
-                        <b>{g.direction === 'outbound' ? collective.name : g.from_name || g.from_email}</b>
+                        <span class="person-hit">
+                          <Avatar member={g.sent_by_member_id ? members.get(g.sent_by_member_id) : null} empty={g.direction === 'inbound'} />
+                          <b>{g.direction === 'outbound' ? collective.name : g.from_name || g.from_email}</b>
+                        </span>
                       ) : (
-                        <a class="sender-link" href={contactUrl(base, g.from_email, `${base}/thread/${thread.id}`)}
-                          title={otherCount > 0 && g.from_email.toLowerCase() === thread.counterpart_email?.toLowerCase()
-                            ? `${otherCount} other thread${otherCount === 1 ? '' : 's'} with ${g.from_name || g.from_email} — see them all`
-                            : `All conversations with ${g.from_name || g.from_email}`}>
+                        <a class="person-hit sender-link" href={contactUrl(base, g.from_email, `${base}/thread/${thread.id}`)}
+                          title={`All conversations with ${g.from_name || g.from_email}`}>
+                          <Avatar member={null} empty />
                           <b>{g.from_name || g.from_email}</b>
                         </a>
                       )}
+                      {(() => {
+                        // the card: who this is, their full address to copy,
+                        // and the rest of their history in one click
+                        const email = g.direction === 'inbound'
+                          ? g.from_email
+                          : g.sent_by_member_id ? members.get(g.sent_by_member_id)?.email : collectiveAddr
+                        if (!email) return null
+                        const name = g.direction === 'inbound'
+                          ? (g.from_name || email)
+                          : g.sent_by_member_id ? memberName(members.get(g.sent_by_member_id)) : collective.name
+                        const n = otherByEmail.get(email.toLowerCase()) ?? 0
+                        return (
+                          <div class="person-card">
+                            <div class="pc-top">
+                              {g.direction === 'inbound'
+                                // an outside sender has no avatar here, but a monogram
+                                // still identifies them the way the inbox rows do
+                                ? <span class="avatar">{initials(g.from_name || '', email)}</span>
+                                : <Avatar member={g.sent_by_member_id ? members.get(g.sent_by_member_id) : null} />}
+                              <b>{name}</b>
+                            </div>
+                            <div class="pc-mail">
+                              <span class="pc-addr">{email}</span>
+                              <button class="icon-btn" type="button" data-copy={email} title="Copy address" aria-label="Copy address"><Icon name="copy" /></button>
+                            </div>
+                            {g.direction === 'inbound' ? (
+                              n > 0
+                                ? <a class="pc-link" href={contactUrl(base, email, `${base}/thread/${thread.id}`)}>{n} other thread{n === 1 ? '' : 's'} →</a>
+                                : <span class="pc-none">No other thread here yet</span>
+                            ) : g.sent_by_member_id ? (
+                              <span class="pc-none">{members.get(g.sent_by_member_id)?.role === 'admin' ? 'Admin' : 'Member'} of {collective.name}</span>
+                            ) : null}
+                          </div>
+                        )
+                      })()}
+                    </span>
+                    <span class="who">
                       {g.direction === 'outbound' && g.sent_by_member_id ? (
                         <small class="sentby">· sent by {memberName(members.get(g.sent_by_member_id))}</small>
                       ) : null}
@@ -1832,6 +1913,13 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                       ) : null}
                     </span>
                     <span class="when">{fmtDateTime(g.sent_at)}</span>
+                    <form class="msg-fold" method="post" action={`${base}/thread/${thread.id}/fold`}>
+                      <input type="hidden" name="message_id" value={String(g.id)} />
+                      <input type="hidden" name="collapsed" value={isFolded(g) ? '0' : '1'} />
+                      <button class="icon-btn fold-btn" type="submit" data-fold
+                        title={isFolded(g) ? 'Expand this message' : 'Collapse this message'}
+                        aria-label={isFolded(g) ? 'Expand this message' : 'Collapse this message'}><Icon name="chevron" /></button>
+                    </form>
                     {canSendRole(member.role) ? (
                       <details class="fwd">
                         <summary title="Forward" aria-label="Forward this message"><Icon name="forward" /></summary>
@@ -1844,6 +1932,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                       </details>
                     ) : null}
                   </div>
+                  <div class="msg-peek" data-peek>{excerpt(splitQuotedTail(g.body_text || '').main, 140) || '(no text content)'}</div>
                   {rule?.close && g.direction === 'inbound' && g.body_html ? (
                     // Rule-filed mail renders its real (sanitized) HTML in a
                     // sandboxed frame: no scripts, opaque to the app, links
@@ -2098,6 +2187,34 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             })()}
           </div>
 
+
+          {sideImages.length ? (
+            <div class="side-block">
+              <span class="label">Images</span>
+              <div class="side-imgs">
+                {sideImages.map(({ a, ts }) => (
+                  <a class="side-img" href={`/attachment/${a.id}`} title={`${a.filename} · ${Math.ceil(a.size / 1024)} KB · ${shortDate(ts)}`}>
+                    <img src={`/attachment/${a.id}`} alt={a.filename} loading="lazy" />
+                  </a>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {sideFiles.length ? (
+            <div class="side-block">
+              <span class="label">Files</span>
+              <div class="side-files">
+                {sideFiles.map(({ a, ts }) => (
+                  <a class="side-file" href={`/attachment/${a.id}`} title={`${a.filename} · ${shortDate(ts)}`}>
+                    <Icon name="clip" />
+                    <span class="sf-name">{a.filename}</span>
+                    <small>{Math.ceil(a.size / 1024)} KB</small>
+                  </a>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           <div class="side-block">
             <span class="label">Log</span>
@@ -2490,6 +2607,22 @@ app.post('/inbox/:addr/thread/:id/tags', async (c) => {
   // a clicked suggestion wins over whatever was half-typed in the box
   await addTag(t.collective.id, thread.id, String(body.pick || body.name || ''), t.member.id)
   return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}`)
+})
+
+// Folding a message is a per-member view preference, not a thread change:
+// no event, no notification, just what this person wants to see next time.
+app.post('/inbox/:addr/thread/:id/fold', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const thread = await threadOf(c, t)
+  if (!thread) return c.notFound()
+  const body = await c.req.parseBody()
+  const messageId = Number(body.message_id)
+  const msg = await get<Message>('SELECT id FROM messages WHERE id = ? AND thread_id = ?', [messageId, thread.id])
+  if (!msg) return c.notFound()
+  await setMessageFold(t.member.id, messageId, String(body.collapsed) === '1')
+  if (c.req.header('x-fold') === '1') return c.body(null, 204)
+  return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}#m${messageId}`)
 })
 
 app.post('/inbox/:addr/thread/:id/tags/remove', async (c) => {

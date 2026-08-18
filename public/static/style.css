@@ -437,7 +437,9 @@ img.avatar-img { object-fit: cover; }
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 11px 16px; border-bottom: 1.5px solid var(--line-soft);
 }
-.msg-head .who b { font-size: 14px; }
+.msg-head .who b, .msg-head .person-hit b { font-size: 14px; }
+/* the head is the card's containing block, so it must not clip it */
+.msg { overflow: visible; }
 .msg-head .who small { font-family: var(--mono); font-size: 10.5px; display: block; overflow-wrap: anywhere; }
 /* right column: when it arrived, who sent it, and the forward affordance */
 .msg-head { position: relative; }
@@ -802,7 +804,9 @@ iframe.msg-frame {
   display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px;
   background: var(--card); border-bottom: 1.5px solid var(--line-soft); box-shadow: var(--shadow);
 }
-.fwd input { flex: 1; min-width: 180px; }
+/* shrink-and-wrap, never overflow: a 180px floor ran the field off the
+   right edge of a phone, and Safari zooms to a field it cannot fully show */
+.fwd input { flex: 1 1 180px; min-width: 0; }
 
 /* muted senders on the notifications page */
 .mute-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1.5px solid var(--line-soft); }
@@ -929,18 +933,25 @@ iframe.msg-frame {
 .tag-add summary { list-style: none; cursor: pointer; color: var(--muted); }
 .tag-add summary::-webkit-details-marker { display: none; }
 .tag-add[open] summary { color: var(--ink); }
-.tag-pop {
+/* .thread-sub form (0,1,1) would otherwise centre and shrink-wrap this one */
+.thread-sub form.tag-pop, .tag-pop {
   position: absolute; top: calc(100% + 6px); left: 0; z-index: 40;
-  display: flex; flex-direction: column; gap: 8px; background: var(--card);
+  display: flex; flex-direction: column; align-items: stretch; gap: 8px; background: var(--card);
   border: 1.5px solid var(--line);
   border-radius: 10px; padding: 8px; box-shadow: var(--shadow); width: 260px;
 }
 .tag-pop .tag-row { display: flex; gap: 6px; }
 .tag-pop .tag-row .input { flex: 1; min-width: 0; }
 /* the collective's existing tags, most-used first — one tap to apply */
-.tag-sugs { display: flex; flex-wrap: wrap; gap: 4px; max-height: 128px; overflow-y: auto; }
-.tag-sug { cursor: pointer; font: inherit; font-family: var(--mono); font-size: 11px; }
-.tag-sug:hover { border-color: var(--accent); color: var(--accent); }
+/* one tag per line: a scannable column you can walk with the arrow keys */
+.tag-sugs { display: flex; flex-direction: column; gap: 1px; max-height: 210px; overflow-y: auto; }
+.tag-sug {
+  cursor: pointer; font: inherit; font-family: var(--mono); font-size: 12.5px;
+  justify-content: flex-start; width: 100%; text-align: left;
+  border-color: transparent; border-radius: 8px; padding: 7px 10px;
+}
+.tag-sug:hover, .tag-sug.on { background: var(--fill); color: var(--ink); }
+.tag-sug.on { border-color: var(--accent); }
 
 /* one-click assignment picker: modal on desktop, sheet on mobile */
 .assign-list { display: flex; flex-direction: column; gap: 2px; margin-bottom: 10px; }
@@ -1026,7 +1037,7 @@ iframe.msg-frame {
   /* anchored to the chip on desktop, to the whole row on phones — a 260px
      popover hanging off a chip near the right edge would run off-screen */
   .tag-add { position: static; }
-  .tag-pop { left: 14px; right: 14px; width: auto; }
+  .thread-sub form.tag-pop, .tag-pop { left: 14px; right: 14px; width: auto; max-width: none; }
 }
 
 /* one icon language: quiet by default, accent on interaction */
@@ -1171,3 +1182,66 @@ button.row.new-thread-row {
 .held-form { display: grid; gap: 8px; margin: 14px 0 8px; }
 .held-form textarea { font: inherit; min-height: 180px; }
 .held-form .btn-row { align-items: center; margin-top: 4px; }
+
+/* thread sidebar: what was attached, without scrolling the thread for it */
+.side-imgs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.side-img { display: block; aspect-ratio: 1; border-radius: 8px; overflow: hidden; border: 1.5px solid var(--line-soft); }
+.side-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.side-files { display: flex; flex-direction: column; gap: 2px; }
+.side-file {
+  display: flex; align-items: center; gap: 7px; padding: 6px 6px; border-radius: 8px;
+  color: var(--ink); text-decoration: none; font-size: 13px;
+}
+.side-file:hover { background: var(--fill); }
+.side-file .ic { width: 14px; height: 14px; color: var(--muted); }
+.sf-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-file small { color: var(--muted); font-family: var(--mono); font-size: 10px; flex: none; }
+
+/* sender card: hover on a pointer device, tap on a touchscreen */
+.person { position: relative; display: inline-flex; align-items: center; flex: none; }
+.person-hit {
+  display: inline-flex; align-items: center; gap: 9px;
+  text-decoration: none; color: inherit; border-radius: 8px;
+}
+.person-card {
+  display: none; position: absolute; top: calc(100% + 7px); left: 0; z-index: 60;
+  width: 268px; max-width: calc(100vw - 40px); cursor: default; text-align: left;
+  background: var(--card); border: 1.5px solid var(--line); border-radius: 12px;
+  padding: 12px; box-shadow: var(--shadow); flex-direction: column; gap: 9px;
+}
+.person.open > .person-card { display: flex; }
+@media (hover: hover) { .person:hover > .person-card { display: flex; } }
+.pc-top { display: flex; align-items: center; gap: 9px; font-size: 14px; }
+.pc-mail { display: flex; align-items: center; gap: 6px; }
+.pc-addr {
+  flex: 1; min-width: 0; font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.pc-link { font-size: 13px; color: var(--accent); text-decoration: none; }
+.pc-link:hover { text-decoration: underline; }
+.pc-none { font-size: 12px; color: var(--muted); }
+.icon-btn.copied { color: var(--accent); border-color: var(--accent); }
+
+/* folded messages: the head, one line of the body, nothing else */
+.msg-fold { display: flex; margin-left: auto; }
+.msg-fold + .fwd { margin-left: 0; }
+.fold-btn .ic { transition: transform 0.15s; }
+.msg.folded .fold-btn .ic { transform: rotate(-90deg); }
+.msg-peek { display: none; }
+.msg.folded .msg-peek {
+  display: block; padding: 10px 16px 12px; color: var(--muted); font-size: 13px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
+}
+.msg.folded .msg-head { border-bottom: none; }
+.msg.folded .msg-body, .msg.folded .msg-frame, .msg.folded .msg-atts,
+.msg.folded .link-sender, .msg.folded .fwd { display: none; }
+
+/* phones: the message head stays one line — the fold control belongs next to
+   the time, not on a row of its own */
+@media (max-width: 900px) {
+  .msg-head { flex-wrap: nowrap; gap: 7px; }
+  .msg-head .person { min-width: 0; }
+  .msg-head .person-hit b, .msg-head .who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .msg-head .who { min-width: 0; flex: 1; }
+  .msg-head .when, .msg-head .msg-fold, .msg-head .fwd { flex: none; }
+}

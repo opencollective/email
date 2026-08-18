@@ -198,6 +198,15 @@ const SCHEMA = [
     PRIMARY KEY (thread_id, member_id)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_thread_reads_member ON thread_reads(member_id)`,
+  // which messages a member folded away (or deliberately kept open) — the
+  // default is computed from what they had already read, this is the override
+  `CREATE TABLE IF NOT EXISTS message_folds (
+    member_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    collapsed INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (member_id, message_id)
+  )`,
   `CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)`,
   `CREATE TABLE IF NOT EXISTS waitlist (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -411,6 +420,17 @@ export async function markThreadSeen(threadId: number, memberId: number, via: 'w
     ON CONFLICT(thread_id, member_id) DO UPDATE SET last_seen_at = excluded.last_seen_at, via = excluded.via`,
     [threadId, memberId, now(), now(), via])
 }
+
+/** A member's explicit fold/unfold of one message. */
+export const setMessageFold = (memberId: number, messageId: number, collapsed: boolean) =>
+  run(`INSERT INTO message_folds (member_id, message_id, collapsed, updated_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(member_id, message_id) DO UPDATE SET collapsed = excluded.collapsed, updated_at = excluded.updated_at`,
+    [memberId, messageId, collapsed ? 1 : 0, now()])
+
+export const messageFoldsQuery = (memberId: number, messageIds: number[]) => ({
+  sql: `SELECT message_id, collapsed FROM message_folds WHERE member_id = ? AND message_id IN (${messageIds.map(() => '?').join(',')})`,
+  args: [memberId, ...messageIds] as (string | number)[],
+})
 
 export interface ThreadRead { thread_id: number; member_id: number; first_seen_at: number; last_seen_at: number; via: string | null }
 
