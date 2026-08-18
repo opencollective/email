@@ -550,6 +550,18 @@ export const threadTags = (threadId: number) =>
   all<{ id: number; name: string }>(
     'SELECT t.id, t.name FROM tags t JOIN thread_tags tt ON tt.tag_id = t.id WHERE tt.thread_id = ? ORDER BY t.name', [threadId])
 
+/** The collective's own tag vocabulary, most-used first — what we suggest from
+ *  so nobody re-invents "follow-up" as "followup". A tag whose threads have all
+ *  been untagged is still part of the vocabulary, hence the LEFT JOIN. */
+export const popularTagsQuery = (collectiveId: number, limit = 40) => ({
+  sql: `SELECT tg.name, COUNT(t.id) AS n FROM tags tg
+        LEFT JOIN thread_tags tt ON tt.tag_id = tg.id
+        LEFT JOIN threads t ON t.id = tt.thread_id AND t.status != 'spam'
+        WHERE tg.collective_id = ?
+        GROUP BY tg.id ORDER BY n DESC, tg.name LIMIT ?`,
+  args: [collectiveId, limit] as (string | number)[],
+})
+
 export async function tagsByThread(threadIds: number[]): Promise<Map<number, { id: number; name: string }[]>> {
   if (threadIds.length === 0) return new Map()
   const rows = await all<{ thread_id: number; id: number; name: string }>(

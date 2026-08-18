@@ -89,6 +89,27 @@ document.querySelectorAll('[data-filter]').forEach((form) => {
   form.addEventListener('submit', (e) => { e.preventDefault(); apply(); });
 });
 
+// Tag suggestions: the collective's own vocabulary, most-used first. Clicking
+// one submits it; typing narrows the list so a near-match is easier to spot
+// than to retype (which is how "follow-up" grows a twin called "followup").
+document.querySelectorAll('[data-tagpop]').forEach((form) => {
+  const input = form.querySelector('input[name=name]');
+  const box = form.querySelector('.tag-sugs');
+  const det = form.closest('details');
+  if (det) det.addEventListener('toggle', () => { if (det.open && input) input.focus(); });
+  if (!input || !box) return;
+  input.addEventListener('input', () => {
+    const q = input.value.trim().toLowerCase().replace(/^#/, '');
+    let shown = 0;
+    box.querySelectorAll('.tag-sug').forEach((b) => {
+      const hit = !q || (b.getAttribute('data-find') || '').indexOf(q) !== -1;
+      b.hidden = !hit;
+      if (hit) shown++;
+    });
+    box.hidden = shown === 0;
+  });
+});
+
 document.querySelectorAll('.file-input').forEach((inp) => {
   inp.addEventListener('change', () => {
     const label = inp.closest('.file-label');
@@ -328,7 +349,7 @@ export const Page: FC<{ title?: string; flash?: string; bundle?: string; childre
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=59" />
+      <link rel="stylesheet" href="/static/style.css?v=61" />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script

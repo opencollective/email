@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { simpleParser } from 'mailparser'
 import { app } from '../src/app.js'
-import { all, createCollective, get, run, type Thread } from '../src/db.js'
+import { addTag, all, createCollective, get, run, type Thread } from '../src/db.js'
 import { createSession } from '../src/auth.js'
 import { now } from '../src/util.js'
 import { createRule, matchingRule } from '../src/rules.js'
@@ -311,4 +311,50 @@ test('the rules page shows each rule as chips, with an editor per rule', async (
   assert.match(html, /no reply needed/)
   assert.match(html, /Create a new rule/)
   assert.match(html, new RegExp(`id="rule-edit-${rule.id}"`), 'each rule carries its own editor sheet')
+})
+
+// ---------- tag suggestions ----------
+
+test('the tag box suggests the collective vocabulary, most-used first, and one click applies it', async () => {
+  const col = await createCollective(`tags${uniq()}`, 'Tag Co')
+  const admin = `admin-${uniq()}@example.org`
+  await addMember(col.id, admin, 'admin')
+  const sid = await createSession(admin)
+
+  // four tags whose popularity order (zoning, access, archive) is deliberately
+  // NOT their alphabetical order, so the test can tell the two apart
+  const threads: Thread[] = []
+  for (let i = 0; i < 3; i++) {
+    await ingestInbound(col, await simpleParser(
+      `Message-ID: <b${i}-${uniq()}@out.test>\nFrom: guest${i}@out.test\nTo: ${col.slug}@requests.test\nSubject: Booking ${i}\n\nHello`))
+    threads.push(await lastThread(col.id))
+  }
+  for (const [i, th] of threads.entries()) {
+    await addTag(col.id, th.id, 'venue-rental', null)
+    if (i < 2) await addTag(col.id, th.id, 'zoning', null)
+    if (i < 1) await addTag(col.id, th.id, 'access', null)
+  }
+  // a tag the collective coined and then removed everywhere: still vocabulary
+  await addTag(col.id, threads[0].id, 'archive', null)
+  await run('DELETE FROM thread_tags WHERE tag_id = (SELECT id FROM tags WHERE collective_id = ? AND name = ?)',
+    [col.id, 'archive'])
+
+  // the third thread carries only #venue-rental, so the rest is still on offer
+  const page = await app.request(`/inbox/${col.slug}/thread/${threads[2].id}`,
+    { headers: { cookie: `requests_sid=${sid}` } })
+  const html = await page.text()
+  const order = [...html.matchAll(/class="chip tag-sug" type="submit" name="pick" value="([^"]+)"/g)].map((m) => m[1])
+  assert.deepEqual(order, ['zoning', 'access', 'archive'],
+    'most-used first (not alphabetical); #venue-rental is already on this thread, so it is not re-offered')
+
+  // clicking a suggestion posts `pick`, which wins over whatever was half-typed
+  const applied = await app.request(`/inbox/${col.slug}/thread/${threads[2].id}/tags`, {
+    method: 'POST',
+    headers: { cookie: `requests_sid=${sid}`, 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'name=zonin&pick=zoning',
+  })
+  assert.equal(applied.status, 302)
+  const on = await all<any>('SELECT t.name FROM tags t JOIN thread_tags tt ON tt.tag_id = t.id WHERE tt.thread_id = ? ORDER BY t.name',
+    [threads[2].id])
+  assert.deepEqual(on.map((t) => t.name), ['venue-rental', 'zoning'], 'no "zonin" typo tag was created')
 })

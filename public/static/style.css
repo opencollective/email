@@ -931,9 +931,16 @@ iframe.msg-frame {
 .tag-add[open] summary { color: var(--ink); }
 .tag-pop {
   position: absolute; top: calc(100% + 6px); left: 0; z-index: 40;
-  display: flex; gap: 6px; background: var(--card); border: 1.5px solid var(--line);
-  border-radius: 10px; padding: 8px; box-shadow: var(--shadow); width: 240px;
+  display: flex; flex-direction: column; gap: 8px; background: var(--card);
+  border: 1.5px solid var(--line);
+  border-radius: 10px; padding: 8px; box-shadow: var(--shadow); width: 260px;
 }
+.tag-pop .tag-row { display: flex; gap: 6px; }
+.tag-pop .tag-row .input { flex: 1; min-width: 0; }
+/* the collective's existing tags, most-used first — one tap to apply */
+.tag-sugs { display: flex; flex-wrap: wrap; gap: 4px; max-height: 128px; overflow-y: auto; }
+.tag-sug { cursor: pointer; font: inherit; font-family: var(--mono); font-size: 11px; }
+.tag-sug:hover { border-color: var(--accent); color: var(--accent); }
 
 /* one-click assignment picker: modal on desktop, sheet on mobile */
 .assign-list { display: flex; flex-direction: column; gap: 2px; margin-bottom: 10px; }
@@ -1015,7 +1022,11 @@ iframe.msg-frame {
    rules above were appended after the main media block and would win) */
 @media (max-width: 900px) {
   .head-people { padding: 8px 14px 0; }
-  .thread-sub { padding: 10px 14px 12px; }
+  .thread-sub { padding: 10px 14px 12px; position: relative; }
+  /* anchored to the chip on desktop, to the whole row on phones — a 260px
+     popover hanging off a chip near the right edge would run off-screen */
+  .tag-add { position: static; }
+  .tag-pop { left: 14px; right: 14px; width: auto; }
 }
 
 /* one icon language: quiet by default, accent on interaction */

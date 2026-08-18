@@ -5,7 +5,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import type { Context } from 'hono'
 import { cfg } from '../config.js'
 import {
-  activeMembers, addTag, all, allCollectives, attachmentsByMessage, batchAll, createCollective, get, getCollective,
+  activeMembers, addTag, all, allCollectives, attachmentsByMessage, batchAll, createCollective, get, getCollective, popularTagsQuery,
   getCollectiveBySlug, getMember, getMemberIn, getThread, kvGet, kvSet, lastMessageByThread, memberMap,
   renameCollectiveSlug,
   markThreadSeen, membershipsByEmail, readsForMember, removeTag, run, setAssignee, setStatus, tagsByThread, threadMessages, threadReads, threadTags,
@@ -1577,6 +1577,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
     { sql: 'SELECT t.id, t.name FROM tags t JOIN thread_tags tt ON tt.tag_id = t.id WHERE tt.thread_id = ? ORDER BY t.name', args: [thread.id] },
     { sql: 'SELECT * FROM members WHERE collective_id = ?', args: [collective.id] },
     { sql: 'SELECT nm.note_id, nm.member_id FROM note_mentions nm JOIN notes n ON n.id = nm.note_id WHERE n.thread_id = ?', args: [thread.id] },
+    popularTagsQuery(collective.id),
   ])
   const msgs = batch[0] as Message[]
   const notes = batch[1] as { id: number; member_id: number; body: string; created_at: number }[]
@@ -1586,6 +1587,10 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   // notes that named *you* — worth a marker when you land on a long thread
   const mentionsMe = new Set((batch[5] as { note_id: number; member_id: number }[])
     .filter((r) => r.member_id === member.id).map((r) => r.note_id))
+  // tags this collective already uses, most-used first, minus the ones already
+  // on this thread — the vocabulary offered under the "+ tag" box
+  const tagSugs = (batch[6] as { name: string; n: number }[])
+    .filter((s) => !tags.some((tg) => tg.name === s.name))
   const attsMap = await attachmentsByMessage(msgs.map((m) => m.id))
   // where this member had read up to BEFORE this visit — that boundary is
   // where the page auto-scrolls and where the "new" divider sits
@@ -1749,9 +1754,19 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             {member.role !== 'reader' ? (
               <details class="tag-add">
                 <summary class="chip" title="Add a tag">+ tag</summary>
-                <form method="post" action={`${base}/thread/${thread.id}/tags`} class="tag-pop">
-                  <input class="input small" name="name" placeholder="add-a-tag" autocomplete="off" />
-                  <button class="btn small ghost" type="submit">Add</button>
+                <form method="post" action={`${base}/thread/${thread.id}/tags`} class="tag-pop" data-tagpop>
+                  <div class="tag-row">
+                    <input class="input small" name="name" placeholder="add-a-tag" autocomplete="off" />
+                    <button class="btn small ghost" type="submit">Add</button>
+                  </div>
+                  {/* each suggestion submits itself, so the list works with JS off too */}
+                  {tagSugs.length ? (
+                    <div class="tag-sugs">
+                      {tagSugs.map((s) => (
+                        <button class="chip tag-sug" type="submit" name="pick" value={s.name} data-find={s.name}>#{s.name}</button>
+                      ))}
+                    </div>
+                  ) : null}
                 </form>
               </details>
             ) : null}
@@ -2472,7 +2487,8 @@ app.post('/inbox/:addr/thread/:id/tags', async (c) => {
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
   const body = await c.req.parseBody()
-  await addTag(t.collective.id, thread.id, String(body.name || ''), t.member.id)
+  // a clicked suggestion wins over whatever was half-typed in the box
+  await addTag(t.collective.id, thread.id, String(body.pick || body.name || ''), t.member.id)
   return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}`)
 })
 
