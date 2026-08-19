@@ -149,7 +149,61 @@ document.querySelectorAll('[data-tagpop]').forEach((form) => {
   });
 });
 
-// Reading, reported honestly: after 3 seconds on the page, seen up to the
+// The hamburger only morphs when its state actually changed since the last
+// page — reloading the same kind of page must not replay the animation.
+(() => {
+  const h = document.querySelector('.m-head .hamburger');
+  if (!h) return;
+  try { sessionStorage.setItem('hb', h.classList.contains('to-arrow') ? 'arrow' : 'burger'); } catch (e) {}
+})();
+
+// Instant filter pills: the inbox keeps its own filtered variants in
+// sessionStorage — a pill tap swaps the rows in place and revalidates in the
+// background, so switching filters costs no page load at all.
+(() => {
+  const rowsEl = document.querySelector('.main > .rows');
+  const bar = document.querySelector('.main > .tag-bar');
+  if (!rowsEl || !bar) return;
+  const KEY = 'pillcache:' + location.pathname;
+  let cache = {};
+  try { cache = JSON.parse(sessionStorage.getItem(KEY) || '{}'); } catch (e) {}
+  const save = () => { try { sessionStorage.setItem(KEY, JSON.stringify(cache)); } catch (e) {} };
+  const extract = (html) => {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const r = doc.querySelector('.main > .rows'), b = doc.querySelector('.main > .tag-bar');
+    return r && b ? { rows: r.innerHTML, bar: b.innerHTML } : null;
+  };
+  const apply = (d) => { rowsEl.innerHTML = d.rows; bar.innerHTML = d.bar; };
+  const here = () => location.pathname + location.search;
+  const refetch = (url) => fetch(url).then((r) => (r.ok ? r.text() : Promise.reject())).then((t) => {
+    const d = extract(t);
+    if (d) { cache[url] = d; save(); if (here() === url) apply(d); }
+  }).catch(() => {});
+  cache[here()] = { rows: rowsEl.innerHTML, bar: bar.innerHTML }; save();
+  // warm the other pills once the page is idle
+  const warm = () => bar.querySelectorAll('a.tag-chip').forEach((a) => {
+    const u = a.getAttribute('href');
+    if (!cache[u]) fetch(u).then((r) => r.text()).then((t) => { const d = extract(t); if (d) { cache[u] = d; save(); } }).catch(() => {});
+  });
+  (window.requestIdleCallback || ((fn) => setTimeout(fn, 500)))(warm);
+  bar.addEventListener('click', (e) => {
+    const a = e.target.closest('a.tag-chip');
+    if (!a || e.metaKey || e.ctrlKey) return;
+    const url = a.getAttribute('href');
+    const d = cache[url];
+    if (!d) return; // not warmed yet: an ordinary navigation still works
+    e.preventDefault();
+    history.pushState({ pill: 1 }, '', url);
+    apply(d);
+    refetch(url); // stale-while-revalidate
+  });
+  addEventListener('popstate', () => {
+    const d = cache[here()];
+    if (d) { apply(d); refetch(here()); } else location.reload();
+  });
+})();
+
+// Reading, reported honestly:// Reading, reported honestly: after 3 seconds on the page, seen up to the
 // last message on screen; on reaching the bottom, the whole thread. A page
 // opened and closed in one second marks nothing.
 (() => {
@@ -494,7 +548,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '70'
+export const ASSET_V = '71'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">
@@ -506,6 +560,7 @@ export const Page: FC<{ title?: string; flash?: string; bundle?: string; childre
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
       <link rel="stylesheet" href={`/static/style.css?v=${ASSET_V}`} />
+      {raw(`<script>try{var hb=sessionStorage.getItem('hb');if(hb)document.documentElement.className+=' hb-was-'+hb}catch(e){}</script>`)}
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script

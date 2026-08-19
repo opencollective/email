@@ -1318,3 +1318,6 @@ button.row.new-thread-row {
 .tag-pick input { position: absolute; opacity: 0; pointer-events: none; }
 .tag-pick.on, .tag-pick:has(input:checked) { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 .lbl-hint { text-transform: none; letter-spacing: 0; font-weight: 400; }
+
+/* the burger morph only plays when the state changed since the previous page */
+.hb-was-burger .hamburger.to-burger .hl, .hb-was-arrow .hamburger.to-arrow .hl { animation: none !important; }
