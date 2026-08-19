@@ -46,6 +46,11 @@ const post = (path: string, sid: string, body: string) => app.request(path, {
   headers: { cookie: `requests_sid=${sid}`, 'content-type': 'application/x-www-form-urlencoded' },
   body,
 })
+const seenBeacon = (slug: string, threadId: number, sid: string, upTo: number) => app.request(`/inbox/${slug}/thread/${threadId}/seen`, {
+  method: 'POST', headers: { cookie: `requests_sid=${sid}`, 'content-type': 'application/x-www-form-urlencoded' },
+  body: `up_to=${upTo}`,
+})
+
 /** ids of the messages rendered folded, in page order */
 const folded = (html: string) =>
   [...html.matchAll(/class="msg \w+ folded" id="m(\d+)"/g)].map((m) => Number(m[1]))
@@ -58,8 +63,7 @@ test('a thread you have read folds what you have already seen, keeping the last 
   assert.deepEqual(folded(first), [], 'nothing folds before you have read anything')
 
   // she read up to message 4; message 5 arrived after
-  await run('UPDATE thread_reads SET last_seen_at = ? WHERE thread_id = ? AND member_id = ?',
-    [fx.t0 + 3 * 3600 + 60, fx.threadId, fx.alice.id])
+  await seenBeacon(fx.slug, fx.threadId, fx.alice.sid, fx.t0 + 3 * 3600 + 60)
   const second = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
   assert.deepEqual(folded(second), [fx.ids[0], fx.ids[1], fx.ids[2]],
     'read messages fold, except the last from each side; the unread one stays open')
@@ -71,9 +75,8 @@ test('a thread you have read folds what you have already seen, keeping the last 
 
 test('folding a message is remembered for that member alone', async () => {
   const fx = await fixture()
-  await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)
-  await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.bob.sid)
-  await run('UPDATE thread_reads SET last_seen_at = ? WHERE thread_id = ?', [fx.t0 + 3 * 3600 + 60, fx.threadId])
+  await seenBeacon(fx.slug, fx.threadId, fx.alice.sid, fx.t0 + 3 * 3600 + 60)
+  await seenBeacon(fx.slug, fx.threadId, fx.bob.sid, fx.t0 + 3 * 3600 + 60)
 
   // she folds the newest message away, and unfolds the oldest one
   const r = await post(`/inbox/${fx.slug}/thread/${fx.threadId}/fold`, fx.alice.sid, `message_id=${fx.ids[4]}&collapsed=1`)
@@ -101,8 +104,7 @@ test('folding a message is remembered for that member alone', async () => {
 
 test('a folded message still shows its first line', async () => {
   const fx = await fixture()
-  await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)
-  await run('UPDATE thread_reads SET last_seen_at = ? WHERE thread_id = ?', [fx.t0 + 3 * 3600 + 60, fx.threadId])
+  await seenBeacon(fx.slug, fx.threadId, fx.alice.sid, fx.t0 + 3 * 3600 + 60)
   const html = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
   assert.match(html, /class="msg-peek" data-peek="true">message number 1 of this conversation</)
 })
@@ -170,17 +172,17 @@ test('who has seen a thread is said by name, up to three of them', async () => {
       [fx.collective.id, email, `${name} Dean`, 'member', 'every', now()])
     extra.push(await createSession(email))
   }
-  await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)
+  await seenBeacon(fx.slug, fx.threadId, fx.alice.sid, now())
   const seen = async () => {
     const html = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
     return [...html.matchAll(/seen by ([^<]+)</g)].map((m) => m[1])
   }
-  await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, extra[0])
+  await seenBeacon(fx.slug, fx.threadId, extra[0], now())
   assert.ok((await seen()).every((s) => /Alice|Miriam/.test(s)), 'two readers, named')
   assert.ok((await seen()).some((s) => s.includes(' and ')), '"X and Y", not "2 people"')
 
-  await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, extra[1])
-  await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, extra[2])
+  await seenBeacon(fx.slug, fx.threadId, extra[1], now())
+  await seenBeacon(fx.slug, fx.threadId, extra[2], now())
   const four = await seen()
   assert.ok(four.some((s) => /Ruta/.test(s) && !/other/.test(s)),
     `four readers all named — "and 1 other" is never shorter than the name — got ${JSON.stringify(four)}`)
@@ -188,7 +190,7 @@ test('who has seen a thread is said by name, up to three of them', async () => {
   await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
     [fx.collective.id, `eve-${uniq()}@example.org`, 'Eve Dean', 'member', 'every', now()])
   const eve = await createSession((await get<any>('SELECT email FROM members WHERE collective_id = ? ORDER BY id DESC LIMIT 1', [fx.collective.id])).email)
-  await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, eve)
+  await seenBeacon(fx.slug, fx.threadId, eve, now())
   const many = await seen()
   assert.ok(many.some((s) => /and \d+ others$/.test(s)), `five+ readers: three names then a plural count — got ${JSON.stringify(many)}`)
   assert.ok(many.every((s) => !s.includes('Dean')), 'first names only')
@@ -236,8 +238,7 @@ test('an answer from an address that is neither ours nor a member\'s is shown un
 
 test('each message has a menu: copy link, reply, forward — and the link opens focused', async () => {
   const fx = await fixture()
-  await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)
-  await run('UPDATE thread_reads SET last_seen_at = ? WHERE thread_id = ?', [fx.t0 + 5 * 3600, fx.threadId])
+  await seenBeacon(fx.slug, fx.threadId, fx.alice.sid, fx.t0 + 5 * 3600)
   const html = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
   assert.doesNotMatch(html, /class="icon-btn fold-btn"/, 'the caret is gone')
   assert.match(html, new RegExp(`data-copy="[^"]*/thread/${fx.threadId}\\?focus=${fx.ids[2]}#m${fx.ids[2]}"`), 'copy link, anchored at the message')
@@ -329,4 +330,36 @@ test('a same-day closed thread still shows its date in the list', async () => {
   const html = await (await page(`/inbox/${fx.slug}?f=closed`, fx.alice.sid)).text()
   const row = html.slice(html.indexOf('class="row'), html.indexOf('r-name'))
   assert.match(row, /<b class="r-d2">\d/, 'the bold date every layout shows is never blank')
+})
+
+test('the filter modal narrows by tags, including the untagged', async () => {
+  const fx = await fixture()
+  const mk = async (subj: string) => (await run(`INSERT INTO threads (collective_id, subject, status, counterpart_email, first_message_at, last_message_at, last_direction, created_at, updated_at)
+    VALUES (?, ?, 'needs_reply', 'x@y.test', ?, ?, 'inbound', ?, ?)`, [fx.collective.id, subj, now(), now(), now(), now()])).lastId
+  const a = await mk('Tagged venue')
+  const b = await mk('Tagged press')
+  await mk('Bare thread')
+  await addTag(fx.collective.id, a, 'venue-rental', null)
+  await addTag(fx.collective.id, b, 'press', null)
+
+  const get2 = async (qs: string) => await (await page(`/inbox/${fx.slug}?f=all&${qs}`, fx.alice.sid)).text()
+  const one = await get2('tags=venue-rental')
+  assert.match(one, /Tagged venue/); assert.doesNotMatch(one, /Tagged press|Bare thread/)
+  const two = await get2('tags=venue-rental&tags=press')
+  assert.match(two, /Tagged venue/); assert.match(two, /Tagged press/); assert.doesNotMatch(two, /Bare thread/)
+  const bare = await get2('untagged=1')
+  assert.match(bare, /Bare thread/); assert.doesNotMatch(bare, /Tagged venue|Tagged press/)
+  const mixed = await get2('tags=press&untagged=1')
+  assert.match(mixed, /Tagged press/); assert.match(mixed, /Bare thread/); assert.doesNotMatch(mixed, /Tagged venue/)
+})
+
+test('unassigned wears no warning triangle anywhere', async () => {
+  const fx = await fixture()
+  await run('UPDATE threads SET assignee_member_id = NULL WHERE id = ?', [fx.threadId])
+  const inbox = await (await page(`/inbox/${fx.slug}`, fx.alice.sid)).text()
+  const thread = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
+  for (const html of [inbox, thread]) {
+    assert.doesNotMatch(html, /⚠ ?unassigned/i)
+    assert.match(html, /unassigned/i, 'the state is still named, just not shouted')
+  }
 })

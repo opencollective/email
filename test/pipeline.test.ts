@@ -292,7 +292,7 @@ test('live assignment badge reflects current state at fetch time', async () => {
   const bytes = Buffer.from(await res.arrayBuffer())
   assert.equal(bytes.subarray(1, 4).toString('ascii'), 'PNG', 'real PNG bytes')
 
-  assert.match((await badgeState((await getThread(Number(t.lastId)))!)).line, /Nobody has this yet/)
+  assert.equal((await badgeState((await getThread(Number(t.lastId)))!)).line, 'Unassigned')
 
   await run('UPDATE threads SET assignee_member_id = ? WHERE id = ?', [member.id, t.lastId])
   await run("INSERT INTO events (thread_id, actor_member_id, type, created_at) VALUES (?, ?, 'assigned', ?)", [t.lastId, member.id, now()])
@@ -872,7 +872,7 @@ test('notification header: From line, To line, small badge with a change link', 
     const html = sent[0].html as string
     assert.match(html, /From:<\/span> <b>Marie Vandenberghe<\/b> <span[^>]*>&lt;marie@sender\.test&gt;/)
     assert.match(html, new RegExp(`To: ${col.slug}@collective\\.email`))
-    assert.match(html, /width="278" height="30"/, 'badge is ~30px tall')
+    assert.match(html, /height="30" style="[^"]*height:30px;width:auto/, 'badge scales by height so each state hugs its text')
     assert.match(html, /change →/)
     assert.match(html, /border-bottom:1px solid #e6e8eb/, 'a rule separates header from body')
     assert.doesNotMatch(html, />Header Co<\/span>/, 'no redundant collective/date bar')

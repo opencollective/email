@@ -41,14 +41,14 @@ export async function badgeState(thread: Thread): Promise<{ line: string; who: s
   if (thread.last_direction === 'outbound') {
     const lastOut = await get<Message>("SELECT * FROM messages WHERE thread_id = ? AND direction = 'outbound' ORDER BY id DESC LIMIT 1", [thread.id])
     const by = lastOut?.sent_by_member_id ? await getMember(lastOut.sent_by_member_id) : null
-    const who = by ? memberName(by) : ''
+    const who = by ? memberName(by).split(' ')[0] : ''
     return { line: `✓ Answered${who ? ` by ${who}` : ''}`, who, color: '#1a7f4f', bg: '#eef8f2' }
   }
   if (thread.assignee_member_id) {
-    const who = memberName(await getMember(thread.assignee_member_id))
+    const who = memberName(await getMember(thread.assignee_member_id)).split(' ')[0]
     return { line: `Assigned to ${who}`, who, color: '#0c2d66', bg: '#eef3fc' }
   }
-  return { line: 'Nobody has this yet — first to claim it gets it', who: '', color: '#b45309', bg: '#fdf5ec' }
+  return { line: 'Unassigned', who: '', color: '#b45309', bg: '#fdf5ec' }
 }
 
 ogApp.get('/aimg/:token', async (c) => {
@@ -62,13 +62,16 @@ ogApp.get('/aimg/:token', async (c) => {
   if (payload.m) await markThreadSeen(thread.id, Number(payload.m), 'email').catch(() => {})
   const s = await badgeState(thread)
   const initials = s.who ? s.who.slice(0, 2).toUpperCase() : s.line.startsWith('✓') ? '✓' : '!'
-  // rendered large for retina; emails display it at 688×74 (same 9.3 ratio)
+  const text = s.line.replace(/^✓ /, '')
+  // the pill hugs its text: the canvas width follows the line, and the email
+  // scales by height alone, so "Unassigned" is a short chip, not a banner
+  const width = Math.min(1040, Math.round(text.length * 22 + 190))
   const img = await png(
     h('div', { display: 'flex', width: '100%', height: '100%', alignItems: 'center', gap: 24, padding: '0 30px', backgroundColor: s.bg, border: `3px solid ${s.color}`, borderRadius: 26, fontFamily: 'Inter' },
       h('div', { display: 'flex', width: 60, height: 60, borderRadius: 30, backgroundColor: s.color, color: '#ffffff', alignItems: 'center', justifyContent: 'center', fontSize: 26, fontWeight: 600, flexShrink: 0 }, initials),
-      // displayed at ~30px height in emails now — bigger type stays readable
-      h('div', { display: 'flex', fontSize: 40, fontWeight: 600, color: s.color }, s.line.replace(/^✓ /, ''))),
-    1040, 112,
+      // displayed at 30px height in emails — bigger type stays readable
+      h('div', { display: 'flex', fontSize: 40, fontWeight: 600, color: s.color, whiteSpace: 'nowrap' }, text)),
+    width, 112,
   )
   c.header('Content-Type', 'image/png')
   c.header('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate')

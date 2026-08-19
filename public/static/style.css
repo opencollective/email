@@ -1311,3 +1311,10 @@ button.row.new-thread-row {
 @media (max-width: 900px) {
   .tag-bar { padding-top: 12px; }
 }
+
+/* filter modal: tag ticks as pills; the box itself is hidden, the pill shows it */
+.tag-picks { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 6px; }
+.tag-pick { cursor: pointer; user-select: none; }
+.tag-pick input { position: absolute; opacity: 0; pointer-events: none; }
+.tag-pick.on, .tag-pick:has(input:checked) { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.lbl-hint { text-transform: none; letter-spacing: 0; font-weight: 400; }

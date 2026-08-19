@@ -38,7 +38,16 @@ document.addEventListener('click', (e) => {
   }
   if (e.target.closest('[data-drawer]')) document.body.classList.toggle('drawer-open');
   const dlgBtn = e.target.closest('[data-dialog]');
-  if (dlgBtn) document.querySelector(dlgBtn.getAttribute('data-dialog'))?.showModal();
+  if (dlgBtn) {
+    const dlg = document.querySelector(dlgBtn.getAttribute('data-dialog'));
+    if (dlg) {
+      dlg.showModal();
+      // showModal focuses the first field, which pops the picker on iOS —
+      // park focus on the dialog itself instead
+      dlg.setAttribute('tabindex', '-1');
+      dlg.focus();
+    }
+  }
   // a link that also names a sheet: on a narrow screen open the sheet instead
   // of navigating to the full page; on desktop let the link do its thing
   const sheetLink = e.target.closest('[data-sheet]');
@@ -139,6 +148,40 @@ document.querySelectorAll('[data-tagpop]').forEach((form) => {
     }
   });
 });
+
+// Reading, reported honestly: after 3 seconds on the page, seen up to the
+// last message on screen; on reaching the bottom, the whole thread. A page
+// opened and closed in one second marks nothing.
+(() => {
+  const tl = document.querySelector('[data-seen-url]');
+  if (!tl) return;
+  const url = tl.getAttribute('data-seen-url');
+  let sent = 0, dwelled = false, wantFull = false;
+  const post = (upTo) => {
+    if (!upTo || upTo <= sent) return;
+    sent = upTo;
+    fetch(url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'up_to=' + upTo, keepalive: true }).catch(() => {});
+  };
+  const lastVisibleTs = () => {
+    let ts = 0;
+    document.querySelectorAll('[data-msg][data-ts]').forEach((m) => {
+      if (m.getBoundingClientRect().top < innerHeight) ts = Math.max(ts, +m.dataset.ts || 0);
+    });
+    return ts;
+  };
+  const atBottom = () => innerHeight + scrollY >= document.documentElement.scrollHeight - 60;
+  let fullSent = false;
+  const report = () => {
+    if (!dwelled) return;
+    if (wantFull) { if (fullSent) return; fullSent = true; post(Math.floor(Date.now() / 1000)); }
+    else post(lastVisibleTs());
+  };
+  setTimeout(() => { dwelled = true; if (atBottom()) wantFull = true; report(); }, 3000);
+  addEventListener('scroll', () => { if (atBottom()) { wantFull = true; report(); } }, { passive: true });
+  // leaving the page still records however far the reading got
+  addEventListener('pagehide', report);
+})();
 
 // Folding a message: instant here, remembered on the server. Without JS the
 // same control is a form post that reloads the thread.
@@ -391,7 +434,7 @@ export const StatusChip: FC<{ status: Thread['status'] }> = ({ status }) => {
 export const AssigneeChip: FC<{ thread: Thread; members: Map<number, Member> }> = ({ thread, members }) => {
   const m = thread.assignee_member_id ? members.get(thread.assignee_member_id) : null
   // only warn where it matters: an unanswered thread with no owner
-  if (!m) return thread.status === 'needs_reply' ? <span class="chip unassigned"><Icon name="warn" /> unassigned</span> : null
+  if (!m) return thread.status === 'needs_reply' ? <span class="chip unassigned">unassigned</span> : null
   return (
     <span class="chip assignee">
       <Avatar member={m} /> {m.name || m.email.split('@')[0]}
@@ -451,7 +494,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '69'
+export const ASSET_V = '70'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">

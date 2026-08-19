@@ -6,7 +6,7 @@ import type { Context } from 'hono'
 import { cfg } from '../config.js'
 import {
   activeMembers, addTag, all, allCollectives, attachmentsByMessage, batchAll, createCollective, get, getCollective, messageFoldsQuery, popularTagsQuery, setMessageFold,
-  getCollectiveBySlug, getMember, getMemberIn, getThread, kvGet, kvGetMany, kvSet, lastMessageQuery, memberMap, recordThreadSeen,
+  getCollectiveBySlug, getMember, getMemberIn, getThread, kvGet, kvGetMany, kvSet, lastMessageQuery, memberMap, recordThreadSeenUpTo,
   renameCollectiveSlug,
   markThreadSeen, membershipsByEmail, readsForMember, removeTag, run, setAssignee, setStatus, tagsByThread, threadMessages, threadReads, threadTags,
   type ThreadRead,
@@ -1124,12 +1124,25 @@ app.get('/inbox/:addr', async (c) => {
   const q = (c.req.query('q') || '').trim()
   // the filter modal can narrow to one member's threads, whatever the status
   const assignedTo = Number(c.req.query('a')) || 0
+  // …and to a set of tags. Nothing ticked = every thread; "untagged" is its
+  // own tick so the threads no rule ever filed are findable too.
+  const selTags = (c.req.queries('tags') || []).filter(Boolean)
+  const untagged = c.req.query('untagged') === '1'
 
   let where = `t.collective_id = ? AND (${FILTERS[f].where})`
   const args: (string | number)[] = [collective.id, ...filterArgs(f, member.id)]
   if (assignedTo) {
     where += ' AND t.assignee_member_id = ?'
     args.push(assignedTo)
+  }
+  if (selTags.length || untagged) {
+    const parts: string[] = []
+    if (selTags.length) {
+      parts.push(`EXISTS (SELECT 1 FROM thread_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tt.thread_id = t.id AND tg.name IN (${selTags.map(() => '?').join(',')}))`)
+      args.push(...selTags)
+    }
+    if (untagged) parts.push('NOT EXISTS (SELECT 1 FROM thread_tags tt WHERE tt.thread_id = t.id)')
+    where += ` AND (${parts.join(' OR ')})`
   }
   if (tag) {
     where += ' AND EXISTS (SELECT 1 FROM thread_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tt.thread_id = t.id AND tg.name = ?)'
@@ -1221,7 +1234,7 @@ app.get('/inbox/:addr', async (c) => {
           <input type="hidden" name="sort" value={sort} />
           <input class="search" name="q" value={q} placeholder="Search threads, senders…" />
         </form>
-        <button class={`icon-btn${assignedTo || c.req.query('sort') ? ' filter-on' : ''}`} type="button" data-dialog="#filter-modal" aria-label="Filter and sort" title="Filter and sort">
+        <button class={`icon-btn${assignedTo || selTags.length || untagged || c.req.query('sort') ? ' filter-on' : ''}`} type="button" data-dialog="#filter-modal" aria-label="Filter and sort" title="Filter and sort">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
           </svg>
@@ -1270,6 +1283,21 @@ app.get('/inbox/:addr', async (c) => {
             <option value="closed" selected={f === 'closed'}>Closed</option>
             <option value="spam" selected={f === 'spam'}>Spam</option>
           </select>
+          {tagRows.length ? (<>
+            <label class="lbl">Tags <small class="lbl-hint">none ticked = all</small></label>
+            <div class="tag-picks">
+              {tagRows.map((tr) => (
+                <label class={`chip tag-pick${selTags.includes(tr.name) ? ' on' : ''}`}>
+                  <input type="checkbox" name="tags" value={tr.name} checked={selTags.includes(tr.name)} />
+                  {tr.name}
+                </label>
+              ))}
+              <label class={`chip tag-pick${untagged ? ' on' : ''}`}>
+                <input type="checkbox" name="untagged" value="1" checked={untagged} />
+                untagged
+              </label>
+            </div>
+          </>) : null}
           <label class="lbl">Sort</label>
           <label class="level-card">
             <input type="radio" name="sort" value="oldest" checked={sort === 'oldest'} />
@@ -1703,13 +1731,10 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   // where this member had read up to BEFORE this visit — that boundary is
   // where the page auto-scrolls and where the "new" divider sits
   const prevSeen = (batch[7][0] as { last_seen_at: number } | undefined)?.last_seen_at ?? 0
-  // opening the page is seeing it: recorded in one write, and the viewer is
-  // merged into the reads we already fetched so this response includes them
-  await recordThreadSeen(thread.id, member.id, 'web')
-  const reads: ThreadRead[] = [
-    { thread_id: thread.id, member_id: member.id, first_seen_at: prevSeen || now(), last_seen_at: now(), via: 'web' },
-    ...(batch[8] as ThreadRead[]).filter((r) => r.member_id !== member.id),
-  ]
+  // opening the page is NOT seeing it: the client reports reading — after a
+  // 3-second dwell for what's on screen, and on reaching the bottom for the
+  // whole thread — so a glance in passing doesn't clear anyone's unread
+  const reads = batch[8] as ThreadRead[]
   const rulesAll = batch[9] as Rule[]
   // every other thread this contact is part of — sender OR merely Cc'd (the
   //  Odoo pattern: a quote emailed to the contact with the collective in copy)
@@ -1910,7 +1935,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               // one tap to the one-click assignment picker (sheet on mobile)
               <button class={`chip assign-btn ${assignee ? 'assignee' : 'unassigned'}`} type="button" data-dialog="#assign-modal"
                 title="Change who has this">
-                {assignee ? <><Avatar member={assignee} /> {memberName(assignee)}</> : '⚠ unassigned'} <span class="caret">▾</span>
+                {assignee ? <><Avatar member={assignee} /> {memberName(assignee)}</> : 'unassigned'} <span class="caret">▾</span>
               </button>
             )}
             {member.role === 'reader'
@@ -1943,7 +1968,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
           </div>
           </div>
 
-          <div class="tl">
+          <div class="tl" data-seen-url={`${base}/thread/${thread.id}/seen`}>
             {(() => { return null })()}
             {groups.map((g, gi) => <>
               {prevSeen > 0 && groupTs[gi] > prevSeen && (gi === 0 || groupTs[gi - 1] <= prevSeen) ? (
@@ -1980,7 +2005,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                   )}
                 </div>
               ) : (
-                <div class={`msg ${g.direction}${isFolded(g) ? ' folded' : ''}`} id={`m${g.id}`} data-msg={String(g.id)}>
+                <div class={`msg ${g.direction}${isFolded(g) ? ' folded' : ''}`} id={`m${g.id}`} data-msg={String(g.id)} data-ts={String(g.sent_at || g.created_at)}>
                   <div class="msg-head">
                     <span class="person" data-person>
                       {g.direction === 'outbound' || !g.from_email ? (
@@ -2784,6 +2809,19 @@ app.post('/inbox/:addr/thread/:id/tags', async (c) => {
   // a clicked suggestion wins over whatever was half-typed in the box
   await addTag(t.collective.id, thread.id, String(body.pick || body.name || ''), t.member.id)
   return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}`)
+})
+
+// The reading beacon: fired by the page after a 3s dwell (seen up to the
+// last message on screen) and again on reaching the bottom (seen to now).
+app.post('/inbox/:addr/thread/:id/seen', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const thread = await threadOf(c, t)
+  if (!thread) return c.notFound()
+  const body = await c.req.parseBody()
+  const upTo = Number(body.up_to) || 0
+  if (upTo > 0) await recordThreadSeenUpTo(thread.id, t.member.id, upTo, 'web')
+  return c.body(null, 204)
 })
 
 // Folding a message is a per-member view preference, not a thread change:

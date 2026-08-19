@@ -31,33 +31,59 @@ async function fixture() {
 
 const page = (path: string, sid: string) => app.request(path, { headers: { cookie: `requests_sid=${sid}` } })
 
-test('opening a thread records seen; the inbox stops bolding it until news arrives', async () => {
+test('reading is reported by the client, not assumed from the page load', async () => {
   const fx = await fixture()
 
-  // before anyone opens it: bold for both
-  let inbox = await (await page(`/inbox/${fx.slug}`, fx.alice.sid)).text()
+  // before anyone reads it: bold for both
+  let inbox = await (await page(`/inbox/${fx.slug}?f=all`, fx.alice.sid)).text()
   assert.match(inbox, /class="row unread"/)
 
+  // merely OPENING the page records nothing — a glance in passing is not reading
   await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)
+  assert.equal(await get('SELECT * FROM thread_reads WHERE thread_id = ? AND member_id = ?', [fx.threadId, fx.alice.id]), undefined)
+  inbox = await (await page(`/inbox/${fx.slug}?f=all`, fx.alice.sid)).text()
+  assert.match(inbox, /class="row unread"/, 'still bold after a drive-by page load')
+
+  // the 3-second beacon covers only what was on screen: still news left below
+  const post = (sid: string, upTo: number) => app.request(`/inbox/${fx.slug}/thread/${fx.threadId}/seen`, {
+    method: 'POST', headers: { cookie: `requests_sid=${sid}`, 'content-type': 'application/x-www-form-urlencoded' },
+    body: `up_to=${upTo}`,
+  })
+  assert.equal((await post(fx.alice.sid, now() - 4000)).status, 204)
+  inbox = await (await page(`/inbox/${fx.slug}?f=all`, fx.alice.sid)).text()
+  assert.match(inbox, /class="row unread"/, 'partially read is still unread')
+
+  // reaching the bottom reports "seen to now" — the row unbolds
+  await post(fx.alice.sid, now())
   const read = (await get<any>('SELECT * FROM thread_reads WHERE thread_id = ? AND member_id = ?', [fx.threadId, fx.alice.id]))!
   assert.equal(read.via, 'web')
+  inbox = await (await page(`/inbox/${fx.slug}?f=all`, fx.alice.sid)).text()
+  assert.doesNotMatch(inbox, /class="row unread"/, 'read to the bottom — no longer bold for Alice')
+  const bobInbox = await (await page(`/inbox/${fx.slug}?f=all`, fx.bob.sid)).text()
+  assert.match(bobInbox, /class="row unread"/, 'still bold for Bob, who has not read it')
 
-  inbox = await (await page(`/inbox/${fx.slug}`, fx.alice.sid)).text()
-  assert.doesNotMatch(inbox, /class="row unread"/, 'seen — no longer bold for Alice')
-  const bobInbox = await (await page(`/inbox/${fx.slug}`, fx.bob.sid)).text()
-  assert.match(bobInbox, /class="row unread"/, 'still bold for Bob, who has not looked')
+  // a stale beacon never rolls the read state back
+  await post(fx.alice.sid, now() - 9000)
+  assert.ok((await get<any>('SELECT last_seen_at FROM thread_reads WHERE thread_id = ? AND member_id = ?', [fx.threadId, fx.alice.id]))!.last_seen_at >= read.last_seen_at)
 
   // a new message arrives → bold again for Alice
   await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_email, to_json, body_text, sent_at, created_at)
     VALUES (?, ?, 'inbound', 'out@x.test', '[]', 'one more thing', ?, ?)`, [fx.threadId, `<s2-${uniq()}@x>`, now() + 5, now()])
   await run('UPDATE threads SET last_message_at = ? WHERE id = ?', [now() + 5, fx.threadId])
-  inbox = await (await page(`/inbox/${fx.slug}`, fx.alice.sid)).text()
+  inbox = await (await page(`/inbox/${fx.slug}?f=all`, fx.alice.sid)).text()
   assert.match(inbox, /class="row unread"/, 'news re-bolds it')
 })
 
 test('the thread shows who has seen it: timeline marker and People sidebar', async () => {
   const fx = await fixture()
-  await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)
+  await app.request(`/inbox/${fx.slug}/thread/${fx.threadId}/seen`, {
+    method: 'POST', headers: { cookie: `requests_sid=${fx.alice.sid}`, 'content-type': 'application/x-www-form-urlencoded' },
+    body: `up_to=${now()}`,
+  })
+  await app.request(`/inbox/${fx.slug}/thread/${fx.threadId}/seen`, {
+    method: 'POST', headers: { cookie: `requests_sid=${fx.bob.sid}`, 'content-type': 'application/x-www-form-urlencoded' },
+    body: `up_to=${now()}`,
+  })
 
   const html = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.bob.sid)).text()
   assert.match(html, /class="seen-row"/, 'a WhatsApp-style marker under the last item read')
