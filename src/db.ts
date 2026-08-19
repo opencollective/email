@@ -137,11 +137,14 @@ const SCHEMA = [
     created_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id, sent_at)`,
+  // the inbox's ORDER BY last_message_at; the status index can't serve it
+  `CREATE INDEX IF NOT EXISTS idx_threads_recent ON threads(collective_id, last_message_at)`,
   `CREATE TABLE IF NOT EXISTS attachments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     message_id INTEGER NOT NULL,
     filename TEXT, content_type TEXT, size INTEGER, path TEXT
   )`,
+  `CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id)`,
   `CREATE TABLE IF NOT EXISTS notes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     thread_id INTEGER NOT NULL,
@@ -149,6 +152,7 @@ const SCHEMA = [
     body TEXT NOT NULL,
     created_at INTEGER NOT NULL
   )`,
+  `CREATE INDEX IF NOT EXISTS idx_notes_thread ON notes(thread_id)`,
   `CREATE TABLE IF NOT EXISTS note_mentions (
     note_id INTEGER NOT NULL,
     member_id INTEGER NOT NULL,
@@ -176,6 +180,8 @@ const SCHEMA = [
     tag_id INTEGER NOT NULL,
     PRIMARY KEY (thread_id, tag_id)
   )`,
+  // tag → threads direction (popularity counts); the PK only serves thread → tags
+  `CREATE INDEX IF NOT EXISTS idx_thread_tags_tag ON thread_tags(tag_id)`,
   `CREATE TABLE IF NOT EXISTS credits_ledger (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     collective_id INTEGER NOT NULL,
@@ -416,10 +422,15 @@ export async function markThreadSeen(threadId: number, memberId: number, via: 'w
   const member = await getMember(memberId)
   const thread = await getThread(threadId)
   if (!member || !thread || member.collective_id !== thread.collective_id) return
-  await run(`INSERT INTO thread_reads (thread_id, member_id, first_seen_at, last_seen_at, via) VALUES (?, ?, ?, ?, ?)
+  await recordThreadSeen(threadId, memberId, via)
+}
+
+/** The write half of markThreadSeen, for callers that have already proved the
+ *  member belongs to the thread's collective — one round-trip, not three. */
+export const recordThreadSeen = (threadId: number, memberId: number, via: 'web' | 'email') =>
+  run(`INSERT INTO thread_reads (thread_id, member_id, first_seen_at, last_seen_at, via) VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(thread_id, member_id) DO UPDATE SET last_seen_at = excluded.last_seen_at, via = excluded.via`,
     [threadId, memberId, now(), now(), via])
-}
 
 /** A member's explicit fold/unfold of one message. */
 export const setMessageFold = (memberId: number, messageId: number, collapsed: boolean) =>
@@ -455,6 +466,13 @@ export async function memberMap(collectiveId: number): Promise<Map<number, Membe
 
 export const kvGet = async (k: string): Promise<string | null> =>
   (await get<{ v: string }>('SELECT v FROM kv WHERE k = ?', [k]))?.v ?? null
+
+export async function kvGetMany(keys: string[]): Promise<Map<string, string>> {
+  if (keys.length === 0) return new Map()
+  const rows = await all<{ k: string; v: string }>(
+    `SELECT k, v FROM kv WHERE k IN (${keys.map(() => '?').join(',')})`, keys)
+  return new Map(rows.map((r) => [r.k, r.v]))
+}
 
 export const kvSet = (k: string, v: string) =>
   run('INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v', [k, v])
@@ -595,12 +613,22 @@ export async function tagsByThread(threadIds: number[]): Promise<Map<number, { i
   return map
 }
 
+/** The columns a list row shows, and a snippet instead of the body: pulling
+ *  200 full emails (body_html alone can be 400KB each) to render 110-char
+ *  excerpts was most of the inbox's memory and transfer. */
+export const lastMessageQuery = (threadIds: number[]) => ({
+  sql: `SELECT id, thread_id, direction, from_email, from_name, sent_by_member_id, sent_at, created_at,
+               substr(body_text, 1, 300) AS body_text
+        FROM messages WHERE id IN (
+          SELECT MAX(id) FROM messages WHERE thread_id IN (${threadIds.map(() => '?').join(',')}) GROUP BY thread_id
+        )`,
+  args: threadIds as (string | number)[],
+})
+
 export async function lastMessageByThread(threadIds: number[]): Promise<Map<number, Message>> {
   if (threadIds.length === 0) return new Map()
-  const rows = await all<Message>(
-    `SELECT * FROM messages WHERE id IN (
-       SELECT MAX(id) FROM messages WHERE thread_id IN (${threadIds.map(() => '?').join(',')}) GROUP BY thread_id
-     )`, threadIds)
+  const q = lastMessageQuery(threadIds)
+  const rows = await all<Message>(q.sql, q.args)
   return new Map(rows.map((m) => [m.thread_id, m]))
 }
 

@@ -27,12 +27,17 @@ const fromMatches = (rule: Rule, address: string) =>
 const subjectMatches = (rule: Rule, subject: string) =>
   !rule.match_subject || subject.toLowerCase().includes(rule.match_subject.toLowerCase())
 
-/** First rule matching this sender + subject, if any. */
-export async function matchingRule(collectiveId: number, address: string | null | undefined, subject: string | null | undefined): Promise<Rule | undefined> {
+/** First rule in an already-loaded list matching this sender + subject — pure,
+ *  so a page that fetched the rules for other reasons doesn't query twice. */
+export function findMatchingRule(rules: Rule[], address: string | null | undefined, subject: string | null | undefined): Rule | undefined {
   const a = (address || '').toLowerCase().trim()
   const s = subject || ''
-  const rules = await listRules(collectiveId)
   return rules.find((r) => (r.match_from || r.match_subject) && fromMatches(r, a) && subjectMatches(r, s))
+}
+
+/** First rule matching this sender + subject, if any. */
+export async function matchingRule(collectiveId: number, address: string | null | undefined, subject: string | null | undefined): Promise<Rule | undefined> {
+  return findMatchingRule(await listRules(collectiveId), address, subject)
 }
 
 export const cleanTag = (name: string) =>

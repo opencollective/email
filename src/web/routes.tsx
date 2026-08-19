@@ -6,7 +6,7 @@ import type { Context } from 'hono'
 import { cfg } from '../config.js'
 import {
   activeMembers, addTag, all, allCollectives, attachmentsByMessage, batchAll, createCollective, get, getCollective, messageFoldsQuery, popularTagsQuery, setMessageFold,
-  getCollectiveBySlug, getMember, getMemberIn, getThread, kvGet, kvSet, lastMessageByThread, memberMap,
+  getCollectiveBySlug, getMember, getMemberIn, getThread, kvGet, kvGetMany, kvSet, lastMessageQuery, memberMap, recordThreadSeen,
   renameCollectiveSlug,
   markThreadSeen, membershipsByEmail, readsForMember, removeTag, run, setAssignee, setStatus, tagsByThread, threadMessages, threadReads, threadTags,
   type ThreadRead,
@@ -28,7 +28,7 @@ import {
   issueOcOwnershipCode, ocSlugTaken, slugAvailability, validateClaimSlug,
 } from '../claim.js'
 import { ocCollectiveInfo, ocDescriptionContains, sendOcVerificationCode, type OcStatus } from '../oc.js'
-import { createRule, deleteRule, describeRule, listRules, matchingRule, updateRule } from '../rules.js'
+import { createRule, deleteRule, describeRule, findMatchingRule, listRules, matchingRule, updateRule, type Rule } from '../rules.js'
 import { emailHtmlDocument } from '../sanitize.js'
 import { sendAppEmail } from '../appmail.js'
 import { readBlob, saveBlob } from '../storage.js'
@@ -220,7 +220,11 @@ async function tenant(c: Context<Env>): Promise<{ collective: Collective; member
       403,
     )
   }
-  run('UPDATE members SET last_seen_at = ? WHERE id = ?', [now(), member.id]).catch(() => {})
+  // presence, not telemetry: refreshing it every few minutes is plenty, and
+  // skipping the write on most requests keeps the hot path read-only
+  if (!member.last_seen_at || now() - member.last_seen_at > 300) {
+    run('UPDATE members SET last_seen_at = ? WHERE id = ?', [now(), member.id]).catch(() => {})
+  }
   return { collective, member }
 }
 
@@ -923,6 +927,9 @@ app.get('/attachment/:id', async (c) => {
   return c.body(new Uint8Array(content), 200, {
     'Content-Type': att.content_type,
     'Content-Disposition': `attachment; filename="${att.filename.replace(/"/g, '')}"`,
+    // an attachment never changes under its id — the browser can keep it, so
+    // thumbnails and inline images don't re-download on every thread visit
+    'Cache-Control': 'private, max-age=31536000, immutable',
   })
 })
 
@@ -1157,19 +1164,28 @@ app.get('/inbox/:addr', async (c) => {
   const tagRows = batch1[1 + filterKeys.length] as { name: string; n: number }[]
   const members = new Map((batch1[2 + filterKeys.length] as Member[]).map((m) => [m.id, m]))
 
-  // round-trip 2: per-thread previews for the listed threads
+  // round-trip 2: everything the listed rows show — tags, read state, the
+  // participant stacks, note counts and last-message snippets, all together
   const ids = threads.map((th) => th.id)
   const ph = ids.map(() => '?').join(',')
-  const [lastMsgRows, threadTagRows] = ids.length ? await batchAll([
-    { sql: `SELECT * FROM messages WHERE id IN (SELECT MAX(id) FROM messages WHERE thread_id IN (${ph}) GROUP BY thread_id)`, args: ids },
+  const [threadTagRows, seenRows, partRows, noteRows, lastRows] = ids.length ? await batchAll([
     { sql: `SELECT tt.thread_id, t.id, t.name FROM tags t JOIN thread_tags tt ON tt.tag_id = t.id WHERE tt.thread_id IN (${ph}) ORDER BY t.name`, args: ids },
-  ]) : [[], []]
-  const lastMsgs = new Map((lastMsgRows as Message[]).map((m) => [m.thread_id, m]))
-  void lastMsgs
-  const [seenAt, extras] = await Promise.all([
-    readsForMember(member.id, threads.map((th) => th.id)),
-    threadListExtras(threads.map((th) => th.id)),
-  ])
+    { sql: `SELECT thread_id, last_seen_at FROM thread_reads WHERE member_id = ? AND thread_id IN (${ph})`, args: [member.id, ...ids] },
+    { sql: `SELECT DISTINCT thread_id, sent_by_member_id AS mid FROM messages WHERE thread_id IN (${ph}) AND sent_by_member_id IS NOT NULL
+       UNION SELECT DISTINCT thread_id, member_id AS mid FROM notes WHERE thread_id IN (${ph})`, args: [...ids, ...ids] },
+    { sql: `SELECT thread_id, COUNT(*) AS n FROM notes WHERE thread_id IN (${ph}) GROUP BY thread_id`, args: ids },
+    lastMessageQuery(ids),
+  ]) : [[], [], [], [], []]
+  const seenAt = new Map((seenRows as { thread_id: number; last_seen_at: number }[]).map((r) => [r.thread_id, r.last_seen_at]))
+  const participants = new Map<number, number[]>()
+  for (const r of partRows as { thread_id: number; mid: number }[]) {
+    participants.set(r.thread_id, [...(participants.get(r.thread_id) ?? []), r.mid])
+  }
+  const extras = {
+    lastMsgs: new Map((lastRows as Message[]).map((m) => [m.thread_id, m])),
+    participants,
+    noteCounts: new Map((noteRows as { thread_id: number; n: number }[]).map((r) => [r.thread_id, r.n])),
+  }
   const tagsMap = new Map<number, { id: number; name: string }[]>()
   for (const r of threadTagRows as { thread_id: number; id: number; name: string }[]) {
     if (!tagsMap.has(r.thread_id)) tagsMap.set(r.thread_id, [])
@@ -1358,19 +1374,22 @@ async function threadListExtras(threadIds: number[]): Promise<{
 }> {
   if (threadIds.length === 0) return { lastMsgs: new Map(), participants: new Map(), noteCounts: new Map() }
   const ph = threadIds.map(() => '?').join(',')
-  const [partRows, noteRows] = await Promise.all([
-    all<{ thread_id: number; mid: number }>(
-      `SELECT DISTINCT thread_id, sent_by_member_id AS mid FROM messages WHERE thread_id IN (${ph}) AND sent_by_member_id IS NOT NULL
-       UNION SELECT DISTINCT thread_id, member_id AS mid FROM notes WHERE thread_id IN (${ph})`, [...threadIds, ...threadIds]),
-    all<{ thread_id: number; n: number }>(
-      `SELECT thread_id, COUNT(*) AS n FROM notes WHERE thread_id IN (${ph}) GROUP BY thread_id`, threadIds),
+  // one round-trip for all three: on a remote database the latency is the
+  // number of trips, not the number of statements
+  const [partRows, noteRows, lastRows] = await batchAll([
+    { sql: `SELECT DISTINCT thread_id, sent_by_member_id AS mid FROM messages WHERE thread_id IN (${ph}) AND sent_by_member_id IS NOT NULL
+       UNION SELECT DISTINCT thread_id, member_id AS mid FROM notes WHERE thread_id IN (${ph})`, args: [...threadIds, ...threadIds] },
+    { sql: `SELECT thread_id, COUNT(*) AS n FROM notes WHERE thread_id IN (${ph}) GROUP BY thread_id`, args: threadIds },
+    lastMessageQuery(threadIds),
   ])
   const participants = new Map<number, number[]>()
-  for (const r of partRows) participants.set(r.thread_id, [...(participants.get(r.thread_id) ?? []), r.mid])
+  for (const r of partRows as { thread_id: number; mid: number }[]) {
+    participants.set(r.thread_id, [...(participants.get(r.thread_id) ?? []), r.mid])
+  }
   return {
-    lastMsgs: await lastMessageByThread(threadIds),
+    lastMsgs: new Map((lastRows as Message[]).map((m) => [m.thread_id, m])),
     participants,
-    noteCounts: new Map(noteRows.map((r) => [r.thread_id, r.n])),
+    noteCounts: new Map((noteRows as { thread_id: number; n: number }[]).map((r) => [r.thread_id, r.n])),
   }
 }
 
@@ -1615,8 +1634,10 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
 
-  // one batched round-trip for everything the page needs (except attachments,
-  // which depend on the message ids)
+  // one batched round-trip for everything knowable from the ids alone; a
+  // second, below, for what depends on this batch's results. On a remote
+  // database the page's cost is the number of trips, not of statements.
+  const invQ = thread.counterpart_email ? involves(collective.id, thread.counterpart_email.toLowerCase(), thread.id) : null
   const batch = await batchAll([
     { sql: 'SELECT * FROM messages WHERE thread_id = ? ORDER BY sent_at, id', args: [thread.id] },
     { sql: 'SELECT * FROM notes WHERE thread_id = ? ORDER BY created_at', args: [thread.id] },
@@ -1625,6 +1646,12 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
     { sql: 'SELECT * FROM members WHERE collective_id = ?', args: [collective.id] },
     { sql: 'SELECT nm.note_id, nm.member_id FROM note_mentions nm JOIN notes n ON n.id = nm.note_id WHERE n.thread_id = ?', args: [thread.id] },
     popularTagsQuery(collective.id),
+    { sql: 'SELECT last_seen_at FROM thread_reads WHERE thread_id = ? AND member_id = ?', args: [thread.id, member.id] },
+    { sql: 'SELECT * FROM thread_reads WHERE thread_id = ? ORDER BY last_seen_at DESC', args: [thread.id] },
+    { sql: 'SELECT * FROM rules WHERE collective_id = ? ORDER BY id', args: [collective.id] },
+    invQ
+      ? { sql: `SELECT DISTINCT t.* FROM ${invQ.from} WHERE ${invQ.where} ORDER BY t.last_message_at DESC`, args: invQ.args }
+      : { sql: 'SELECT 1 WHERE 0', args: [] },
   ])
   const msgs = batch[0] as Message[]
   const notes = batch[1] as { id: number; member_id: number; body: string; created_at: number }[]
@@ -1638,36 +1665,59 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   // on this thread — the vocabulary offered under the "+ tag" box
   const tagSugs = (batch[6] as { name: string; n: number }[])
     .filter((s) => !tags.some((tg) => tg.name === s.name))
-  const attsMap = await attachmentsByMessage(msgs.map((m) => m.id))
+  // where this member had read up to BEFORE this visit — that boundary is
+  // where the page auto-scrolls and where the "new" divider sits
+  const prevSeen = (batch[7][0] as { last_seen_at: number } | undefined)?.last_seen_at ?? 0
+  // opening the page is seeing it: recorded in one write, and the viewer is
+  // merged into the reads we already fetched so this response includes them
+  await recordThreadSeen(thread.id, member.id, 'web')
+  const reads: ThreadRead[] = [
+    { thread_id: thread.id, member_id: member.id, first_seen_at: prevSeen || now(), last_seen_at: now(), via: 'web' },
+    ...(batch[8] as ThreadRead[]).filter((r) => r.member_id !== member.id),
+  ]
+  const rulesAll = batch[9] as Rule[]
+  // every other thread this contact is part of — sender OR merely Cc'd (the
+  //  Odoo pattern: a quote emailed to the contact with the collective in copy)
+  const otherAll = invQ ? (batch[10] as Thread[]) : []
+  const otherThreads = otherAll.slice(0, 5)
+  const otherCount = otherAll.length
+
+  // one count per distinct sender, for the card that opens on their name; the
+  // counterpart's count is otherAll — no reason to run that scan twice
+  const senderEmails = [...new Set(msgs
+    .filter((m) => m.direction === 'inbound' && m.from_email)
+    .map((m) => m.from_email!.toLowerCase()))]
+  const countedEmails = senderEmails.filter((e) => e !== thread.counterpart_email?.toLowerCase())
+  const startedAfter = otherAll.filter((o) => (o.first_message_at ?? 0) >= (thread.first_message_at ?? 0))
+
+  // round-trip 2: everything that needed the first batch's results
+  const batchB = await batchAll([
+    { sql: `SELECT * FROM attachments WHERE message_id IN (${msgs.map(() => '?').join(',') || '0'}) ORDER BY id`, args: msgs.map((m) => m.id) },
+    msgs.length ? messageFoldsQuery(member.id, msgs.map((m) => m.id)) : { sql: 'SELECT 1 WHERE 0', args: [] },
+    senderEmails.length
+      ? { sql: `SELECT k, v FROM kv WHERE k IN (${senderEmails.map(() => '?').join(',')})`, args: senderEmails.map((e) => `view:${member.id}:${e}`) }
+      : { sql: 'SELECT 1 WHERE 0', args: [] },
+    startedAfter.length
+      ? { sql: `SELECT thread_id, type, created_at FROM events WHERE thread_id IN (${startedAfter.map(() => '?').join(',')}) AND type IN ('closed', 'reopened')`, args: startedAfter.map((o) => o.id) }
+      : { sql: 'SELECT 1 WHERE 0', args: [] },
+    ...countedEmails.map((e) => threadCountQuery(collective.id, e, thread.id)),
+  ])
+  const attsMap = new Map<number, Attachment[]>()
+  for (const a of batchB[0] as Attachment[]) {
+    if (!attsMap.has(a.message_id)) attsMap.set(a.message_id, [])
+    attsMap.get(a.message_id)!.push(a)
+  }
   // everything ever attached here, oldest first — the sidebar lists it so you
   // don't have to scroll the thread hunting for the contract
   const allAtts = msgs.flatMap((m) => (attsMap.get(m.id) || []).map((a) => ({ a, ts: m.sent_at || m.created_at })))
   const sideImages = allAtts.filter((x) => x.a.content_type.startsWith('image/'))
   const sideFiles = allAtts.filter((x) => !x.a.content_type.startsWith('image/'))
-  // where this member had read up to BEFORE this visit — that boundary is
-  // where the page auto-scrolls and where the "new" divider sits
-  const prevSeen = (await get<{ last_seen_at: number }>(
-    'SELECT last_seen_at FROM thread_reads WHERE thread_id = ? AND member_id = ?', [thread.id, member.id]))?.last_seen_at ?? 0
-  // opening the page is seeing it — recorded before rendering so the sidebar
-  // this response carries already includes the viewer
-  await markThreadSeen(thread.id, member.id, 'web')
-  const reads = await threadReads(thread.id)
-  // every other thread this contact is part of — sender OR merely Cc'd (the
-  //  Odoo pattern: a quote emailed to the contact with the collective in copy)
-  const otherAll = thread.counterpart_email
-    ? await threadsInvolving(collective.id, thread.counterpart_email.toLowerCase(), thread.id) : []
-  const otherThreads = otherAll.slice(0, 5)
-  const otherCount = otherAll.length
   // Folding: a message you have already read is folded away, except the two
   // that carry the conversation — the other party's last word and the last
   // answer. An explicit fold or unfold by this member always wins.
   const folds = new Map<number, boolean>()
-  if (msgs.length) {
-    const rows = await all<{ message_id: number; collapsed: number }>(
-      messageFoldsQuery(member.id, msgs.map((m) => m.id)).sql,
-      messageFoldsQuery(member.id, msgs.map((m) => m.id)).args)
-    for (const r of rows) folds.set(r.message_id, r.collapsed === 1)
-  }
+  for (const r of batchB[1] as { message_id: number; collapsed: number }[]) folds.set(r.message_id, r.collapsed === 1)
+  const sibEventRows = batchB[3] as { thread_id: number; type: string; created_at: number }[]
   const keepOpen = new Set<number>([
     [...msgs].reverse().find((m) => m.direction === 'inbound')?.id ?? 0,
     [...msgs].reverse().find((m) => m.direction === 'outbound' && m.sent_at)?.id ?? 0,
@@ -1680,26 +1730,18 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
     : folds.get(m.id)
       ?? (prevSeen > 0 && (m.sent_at || m.created_at) <= prevSeen && !keepOpen.has(m.id))
 
-  // one count per distinct sender, for the card that opens on their name
-  const senderEmails = [...new Set(msgs
-    .filter((m) => m.direction === 'inbound' && m.from_email)
-    .map((m) => m.from_email!.toLowerCase()))]
   // from-only, assign-only rules: "mail from this address goes to that member"
-  const autoAssignByEmail = new Map<string, number>((await all<{ f: string; a: number }>(
-    `SELECT lower(match_from) AS f, assign_member_id AS a FROM rules
-     WHERE collective_id = ? AND match_from IS NOT NULL AND (match_subject IS NULL OR match_subject = '')
-       AND assign_member_id IS NOT NULL`, [collective.id])).map((r) => [r.f, r.a]))
+  const autoAssignByEmail = new Map<string, number>(rulesAll
+    .filter((r) => r.match_from && !r.match_subject && r.assign_member_id)
+    .map((r) => [r.match_from!.toLowerCase(), r.assign_member_id!]))
   const otherByEmail = new Map<string, number>()
-  if (senderEmails.length) {
-    const rows = await batchAll(senderEmails.map((e) => threadCountQuery(collective.id, e, thread.id)))
-    senderEmails.forEach((e, i) => otherByEmail.set(e, (rows[i][0] as { n: number }).n))
-  }
+  if (thread.counterpart_email) otherByEmail.set(thread.counterpart_email.toLowerCase(), otherCount)
+  countedEmails.forEach((e, i) => otherByEmail.set(e, (batchB[4 + i][0] as { n: number }).n))
   // how this member prefers mail from each sender: real HTML or plain text.
   // No preference → HTML only for rule-filed mail (newsletters), text otherwise.
   const viewPref = new Map<string, string>()
-  for (const e of senderEmails) {
-    const v = await kvGet(`view:${member.id}:${e}`)
-    if (v) viewPref.set(e, v)
+  for (const r of batchB[2] as { k: string; v: string }[]) {
+    viewPref.set(r.k.slice(`view:${member.id}:`.length), r.v)
   }
   const showAsHtml = (m: Message) => {
     if (m.direction !== 'inbound' || !m.body_html || !m.from_email) return false
@@ -1733,7 +1775,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   // reflects the actual From: verified custom domain, else slug@collective.email
   const collectiveAddr = outboundFrom(collective).fromAddress
   // matching rule for this thread (newsletters & co.) — drives HTML display
-  const rule = await matchingRule(collective.id, thread.counterpart_email, thread.subject)
+  const rule = findMatchingRule(rulesAll, thread.counterpart_email, thread.subject)
   // Cc sticks to the thread (everyone keeps being copied) but stays editable
   const threadCc: string[] = JSON.parse(thread.cc_json || '[]')
   const signature = signatureFor(collective, member)
@@ -1741,20 +1783,14 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   // cross-references: sibling threads that started (or closed) after this
   // conversation began — shown inline where they happened, like a linked PR
   const related: TimelineItem[] = []
-  if (otherAll.length) {
-    const startedAfter = otherAll.filter((o) => (o.first_message_at ?? 0) >= (thread.first_message_at ?? 0))
-    for (const o of startedAfter) {
-      related.push({ kind: 'related', ts: o.first_message_at!, threadId: o.id, subject: o.subject || '(no subject)', what: 'started' })
-    }
-    const sibIds = startedAfter.map((o) => o.id)
-    if (sibIds.length) {
-      const sibEvents = await all<{ thread_id: number; type: string; created_at: number }>(
-        `SELECT thread_id, type, created_at FROM events WHERE thread_id IN (${sibIds.map(() => '?').join(',')}) AND type IN ('closed', 'reopened')`, sibIds)
-      const byId = new Map(startedAfter.map((o) => [o.id, o]))
-      for (const e of sibEvents) {
-        const o = byId.get(e.thread_id)!
-        related.push({ kind: 'related', ts: e.created_at, threadId: o.id, subject: o.subject || '(no subject)', what: e.type === 'closed' ? 'closed' : 'reopened' })
-      }
+  for (const o of startedAfter) {
+    related.push({ kind: 'related', ts: o.first_message_at!, threadId: o.id, subject: o.subject || '(no subject)', what: 'started' })
+  }
+  {
+    const byId = new Map(startedAfter.map((o) => [o.id, o]))
+    for (const e of sibEventRows) {
+      const o = byId.get(e.thread_id)!
+      related.push({ kind: 'related', ts: e.created_at, threadId: o.id, subject: o.subject || '(no subject)', what: e.type === 'closed' ? 'closed' : 'reopened' })
     }
   }
 

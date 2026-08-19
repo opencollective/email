@@ -448,6 +448,11 @@ export function eventText(
 /** Pages opt into a client bundle by name — only the thread page pays for the
  *  note editor. `defer` keeps it after the inline SCRIPT, so a draft is already
  *  restored into the textarea by the time the island reads it. */
+/** One version for every static asset reference. With /static cached as
+ *  immutable, this bump is what makes browsers fetch the new css/js — raise it
+ *  whenever style.css or a client bundle changes. */
+export const ASSET_V = '68'
+
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">
     <head>
@@ -457,7 +462,7 @@ export const Page: FC<{ title?: string; flash?: string; bundle?: string; childre
       <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
       <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
       <title>{props.title ? `${props.title} · ` : ''}collective.email</title>
-      <link rel="stylesheet" href="/static/style.css?v=67" />
+      <link rel="stylesheet" href={`/static/style.css?v=${ASSET_V}`} />
       {/* Chromium prerenders links on hover/press → clicking a thread is instant.
           GET routes with side effects (/a one-click actions, downloads) are excluded. */}
       <script
@@ -490,7 +495,7 @@ export const Page: FC<{ title?: string; flash?: string; bundle?: string; childre
       {props.flash ? <div class="flash">{props.flash}</div> : null}
       {props.children}
       <script dangerouslySetInnerHTML={{ __html: TZ_SCRIPT + SCRIPT }} />
-      {props.bundle ? <script defer src={`/static/${props.bundle}?v=1`}></script> : null}
+      {props.bundle ? <script defer src={`/static/${props.bundle}?v=${ASSET_V}`}></script> : null}
     </body>
   </html>
 )
