@@ -15,9 +15,9 @@ import { sendCreditEmail } from './notify.js'
 
 export const CONTRIBUTE_SLUG = 'contribute'
 
-/** Credits are denominated in Collective months (€/$10). A Pro month is ten. */
-export const proMonthCost = (c: Collective) => (c.plan === 'pro' ? 10 : 1)
-export const PRO_MONTH_CREDITS = 10
+/** Credits are denominated in Collective months (€/$10). A Pro month is two. */
+export const proMonthCost = (c: Collective) => (c.plan === 'pro' ? PRO_MONTH_CREDITS : 1)
+export const PRO_MONTH_CREDITS = 2 // Pro repriced 100 → 20 on 2026-08-19
 
 export const creditBalance = async (collectiveId: number): Promise<number> =>
   (await get<{ b: number }>('SELECT COALESCE(SUM(delta), 0) AS b FROM credits_ledger WHERE collective_id = ?', [collectiveId]))!.b

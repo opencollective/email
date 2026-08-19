@@ -523,8 +523,8 @@ export const HomePage: FC<{ joined?: boolean; currency?: 'USD' | 'EUR' }> = ({ j
               </div>
               <div class="plan-card">
                 <h3>Pro</h3>
-                <p class="price">{s}100<small> / month</small></p>
-                <p class="yearly">or {s}1,000 / year — save {s}200</p>
+                <p class="price">{s}20<small> / month</small></p>
+                <p class="yearly">or {s}200 / year — save {s}40</p>
                 <ul>
                   <li><b>Your own domain</b> — hello@yourcollective.org</li>
                   <li>Unlimited contributors & readers</li>

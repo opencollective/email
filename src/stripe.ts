@@ -33,7 +33,7 @@ export const __resetStripeUsable = () => { usable = null }
 
 export const PLAN_PRICING: Record<string, { label: string; monthly: number; yearly: number }> = {
   collective: { label: 'Collective', monthly: 1000, yearly: 10000 },
-  pro: { label: 'Pro', monthly: 10000, yearly: 100000 },
+  pro: { label: 'Pro', monthly: 2000, yearly: 20000 },
   duo: { label: 'Duo', monthly: 1000, yearly: 10000 }, // legacy
 }
 
@@ -55,7 +55,9 @@ async function stripe(path: string, params?: Record<string, string>, method: 'GE
 /** Find (by lookup_key) or create the Stripe price for a plan/cycle/currency.
  *  Products and prices are provisioned lazily — no dashboard setup needed. */
 async function ensurePrice(plan: string, cycle: 'monthly' | 'yearly', currency: 'eur' | 'usd'): Promise<string> {
-  const lookup = `ce2_${plan}_${cycle}_${currency}` // v2: repriced 2026-07
+  // a Stripe price is immutable, so every reprice needs a new generation of
+  // lookup keys — old subscriptions keep their old price, new checkouts get v3
+  const lookup = `ce3_${plan}_${cycle}_${currency}` // v3: Pro 100 → 20 (2026-08)
   const existing = await stripe('/prices', { 'lookup_keys[]': lookup, limit: '1' }, 'GET')
   if (existing.data?.[0]) return existing.data[0].id
 

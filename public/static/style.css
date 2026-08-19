@@ -1304,3 +1304,10 @@ button.row.new-thread-row {
 .next-link { font-size: 14px; font-weight: 600; color: var(--accent); text-decoration: none; }
 .next-link:hover { text-decoration: underline; }
 .next-link .ic { width: 14px; height: 14px; vertical-align: -2px; }
+
+/* filter funnel lights up when a modal filter is active */
+.icon-btn.filter-on { color: var(--accent); border-color: var(--accent); }
+/* phones: air between the header hairline and the pill row */
+@media (max-width: 900px) {
+  .tag-bar { padding-top: 12px; }
+}

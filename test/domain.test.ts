@@ -83,23 +83,23 @@ test('domain page: upsell for collective plan, wizard + full pro path for pro', 
   assert.match(decodeURIComponent(evil.headers.get('location')!), /does not look like a valid address/)
 })
 
-test('credits buy pro months (10 per month); auto-extend charges pro rate', async () => {
+test('credits buy pro months (PRO_MONTH_CREDITS per month); auto-extend charges pro rate', async () => {
   const col = await createCollective(`crd${uniq()}`, 'Cred Co')
   const sid = await adminSid(col.id)
-  await mintCredits(col.id, 12, 'granted', 'admin')
+  await mintCredits(col.id, PRO_MONTH_CREDITS + 1, 'granted', 'admin')
   const res = await post(`/inbox/${col.slug}/domain/credits`, sid, '')
-  assert.match(decodeURIComponent(res.headers.get('location')!), /Welcome to Pro — 1 month \(2 credits left\)/)
+  assert.match(decodeURIComponent(res.headers.get('location')!), /Welcome to Pro — 1 month \(1 credits? left\)/)
   const after = (await get<any>('SELECT * FROM collectives WHERE id = ?', [col.id]))!
   assert.equal(after.plan, 'pro')
-  assert.equal(await creditBalance(col.id), 12 - PRO_MONTH_CREDITS)
+  assert.equal(await creditBalance(col.id), 1)
 
-  // auto-extend: a lapsed pro collective needs 10 credits, not 1
+  // auto-extend: a lapsed pro collective needs the pro rate, not 1 credit
   await run('UPDATE collectives SET trial_ends_at = ? WHERE id = ?', [now() - 3600, col.id])
   await autoExtendTick()
-  assert.equal(await creditBalance(col.id), 2, '2 credits are not enough for a pro month — no burn')
-  await mintCredits(col.id, 8, 'granted', 'admin')
+  assert.equal(await creditBalance(col.id), 1, '1 credit is not enough for a pro month — no burn')
+  await mintCredits(col.id, PRO_MONTH_CREDITS - 1, 'granted', 'admin')
   await autoExtendTick()
-  assert.equal(await creditBalance(col.id), 0, '10 credits bought the pro month')
+  assert.equal(await creditBalance(col.id), 0, 'the pro rate bought the pro month')
   const extended = (await get<any>('SELECT * FROM collectives WHERE id = ?', [col.id]))!
   assert.ok(extended.trial_ends_at > now() + 29 * 86400)
 })

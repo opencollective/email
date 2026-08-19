@@ -135,7 +135,8 @@ test('search finds threads by the people in the conversation, not just the sende
   // and one with no Ruta anywhere
   await fx.thread('bob@example.org', 'Bob', 'Unrelated business')
 
-  const html = await (await page(`/inbox/${fx.slug}?q=Ruta`, fx.sid)).text()
+  // searching across everything: the answered thread is only in f=all
+  const html = await (await page(`/inbox/${fx.slug}?f=all&q=Ruta`, fx.sid)).text()
   assert.match(html, /Quotation for the event spaces/, 'her own thread matches')
   assert.match(html, /Invoice INV-42/, 'the thread that merely emails her matches too')
   assert.doesNotMatch(html, /Unrelated business/)

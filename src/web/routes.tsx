@@ -1103,6 +1103,7 @@ const FILTERS: Record<string, { label: string; where: string }> = {
   needs_reply: { label: 'Needs reply', where: "t.status = 'needs_reply'" },
   mine: { label: 'Mine', where: "t.assignee_member_id = ? AND t.status IN ('needs_reply','answered')" },
   answered: { label: 'Answered', where: "t.status = 'answered'" },
+  unassigned: { label: 'Unassigned', where: "t.assignee_member_id IS NULL AND t.status IN ('needs_reply','answered')" },
   closed: { label: 'Closed', where: "t.status = 'closed'" },
   spam: { label: 'Spam', where: "t.status = 'spam'" },
 }
@@ -1117,12 +1118,19 @@ app.get('/inbox/:addr', async (c) => {
   if (t instanceof Response) return t
   const { collective, member } = t
   const base = `/inbox/${collective.slug}`
-  const f = FILTERS[c.req.query('f') || 'all'] ? (c.req.query('f') || 'all') : 'all'
+  // the inbox opens on what needs attention; everything else is one pill away
+  const f = FILTERS[c.req.query('f') || 'needs_reply'] ? (c.req.query('f') || 'needs_reply') : 'needs_reply'
   const tag = c.req.query('tag') || ''
   const q = (c.req.query('q') || '').trim()
+  // the filter modal can narrow to one member's threads, whatever the status
+  const assignedTo = Number(c.req.query('a')) || 0
 
   let where = `t.collective_id = ? AND (${FILTERS[f].where})`
   const args: (string | number)[] = [collective.id, ...filterArgs(f, member.id)]
+  if (assignedTo) {
+    where += ' AND t.assignee_member_id = ?'
+    args.push(assignedTo)
+  }
   if (tag) {
     where += ' AND EXISTS (SELECT 1 FROM thread_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tt.thread_id = t.id AND tg.name = ?)'
     args.push(tag)
@@ -1213,29 +1221,56 @@ app.get('/inbox/:addr', async (c) => {
           <input type="hidden" name="sort" value={sort} />
           <input class="search" name="q" value={q} placeholder="Search threads, senders…" />
         </form>
-        <button class="icon-btn" type="button" data-dialog="#sort-modal" aria-label="Sorting options" title="Sorting">
+        <button class={`icon-btn${assignedTo || c.req.query('sort') ? ' filter-on' : ''}`} type="button" data-dialog="#filter-modal" aria-label="Filter and sort" title="Filter and sort">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M8 19V5M4 9l4-4 4 4M16 5v14M12 15l4 4 4-4" />
+            <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
           </svg>
         </button>
       </div>
-      {tagRows.length > 0 ? (
-        <div class="tag-bar">
-          <a class={`chip tag-chip ${tag ? '' : 'on'}`} href={`${base}?f=${f}${q ? `&q=${encodeURIComponent(q)}` : ''}`}>All</a>
-          {tagRows.map((tr) => (
-            <a class={`chip tag-chip ${tag === tr.name ? 'on' : ''}`}
-              href={`${base}?f=all&tag=${encodeURIComponent(tr.name)}${q ? `&q=${encodeURIComponent(q)}` : ''}`}>
-              #{tr.name} <span class="count">{tr.n}</span>
-            </a>
-          ))}
-        </div>
-      ) : null}
-      <dialog id="sort-modal" class="modal">
-        <h2>Sort threads</h2>
+      {(() => {
+        const keep = q ? `&q=${encodeURIComponent(q)}` : ''
+        const pill = (key: string, label: string, count?: number) => (
+          <a class={`chip tag-chip ${f === key && !tag && !assignedTo ? 'on' : ''}`} href={`${base}?f=${key}${keep}`}>
+            {label}{count ? <span class="count">{count}</span> : null}
+          </a>
+        )
+        return (
+          <div class="tag-bar">
+            {pill('all', 'All')}
+            {pill('needs_reply', 'Needs reply', counts.needs_reply)}
+            {pill('mine', memberName(member).split(' ')[0], counts.mine)}
+            {pill('unassigned', 'Unassigned', counts.unassigned)}
+            {tagRows.map((tr) => (
+              <a class={`chip tag-chip ${tag === tr.name ? 'on' : ''}`}
+                href={`${base}?f=all&tag=${encodeURIComponent(tr.name)}${keep}`}>
+                {tr.name} <span class="count">{tr.n}</span>
+              </a>
+            ))}
+          </div>
+        )
+      })()}
+      <dialog id="filter-modal" class="modal">
+        <h2>Filter &amp; sort</h2>
         <form method="get" action={base} class="modal-form">
-          <input type="hidden" name="f" value={f} />
           {tag ? <input type="hidden" name="tag" value={tag} /> : null}
           {q ? <input type="hidden" name="q" value={q} /> : null}
+          <label class="lbl" for="ff-a">Assigned to</label>
+          <select class="input" name="a" id="ff-a">
+            <option value="">Anyone</option>
+            {[...members.values()].filter((m) => !m.removed_at)
+              .sort((x, y) => memberName(x).localeCompare(memberName(y)))
+              .map((m) => <option value={String(m.id)} selected={m.id === assignedTo}>{memberName(m)}{m.id === member.id ? ' (me)' : ''}</option>)}
+          </select>
+          <label class="lbl" for="ff-f">Status</label>
+          <select class="input" name="f" id="ff-f">
+            <option value="all" selected={f === 'all'}>All</option>
+            <option value="needs_reply" selected={f === 'needs_reply'}>Needs reply</option>
+            <option value="answered" selected={f === 'answered'}>Answered</option>
+            <option value="unassigned" selected={f === 'unassigned'}>Unassigned</option>
+            <option value="closed" selected={f === 'closed'}>Closed</option>
+            <option value="spam" selected={f === 'spam'}>Spam</option>
+          </select>
+          <label class="lbl">Sort</label>
           <label class="level-card">
             <input type="radio" name="sort" value="oldest" checked={sort === 'oldest'} />
             <span><b>Oldest first</b><small>Longest-waiting conversations on top.</small></span>
@@ -1423,8 +1458,8 @@ const ThreadRow: FC<{
   return (
     <a class={`row${showSender ? '' : ' no-sender'}${p.unread ? ' unread' : ''}`} href={`${p.base}/thread/${th.id}`}>
       <span class={`dot ${th.status === 'needs_reply' ? 'open' : 'done'}`} />
-      <span class="r-d1">{shortDate(th.first_message_at)}</span>
-      <b class="r-d2">{sameDay ? '' : shortDate(th.last_message_at)}</b>
+      <span class="r-d1">{sameDay ? '' : shortDate(th.first_message_at)}</span>
+      <b class="r-d2">{shortDate(th.last_message_at)}</b>
       {showSender ? <span class="r-name">{th.counterpart_name || th.counterpart_email || '—'}</span> : null}
       {showSender ? <span class="r-mail">{th.counterpart_email}</span> : null}
       <span class="r-subj">{th.subject}{(p.tags ?? []).slice(0, 2).map((tg) => <span class="chip">#{tg.name}</span>)}</span>
@@ -3573,7 +3608,7 @@ app.get('/avatar/:id', async (c) => {
 
 const PLAN_INFO: Record<string, { label: string; seats: number | null; price: (s: string) => string }> = {
   collective: { label: 'Collective', seats: 10, price: (s) => `${s}10 per month (or ${s}100/year — save ${s}20)` },
-  pro: { label: 'Pro', seats: null, price: (s) => `${s}100 per month (or ${s}1,000/year — save ${s}200)` },
+  pro: { label: 'Pro', seats: null, price: (s) => `${s}20 per month (or ${s}200/year — save ${s}40)` },
   duo: { label: 'Duo (legacy)', seats: 2, price: (s) => `${s}10 per month` },
 }
 
@@ -3718,15 +3753,15 @@ const DomainUpsell = (p: { base: string; balance: number; currency: 'eur' | 'usd
     <div class="page">
       <h1>Your own domain</h1>
       <SettingsNav base={p.base} on="domain" />
-      <p class="muted">Receive and answer as <b>hello@yourcollective.org</b> — same shared inbox, your identity. This is the Pro plan ({s}100 a month). Like everything here: pay, use a code, spend credits, or contribute.</p>
+      <p class="muted">Receive and answer as <b>hello@yourcollective.org</b> — same shared inbox, your identity. This is the Pro plan ({s}20 a month). Like everything here: pay, use a code, spend credits, or contribute.</p>
 
       {p.canPay ? (
       <section class="card">
         <h2>Subscribe to Pro</h2>
         <form method="post" action={`${p.base}/billing/checkout`} class="btn-row">
           <input type="hidden" name="plan" value="pro" />
-          <button class="btn small" name="cycle" value="monthly" type="submit" data-busy="Opening…">{s}100 / month</button>
-          <button class="btn small ghost" name="cycle" value="yearly" type="submit" data-busy="Opening…">{s}1,000 / year — 2 months free</button>
+          <button class="btn small" name="cycle" value="monthly" type="submit" data-busy="Opening…">{s}20 / month</button>
+          <button class="btn small ghost" name="cycle" value="yearly" type="submit" data-busy="Opening…">{s}200 / year — 2 months free</button>
         </form>
       </section>
       ) : null}

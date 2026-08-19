@@ -45,7 +45,7 @@ export const FaqPage: FC<{ currency?: 'USD' | 'EUR' }> = ({ currency = 'USD' }) 
     </Q>
 
     <Q q="How much does it cost? Is there a free plan?">
-      <p>Every collective starts with a <b>free month</b> — no card needed. After that the Collective plan is {s}10 a month: up to 10 senders, 1,000 replies a month, unlimited readers and commenters. Pro is {s}100 a month with your own domain and room to grow. You can also earn credits by referring collectives that actually use it — one credit is one month of service.</p>
+      <p>Every collective starts with a <b>free month</b> — no card needed. After that the Collective plan is {s}10 a month: up to 10 senders, 1,000 replies a month, unlimited readers and commenters. Pro is {s}20 a month with your own domain and room to grow. You can also earn credits by referring collectives that actually use it — one credit is one month of service.</p>
     </Q>
 
     <Q q="What happens if we stop paying?">
@@ -146,7 +146,7 @@ export const DocsPage: FC<{ currency?: 'USD' | 'EUR' }> = ({ currency = 'USD' })
 
     <section id="billing">
       <h2>Billing &amp; credits</h2>
-      <p>The <b>Collective</b> plan ({s}10 a month) includes 10 sender seats and 1,000 replies a month; readers and commenters are always free and unlimited. <b>Pro</b> ({s}100) adds your own domain and room for big teams.</p>
+      <p>The <b>Collective</b> plan ({s}10 a month) includes 10 sender seats and 1,000 replies a month; readers and commenters are always free and unlimited. <b>Pro</b> ({s}20) adds your own domain and room for big teams.</p>
       <p><b>Credits</b>: 1 credit = 1 month of service, and they're used automatically if a subscription or trial lapses (after which the inbox is read-only for a 30-day grace period). You earn credits by:</p>
       <ul>
         <li><b>Referring collectives</b> — share your referral link from the Billing page. You earn a credit once the collective you brought has been active for a month and is really using its inbox.</li>
@@ -162,7 +162,7 @@ export const DocsPage: FC<{ currency?: 'USD' | 'EUR' }> = ({ currency = 'USD' })
         <li><b>Receiving</b> — pick one: keep your current mailbox and <b>add a forward</b> to your @collective.email address (Gmail sends a confirmation that appears right in your shared inbox; there's a “send a test” button to prove the loop works), or point your domain's <b>MX records</b> at us for a full takeover. Careful with MX: personal mailboxes at the same domain stop working, so use forwarding if anyone has one.</li>
         <li><b>Sending</b> — add the DKIM and SPF records shown on the page wherever your DNS lives (Cloudflare, Gandi, OVH…). Adding them is the ownership proof. Hit “Check verification”; the moment it turns green, replies go out as your domain. Until then they're sent from your @collective.email address with your domain in the display name — honest and deliverable.</li>
       </ol>
-      <p>Your website and everything else on the domain are untouched. Pro can be paid like everything here: subscription, discount code, or credits (a Pro month is 10 credits).</p>
+      <p>Your website and everything else on the domain are untouched. Pro can be paid like everything here: subscription, discount code, or credits (a Pro month is 2 credits).</p>
     </section>
 
     <section id="app">

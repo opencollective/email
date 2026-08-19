@@ -2,7 +2,7 @@ import './setup.js'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { app } from '../src/app.js'
-import { createCollective, get, run } from '../src/db.js'
+import { addTag, createCollective, get, run } from '../src/db.js'
 import { createSession } from '../src/auth.js'
 import { now } from '../src/util.js'
 
@@ -291,4 +291,42 @@ test('the assign modal carries the create-a-rule form; the sidebar no longer doe
   assert.match(modal, /Create a rule for similar messages/)
   const aside = html.slice(html.indexOf('class="thread-side"'))
   assert.doesNotMatch(aside, /Create a rule for similar messages/)
+})
+
+test('the inbox opens on needs-reply; pills reach mine, unassigned, and tags without a #', async () => {
+  const fx = await fixture()
+  // fixture thread needs a reply; add an answered one and an assigned one
+  await run(`INSERT INTO threads (collective_id, subject, status, counterpart_email, first_message_at, last_message_at, last_direction, created_at, updated_at)
+    VALUES (?, 'Old news', 'answered', 'x@y.test', ?, ?, 'inbound', ?, ?)`, [fx.collective.id, now(), now(), now(), now()])
+  await run('UPDATE threads SET assignee_member_id = ? WHERE id = ?', [fx.bob.id, fx.threadId])
+
+  const dflt = await (await page(`/inbox/${fx.slug}`, fx.alice.sid)).text()
+  assert.match(dflt, /Room booking/, 'the open thread is there')
+  assert.doesNotMatch(dflt, /Old news/, 'the answered one waits behind the All pill')
+  assert.match(dflt, /class="chip tag-chip[^>]*>Alice</, 'the mine pill carries the first name')
+  assert.match(dflt, />Unassigned</, 'without a warning sign')
+  assert.doesNotMatch(dflt, /⚠ Unassigned/)
+
+  const alls = await (await page(`/inbox/${fx.slug}?f=all`, fx.alice.sid)).text()
+  assert.match(alls, /Old news/)
+
+  // the modal's per-person filter: Bob's threads only
+  const bobs = await (await page(`/inbox/${fx.slug}?f=all&a=${fx.bob.id}`, fx.alice.sid)).text()
+  assert.match(bobs, /Room booking/)
+  assert.doesNotMatch(bobs, /Old news/)
+
+  // tag pills drop the leading #
+  await addTag(fx.collective.id, fx.threadId, 'venue-rental', null)
+  const tagged = await (await page(`/inbox/${fx.slug}`, fx.alice.sid)).text()
+  const bar = tagged.slice(tagged.indexOf('class="tag-bar"'), tagged.indexOf('<dialog id="filter-modal"'))
+  assert.match(bar, />venue-rental <span/, 'the tag pill is just the name')
+  assert.doesNotMatch(bar, /#venue-rental/)
+})
+
+test('a same-day closed thread still shows its date in the list', async () => {
+  const fx = await fixture()
+  await run("UPDATE threads SET status = 'closed', first_message_at = last_message_at WHERE id = ?", [fx.threadId])
+  const html = await (await page(`/inbox/${fx.slug}?f=closed`, fx.alice.sid)).text()
+  const row = html.slice(html.indexOf('class="row'), html.indexOf('r-name'))
+  assert.match(row, /<b class="r-d2">\d/, 'the bold date every layout shows is never blank')
 })
