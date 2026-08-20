@@ -22,7 +22,7 @@ import { mentionLabels, noteParts } from '../mentions.js'
 import { addNote } from '../notes.js'
 import { backupTick } from '../backup.js'
 import { archiveCollective, messageCount, PURGE_AFTER, purgeArchivedTick, purgeDueAt, restoreCollective } from '../archive.js'
-import { agentInviteUrl, createAgentInvite, openAgentInvites } from '../agents.js'
+import { agentInviteUrl, createAgentInvite, mintAgentToken, openAgentInvites } from '../agents.js'
 import { CONTRIBUTE_SLUG, creditBalance, creditsLedger, creditsTick, fileContribution, mintCredits, referralUrl , PRO_MONTH_CREDITS } from '../credits.js'
 import {
   approveApplication, checkDiscountCode, checkOcOwnershipCode, discountCodeFor, fileApplication, fileProApplication,
@@ -3423,7 +3423,7 @@ app.get('/inbox/:addr/members', async (c) => {
               <div class="member-row">
                 <Avatar member={m} />
                 <span class="m-name">
-                  {memberName(m)}{m.id === member.id ? ' (you)' : ''}
+                  {m.kind === 'agent' ? '🤖 ' : ''}{memberName(m)}{m.id === member.id ? ' (you)' : ''}
                   <small>{m.email}</small>
                 </span>
                 <span class="m-role">
@@ -3432,8 +3432,9 @@ app.get('/inbox/:addr/members', async (c) => {
                       <select name="role" class="role-select" aria-label={`Role of ${memberName(m)}`} title={ROLE_HINTS[m.role]}>
                         <option value="reader" data-hint={ROLE_HINTS.reader} selected={m.role === 'reader'}>Reader</option>
                         <option value="commenter" data-hint={ROLE_HINTS.commenter} selected={m.role === 'commenter'}>Commenter</option>
-                        <option value="member" data-hint={ROLE_HINTS.member} selected={m.role === 'member'}>Sender</option>
-                        <option value="admin" data-hint={ROLE_HINTS.admin} selected={m.role === 'admin'}>Admin</option>
+                        {/* agents top out at contribute in v1 */}
+                        {m.kind === 'agent' ? null : <option value="member" data-hint={ROLE_HINTS.member} selected={m.role === 'member'}>Sender</option>}
+                        {m.kind === 'agent' ? null : <option value="admin" data-hint={ROLE_HINTS.admin} selected={m.role === 'admin'}>Admin</option>}
                       </select>
                     </form>
                   ) : (
@@ -3445,12 +3446,21 @@ app.get('/inbox/:addr/members', async (c) => {
                   <small>{replies(m.id)} replies · seen {relTime(m.last_seen_at)}</small>
                 </span>
                 <span class="m-remove">
-                  {editable ? (
+                  {editable ? (<>
+                    <form method="post" action={`${base}/members/${m.id}/kind`} class="inline">
+                      <input type="hidden" name="kind" value={m.kind === 'agent' ? 'person' : 'agent'} />
+                      <button class="linkish" type="submit" disabled={m.role === 'admin' && adminCount <= 1}
+                        data-confirm={m.kind === 'agent'
+                          ? `Make ${memberName(m)} a person again? Their agent tokens stop working immediately.`
+                          : `Make ${memberName(m)} an agent? They stop receiving email, their role is capped at contribute, and you get an API token to hand to the agent.`}>
+                        {m.kind === 'agent' ? 'Make person' : 'Make agent'}
+                      </button>
+                    </form>
                     <form method="post" action={`${base}/members/${m.id}/remove`} class="inline">
                       <button class="linkish danger" type="submit" disabled={m.role === 'admin' && adminCount <= 1}
                         data-confirm={`Remove ${memberName(m)} from the collective? They lose access immediately; their past replies stay attributed.`}>Remove</button>
                     </form>
-                  ) : null}
+                  </>) : null}
                 </span>
               </div>
               )
@@ -3527,6 +3537,31 @@ app.post('/inbox/:addr/agents/invite', async (c) => {
   const body = await c.req.parseBody()
   await createAgentInvite(t.collective, String(body.role || 'commenter'), String(body.name || ''), t.member.id)
   return c.redirect(back + '?m=' + encodeURIComponent('Invitation created — paste the link to your agent. It works once and expires in 7 days.'))
+})
+
+// An existing member can become an agent (and back). Becoming an agent caps
+// the role at contribute, stops SMTP toward them, and mints a bearer token —
+// shown once in the confirmation, never stored in clear.
+app.post('/inbox/:addr/members/:id/kind', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const back = `/inbox/${t.collective.slug}/members`
+  if (t.member.role !== 'admin') return c.redirect(back)
+  const target = await getMember(Number(c.req.param('id')))
+  if (!target || target.collective_id !== t.collective.id || target.id === t.member.id) return c.redirect(back)
+  const body = await c.req.parseBody()
+  const kind = String(body.kind) === 'agent' ? 'agent' : 'person'
+  if ((target.kind ?? 'person') === kind) return c.redirect(back)
+  if (kind === 'agent') {
+    const role = canSendRole(target.role) ? 'commenter' : target.role
+    await run("UPDATE members SET kind = 'agent', role = ?, notify_level = 'none' WHERE id = ?", [role, target.id])
+    const token = await mintAgentToken(target.id)
+    return c.redirect(back + '?m=' + encodeURIComponent(
+      `${memberName(target)} is an agent now (${role}). Its API token — shown this once, give it to the agent: ${token}`))
+  }
+  await run("UPDATE members SET kind = 'person', notify_level = 'every' WHERE id = ?", [target.id])
+  await run('DELETE FROM agent_tokens WHERE member_id = ?', [target.id])
+  return c.redirect(back + '?m=' + encodeURIComponent(`${memberName(target)} is a person again — their agent tokens were revoked.`))
 })
 
 app.post('/inbox/:addr/members/:id/role', async (c) => {

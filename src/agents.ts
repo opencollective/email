@@ -34,8 +34,10 @@ export async function createAgentInvite(collective: Collective, role: string, na
   return (await get<AgentInvite>('SELECT * FROM agent_invites WHERE token = ?', [token]))!
 }
 
+/** Every collective-scoped URL starts with the slug — /<slug>/join/…,
+ *  /<slug>/api/agent/… — so what a link touches is visible in the link. */
 export const agentInviteUrl = (collective: Collective, invite: AgentInvite) =>
-  `${cfg.baseUrl}/agents/${collective.slug}/join/${invite.token}`
+  `${cfg.baseUrl}/${collective.slug}/join/${invite.token}`
 
 export async function findInvite(slug: string, token: string): Promise<{ collective: Collective; invite: AgentInvite } | null> {
   const collective = await getCollectiveBySlug(slug)
@@ -62,6 +64,13 @@ export async function claimAgentInvite(collective: Collective, invite: AgentInvi
   await run('UPDATE agent_invites SET claimed_at = ?, claimed_member_id = ? WHERE id = ?', [now(), r.lastId, invite.id])
   const member = (await get<Member>('SELECT * FROM members WHERE id = ?', [r.lastId]))!
   return { ok: true, member, token }
+}
+
+/** A fresh bearer token for an existing agent-member (conversion, rotation). */
+export async function mintAgentToken(memberId: number): Promise<string> {
+  const token = `cea_${randomToken(24)}`
+  await run('INSERT INTO agent_tokens (member_id, token_hash, created_at) VALUES (?, ?, ?)', [memberId, hash(token), now()])
+  return token
 }
 
 /** Resolve a bearer token to its agent-member + collective — the agent API's

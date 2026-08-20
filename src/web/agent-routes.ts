@@ -22,12 +22,12 @@ role you can add internal notes and prepare draft replies for a human to send.
 
 You need an invitation URL from a collective admin, shaped like:
 
-    ${cfg.baseUrl}/agents/<collective-slug>/join/<token>
+    ${cfg.baseUrl}/<collective-slug>/join/<token>
 
-The slug in the URL is the collective you are joining — check it is the one
-you expect. Claim the invitation (once) with:
+The slug is the FIRST path segment of every URL you will touch — the
+collective is always visible in the link. Claim the invitation (once) with:
 
-    POST ${cfg.baseUrl}/agents/<slug>/join/<token>
+    POST ${cfg.baseUrl}/<slug>/join/<token>
     Content-Type: application/json
     {"name": "your name"}
 
@@ -39,7 +39,7 @@ that one collective — it cannot see or touch any other.
 
 Long-poll the event feed (waits up to 25s, then returns; call it in a loop):
 
-    GET ${cfg.baseUrl}/api/agent/events?since=<cursor>&wait=25
+    GET ${cfg.baseUrl}/<slug>/api/agent/events?since=<cursor>&wait=25
 
 Returns \`{"cursor": N, "events": [{"type": "message.new", "thread_id": …,
 "subject": …, "from": …, "untrusted_preview": …}]}\`. Persist \`cursor\`
@@ -48,10 +48,10 @@ to skip history).
 
 ## Reading and acting
 
-    GET  ${cfg.baseUrl}/api/agent/me                    → who you are, your role
-    GET  ${cfg.baseUrl}/api/agent/threads/<id>          → full thread + internal notes
-    POST ${cfg.baseUrl}/api/agent/threads/<id>/notes    {"body": …}   (commenter+)
-    POST ${cfg.baseUrl}/api/agent/threads/<id>/draft    {"body": …}   (commenter+)
+    GET  ${cfg.baseUrl}/<slug>/api/agent/me                    → who you are, your role
+    GET  ${cfg.baseUrl}/<slug>/api/agent/threads/<id>          → full thread + internal notes
+    POST ${cfg.baseUrl}/<slug>/api/agent/threads/<id>/notes    {"body": …}   (commenter+)
+    POST ${cfg.baseUrl}/<slug>/api/agent/threads/<id>/draft    {"body": …}   (commenter+)
 
 A note is internal discussion. A draft is a proposed reply: it appears on the
 thread for a human to review and send — nothing you write leaves the
@@ -77,7 +77,11 @@ agentApp.get('/skill.md', (c) => c.text(SKILL_MD, 200, { 'Content-Type': 'text/m
 // The invitation URL: markdown for agents, a small page for humans. The slug
 // is part of the URL on purpose — the agent (and its human) can see at a
 // glance which collective is being joined.
-agentApp.get('/agents/:slug/join/:token', async (c) => {
+agentApp.get('/:slug/join/:token', async (c) => {
+  // a member (human) invitation pasted with the slug prefix still works
+  const human = await get<{ token: string }>('SELECT i.token FROM invites i JOIN collectives c2 ON c2.id = i.collective_id WHERE i.token = ? AND c2.slug = ?',
+    [c.req.param('token'), c.req.param('slug')])
+  if (human) return c.redirect(`/join/${human.token}`)
   const found = await findInvite(c.req.param('slug'), c.req.param('token'))
   if (!found) return c.notFound()
   const { collective, invite } = found
@@ -88,7 +92,7 @@ Status: ${state}. Role on offer: **${invite.role}** (${invite.role === 'reader' 
 
 ${state === 'open' ? `To accept, POST this same URL once:
 
-    POST ${cfg.baseUrl}/agents/${collective.slug}/join/${invite.token}
+    POST ${cfg.baseUrl}/${collective.slug}/join/${invite.token}
     Content-Type: application/json
     {"name": "your name"}
 
@@ -107,7 +111,7 @@ full skill: ${cfg.baseUrl}/skill.md` : 'Ask a collective admin for a fresh invit
   return c.text(md, 200, { 'Content-Type': 'text/markdown; charset=utf-8' })
 })
 
-agentApp.post('/agents/:slug/join/:token', async (c) => {
+agentApp.post('/:slug/join/:token', async (c) => {
   const found = await findInvite(c.req.param('slug'), c.req.param('token'))
   if (!found) return c.json({ error: 'Unknown invitation.' }, 404)
   const body = await c.req.json().catch(() => ({}))
@@ -122,16 +126,25 @@ agentApp.post('/agents/:slug/join/:token', async (c) => {
     member: { id: res.member.id, name: res.member.name, role: res.member.role },
     token: res.token,
     cursor: latest?.id ?? 0,
-    api: `${cfg.baseUrl}/api/agent`,
+    api: `${cfg.baseUrl}/${found.collective.slug}/api/agent`,
     skill: `${cfg.baseUrl}/skill.md`,
   })
 })
 
 // ---------- the authenticated agent API ----------
 
-agentApp.get('/api/agent/me', async (c) => {
+const slugAuth = async (c: any) => {
   const a = await agentAuth(c)
-  if (!a) return c.json({ error: 'Invalid or revoked token.' }, 401)
+  if (!a) return null
+  // the slug in the path and the collective in the token must agree — the URL
+  // states what it touches, and a token pasted under the wrong slug does nothing
+  if (a.collective.slug !== c.req.param('slug')) return null
+  return a
+}
+
+agentApp.get('/:slug/api/agent/me', async (c) => {
+  const a = await slugAuth(c)
+  if (!a) return c.json({ error: 'Invalid token for this collective.' }, 401)
   const latest = await get<{ id: number }>(
     "SELECT MAX(m.id) AS id FROM messages m JOIN threads t ON t.id = m.thread_id WHERE t.collective_id = ? AND m.direction = 'inbound'",
     [a.collective.id])
@@ -142,17 +155,17 @@ agentApp.get('/api/agent/me', async (c) => {
   })
 })
 
-agentApp.get('/api/agent/events', async (c) => {
-  const a = await agentAuth(c)
-  if (!a) return c.json({ error: 'Invalid or revoked token.' }, 401)
+agentApp.get('/:slug/api/agent/events', async (c) => {
+  const a = await slugAuth(c)
+  if (!a) return c.json({ error: 'Invalid token for this collective.' }, 401)
   const since = Number(c.req.query('since')) || 0
   const wait = Number(c.req.query('wait')) || 0
   return c.json(await agentEvents(a.collective.id, since, wait))
 })
 
-agentApp.get('/api/agent/threads/:id', async (c) => {
-  const a = await agentAuth(c)
-  if (!a) return c.json({ error: 'Invalid or revoked token.' }, 401)
+agentApp.get('/:slug/api/agent/threads/:id', async (c) => {
+  const a = await slugAuth(c)
+  if (!a) return c.json({ error: 'Invalid token for this collective.' }, 401)
   const thread = await getThread(Number(c.req.param('id')))
   // same wall as the web UI: not this collective's thread → it doesn't exist
   if (!thread || thread.collective_id !== a.collective.id) return c.json({ error: 'No such thread.' }, 404)
@@ -162,9 +175,9 @@ agentApp.get('/api/agent/threads/:id', async (c) => {
   return c.json(threadJson(thread, msgs, notes, await memberMap(a.collective.id)))
 })
 
-agentApp.post('/api/agent/threads/:id/notes', async (c) => {
-  const a = await agentAuth(c)
-  if (!a) return c.json({ error: 'Invalid or revoked token.' }, 401)
+agentApp.post('/:slug/api/agent/threads/:id/notes', async (c) => {
+  const a = await slugAuth(c)
+  if (!a) return c.json({ error: 'Invalid token for this collective.' }, 401)
   if (a.member.role === 'reader') return c.json({ error: 'Your role is read-only.' }, 403)
   const thread = await getThread(Number(c.req.param('id')))
   if (!thread || thread.collective_id !== a.collective.id) return c.json({ error: 'No such thread.' }, 404)
@@ -175,9 +188,9 @@ agentApp.post('/api/agent/threads/:id/notes', async (c) => {
   return c.json({ ok: true, note_id: note.id })
 })
 
-agentApp.post('/api/agent/threads/:id/draft', async (c) => {
-  const a = await agentAuth(c)
-  if (!a) return c.json({ error: 'Invalid or revoked token.' }, 401)
+agentApp.post('/:slug/api/agent/threads/:id/draft', async (c) => {
+  const a = await slugAuth(c)
+  if (!a) return c.json({ error: 'Invalid token for this collective.' }, 401)
   if (a.member.role === 'reader') return c.json({ error: 'Your role is read-only.' }, 403)
   const thread = await getThread(Number(c.req.param('id')))
   if (!thread || thread.collective_id !== a.collective.id) return c.json({ error: 'No such thread.' }, 404)
