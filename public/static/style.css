@@ -1333,3 +1333,14 @@ button.row.new-thread-row {
 .agent-invite-form { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 6px; }
 .agent-invite-form .input { max-width: 240px; }
 .invite-url { font-size: 11px; overflow-wrap: anywhere; }
+
+/* members page: add-member modal + the active-invitations list */
+.add-member-row { margin-top: 14px; }
+.invite-line { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1.5px solid var(--line-soft); flex-wrap: wrap; }
+.invite-line:last-child { border-bottom: none; }
+.il-what { font-size: 13px; color: var(--muted); flex: none; }
+.invite-line .invite-url { flex: 1; min-width: 200px; overflow-wrap: anywhere; }
+.il-acts { display: flex; align-items: center; gap: 8px; flex: none; }
+.am-result { border: 1.5px dashed var(--line); border-radius: 10px; padding: 10px 12px; margin: 4px 0; }
+.am-result .invite-row { display: flex; align-items: center; gap: 8px; }
+.am-result .invite-url { flex: 1; min-width: 0; overflow-wrap: anywhere; }

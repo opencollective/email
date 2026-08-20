@@ -134,6 +134,43 @@ test('contribute tier: notes and drafts land, sending does not exist, readers st
   assert.equal((await app.request(`/${fx.slug}/api/agent/threads/${fx.thread.id}/reply`, { method: 'POST', headers: { authorization: `Bearer ${a.token}` } })).status, 404)
 })
 
+test('notes and mentions wake the agent too, and its own notes do not echo', async () => {
+  const fx = await fixture()
+  const a = await joinedAgent(fx)
+  const H = { headers: { authorization: `Bearer ${a.token}` } }
+  const start = await json(`/${fx.slug}/api/agent/events?since=999999`, H) // just the note cursor
+  const nc = start.body.note_cursor
+
+  // a teammate mentions Clara in an internal note
+  const { addNote } = await import('../src/notes.js')
+  const admin = (await get<any>('SELECT * FROM members WHERE id = ?', [fx.adminId]))!
+  await addNote(fx.collective, fx.thread, admin, '@Clara can you check availability for the 16th?')
+  const r = await json(`/${fx.slug}/api/agent/events?since=999999&since_note=${nc}`, H)
+  const notes = r.body.events.filter((e: any) => e.type === 'note.new')
+  assert.equal(notes.length, 1)
+  assert.equal(notes[0].mentions_you, true, 'the @mention is flagged')
+  assert.match(notes[0].untrusted_preview, /availability/)
+  assert.equal(notes[0].by, 'Xavier Damman')
+
+  // the agent's own note never comes back at it
+  await json(`/${fx.slug}/api/agent/threads/${fx.thread.id}/notes`, {
+    method: 'POST', headers: { authorization: `Bearer ${a.token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ body: 'On it.' }),
+  })
+  const r2 = await json(`/${fx.slug}/api/agent/events?since=999999&since_note=${r.body.note_cursor}`, H)
+  assert.equal(r2.body.events.length, 0, 'no echo of its own note')
+
+  // a note without a mention still arrives, unflagged
+  await addNote(fx.collective, fx.thread, admin, 'General remark, nobody pinged.')
+  const r3 = await json(`/${fx.slug}/api/agent/events?since=999999&since_note=${r2.body.note_cursor}`, H)
+  assert.equal(r3.body.events[0].mentions_you, false)
+
+  // the join instructions say to start listening
+  const skill = await (await app.request('/skill.md')).text()
+  assert.match(skill, /Start listening/i)
+  assert.match(skill, /since_note/)
+})
+
 test('the event feed hands new inbound mail to the agent, scoped and cursored', async () => {
   const fx = await fixture()
   const a = await joinedAgent(fx)
@@ -227,4 +264,41 @@ test('an admin can turn a person into an agent (and back), with the caps that im
   await post2(`/inbox/${fx.slug}/members/${r.lastId}/kind`, 'kind=person')
   assert.equal((await get<any>('SELECT * FROM members WHERE id = ?', [r.lastId]))!.kind, 'person')
   assert.equal((await json(`/${fx.slug}/api/agent/me`, { headers: { authorization: `Bearer ${token}` } })).status, 401)
+})
+
+test('the add-member endpoint creates either kind of invitation and answers the modal in JSON', async () => {
+  const fx = await fixture()
+  const post2 = (body: string, accept = 'application/json') => app.request(`/inbox/${fx.slug}/members/add`, {
+    method: 'POST', headers: { cookie: `requests_sid=${fx.sid}`, 'content-type': 'application/x-www-form-urlencoded', accept }, body,
+  })
+  const agent = await (await post2('type=agent&role=commenter')).json() as any
+  assert.match(agent.url, new RegExp(`/${fx.slug}/join/`), 'agent link carries the slug')
+  assert.match(agent.note, /once/)
+  const person = await (await post2('type=person&role=member')).json() as any
+  assert.match(person.url, /\/join\//)
+  assert.doesNotMatch(person.url, new RegExp(`/${fx.slug}/join/`), 'person link is the classic reusable one')
+  // no-JS fallback still lands on the page with the URL in the flash
+  const plain = await post2('type=agent&role=reader', 'text/html')
+  assert.equal(plain.status, 302)
+  assert.match(decodeURIComponent(plain.headers.get('location')!), /Invitation created: http/)
+  // non-admins get nothing
+  const outsider = await fixture()
+  const denied = await app.request(`/inbox/${fx.slug}/members/add`, {
+    method: 'POST', headers: { cookie: `requests_sid=${outsider.sid}`, 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
+    body: 'type=agent&role=commenter',
+  })
+  assert.notEqual(denied.status, 200)
+})
+
+test('the members page leads with the list; the inbox menu lost its sub-filters', async () => {
+  const fx = await fixture()
+  const html = await (await app.request(`/inbox/${fx.slug}/members`, { headers: { cookie: `requests_sid=${fx.sid}` } })).text()
+  const page = html.slice(html.indexOf('<main'))
+  assert.ok(page.indexOf('Members (') < page.indexOf('Add a member'), 'list first, button after')
+  assert.match(page, /id="add-member-modal"/)
+  assert.doesNotMatch(page, /Invite someone/, 'the old section is gone')
+
+  const inbox = await (await app.request(`/inbox/${fx.slug}`, { headers: { cookie: `requests_sid=${fx.sid}` } })).text()
+  assert.doesNotMatch(inbox, /class="sub-nav"/, 'filters live in the pill bar now')
+  assert.match(inbox, /class="tag-bar"/)
 })

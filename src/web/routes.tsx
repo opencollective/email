@@ -1214,20 +1214,9 @@ app.get('/inbox/:addr', async (c) => {
     tagsMap.get(r.thread_id)!.push({ id: r.id, name: r.name })
   }
 
-  // the inbox's own filters — nested under Inbox in the menu
-  const sidebar = (
-    <div class="sub-nav">
-      {Object.entries(FILTERS).filter(([k]) => k !== 'all' && (k !== 'spam' || counts.spam > 0)).map(([key, def]) => (
-        <a class={`nav-item sub-item ${f === key && !tag ? 'active' : ''}`} href={`${base}?f=${key}`}>
-          {def.label} <span class="count">{counts[key]}</span>
-        </a>
-      ))}
-    </div>
-  )
-
   return c.html(
-    <Shell member={member} collective={collective} active="inbox" flash={c.req.query('m')} sidebar={sidebar}
-      inboxCount={counts.all} inboxOn={f === 'all' && !tag}>
+    <Shell member={member} collective={collective} active="inbox" flash={c.req.query('m')}
+      inboxCount={counts.all} inboxOn={!tag}>
       <div class="topbar">
         <form method="get" action={base} class="search-form">
           <input type="hidden" name="f" value={f} />
@@ -3379,42 +3368,6 @@ app.get('/inbox/:addr/members', async (c) => {
         <p class="muted">Manage the members of the <b>{collective.name}</b> collective and define who should be able to open this mailbox, add internal notes and reply as the collective.</p>
 
         <section class="card">
-          <h2>Invite someone</h2>
-          {inviteUrl ? (
-            <>
-              <p class="muted">Whoever opens this link joins as {/^[aeiou]/i.test(ROLE_LABELS[(invite!.role || 'reader') as Member['role']]) ? 'an' : 'a'} <b>{ROLE_LABELS[(invite!.role || 'reader') as Member['role']]}</b> — they pick their own email and notification level. Share it anywhere in your community.</p>
-              <div class="invite-row">
-                <code class="invite-url">{inviteUrl}</code>
-                <button class="btn small" type="button" data-copy={inviteUrl}>Copy link</button>
-              </div>
-              <p class="fineprint">Expires in {inviteHoursLeft}h.
-                {isAdmin ? ' Generating a new link deactivates this one.' : ''}
-              </p>
-            </>
-          ) : (
-            <p class="muted">No active invite link.{isAdmin ? '' : ' Ask an admin to generate one.'}</p>
-          )}
-          {isAdmin ? (
-            <form method="post" action={`${base}/members/invite`}>
-              <div class="btn-row invite-form">
-                <select name="role" class="role-select" aria-label="Role for people joining with this link">
-                  <option value="reader" data-hint={ROLE_HINTS.reader}>Reader</option>
-                  <option value="commenter" data-hint={ROLE_HINTS.commenter}>Commenter</option>
-                  <option value="member" data-hint={ROLE_HINTS.member}>Sender</option>
-                </select>
-                <button class="btn small" type="submit">{invite ? '↻ New invite link' : '+ Create invite link'}</button>
-              </div>
-              <p class="fineprint role-hint">{ROLE_HINTS.reader}</p>
-            </form>
-          ) : null}
-          {isAdmin && invite ? (
-            <form method="post" action={`${base}/members/invite/revoke`} class="btn-row">
-              <button class="btn small ghost" type="submit" data-confirm="Revoke the current invite link? Anyone holding it won't be able to join.">Revoke current link</button>
-            </form>
-          ) : null}
-        </section>
-
-        <section class="card">
           <h2>Members ({members.length})</h2>
           <div class="member-table">
             {members.map((m) => {
@@ -3466,34 +3419,107 @@ app.get('/inbox/:addr/members', async (c) => {
               )
             })}
           </div>
+          {isAdmin ? (
+            <div class="btn-row add-member-row">
+              <button class="btn" type="button" data-dialog="#add-member-modal">+ Add a member</button>
+            </div>
+          ) : null}
         </section>
 
-        {isAdmin ? (
-          <section class="m-block">
-            <h2>Agents</h2>
-            <p class="muted">An agent joins like a member — through an invitation link — and gets a scoped token for this collective only.
-              Agents can read threads, leave internal notes and prepare draft replies for you to send. They can never send email themselves.</p>
+        {isAdmin && (inviteUrl || agentInvites.length > 0) ? (
+          <section class="card">
+            <h2>Active invitations</h2>
+            {inviteUrl ? (
+              <div class="invite-line">
+                <span class="il-what">Person · {ROLE_LABELS[(invite!.role || 'reader') as Member['role']]} · reusable, {inviteHoursLeft}h left</span>
+                <code class="invite-url">{inviteUrl}</code>
+                <span class="il-acts">
+                  <button class="icon-btn" type="button" data-copy={inviteUrl} title="Copy link" aria-label="Copy link"><Icon name="copy" /></button>
+                  <form method="post" action={`${base}/members/invite/revoke`} class="inline">
+                    <button class="linkish danger" type="submit" data-confirm="Revoke this invite link? Anyone holding it won't be able to join.">revoke</button>
+                  </form>
+                </span>
+              </div>
+            ) : null}
             {agentInvites.map((ai) => (
-              <p class="fineprint agent-invite">
-                Open invitation{ai.name ? <> for <b>{ai.name}</b></> : null} ({ai.role}) — paste this to the agent:{' '}
+              <div class="invite-line">
+                <span class="il-what">Agent{ai.name ? <> · <b>{ai.name}</b></> : null} · {ai.role} · one use</span>
                 <code class="invite-url">{agentInviteUrl(collective, ai)}</code>
-                <button class="icon-btn" type="button" data-copy={agentInviteUrl(collective, ai)} title="Copy invitation" aria-label="Copy invitation"><Icon name="copy" /></button>
-              </p>
+                <span class="il-acts">
+                  <button class="icon-btn" type="button" data-copy={agentInviteUrl(collective, ai)} title="Copy link" aria-label="Copy link"><Icon name="copy" /></button>
+                </span>
+              </div>
             ))}
-            <form method="post" action={`${base}/agents/invite`} class="agent-invite-form">
-              <input class="input small" name="name" placeholder="Agent name (e.g. Clara)" />
-              <select class="input small" name="role">
-                <option value="commenter" selected>Can contribute — notes & drafts</option>
-                <option value="reader">Read-only</option>
-              </select>
-              <button class="btn small" type="submit">Create invitation link</button>
-            </form>
-            <p class="fineprint">The agent reads <a href="/skill.md">{cfg.baseUrl}/skill.md</a> to learn the ropes; the invitation link carries the rest.</p>
           </section>
+        ) : null}
+
+        {isAdmin ? (
+          <dialog id="add-member-modal" class="modal sheet">
+            <h2>Add a member</h2>
+            <form class="modal-form" data-add-member action={`${base}/members/add`} method="post">
+              <label class="lbl" for="am-type">Type</label>
+              <select class="input" name="type" id="am-type">
+                <option value="person">Person — joins with their own email</option>
+                <option value="agent">Agent — an AI teammate on a scoped token</option>
+              </select>
+              <label class="lbl" for="am-role">Role</label>
+              <select class="input" name="role" id="am-role">
+                <option value="reader" data-hint={ROLE_HINTS.reader}>Reader</option>
+                <option value="commenter" data-hint={ROLE_HINTS.commenter} selected>Commenter</option>
+                <option value="member" data-hint={ROLE_HINTS.member} data-person-only>Sender</option>
+              </select>
+              <p class="fineprint" data-am-hint>{ROLE_HINTS.commenter}</p>
+              <div class="btn-row">
+                <button class="btn" type="submit" data-busy="Creating…">Create invitation link</button>
+              </div>
+              {/* the freshly created link lands here; changing type or role clears
+                  it — the URL shown always matches what the selects say */}
+              <div class="am-result" data-am-result hidden>
+                <div class="invite-row">
+                  <code class="invite-url" data-am-url></code>
+                  <button class="icon-btn" type="button" data-am-copy title="Copy link" aria-label="Copy link"><Icon name="copy" /></button>
+                </div>
+                <p class="fineprint" data-am-note></p>
+              </div>
+              <div class="btn-row">
+                <button class="btn ghost" type="button" data-close>Close</button>
+              </div>
+            </form>
+          </dialog>
         ) : null}
       </div>
     </Shell>,
   )
+})
+
+// One entry point for adding anyone: person invitations (reusable link, the
+// invitee brings their own email) and agent invitations (one-time, scoped
+// token on claim). Answers JSON to the modal, a redirect to plain forms.
+app.post('/inbox/:addr/members/add', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const back = `/inbox/${t.collective.slug}/members`
+  if (t.member.role !== 'admin') return c.redirect(back)
+  const body = await c.req.parseBody()
+  const type = String(body.type) === 'agent' ? 'agent' : 'person'
+  const wantsJson = (c.req.header('accept') || '').includes('application/json')
+  let url: string, note: string
+  if (type === 'agent') {
+    const role = String(body.role) === 'reader' ? 'reader' : 'commenter'
+    const inv = await createAgentInvite(t.collective, role, String(body.name || ''), t.member.id)
+    url = agentInviteUrl(t.collective, inv)
+    note = 'Paste this to the agent. It works once and expires in 7 days.'
+  } else {
+    const role = ['reader', 'commenter', 'member'].includes(String(body.role)) ? String(body.role) : 'reader'
+    await run('UPDATE invites SET revoked_at = ? WHERE collective_id = ? AND revoked_at IS NULL', [now(), t.collective.id])
+    const token = randomToken(18)
+    await run('INSERT INTO invites (collective_id, token, role, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [t.collective.id, token, role, t.member.id, now(), now() + cfg.inviteHours * 3600])
+    url = `${cfg.baseUrl}/join/${token}`
+    note = `Share it with anyone who should join as ${ROLE_LABELS[role as Member['role']]} — valid ${cfg.inviteHours}h, replaces any earlier person link.`
+  }
+  if (wantsJson) return c.json({ url, note })
+  return c.redirect(back + '?m=' + encodeURIComponent(`Invitation created: ${url}`))
 })
 
 app.post('/inbox/:addr/members/invite', async (c) => {

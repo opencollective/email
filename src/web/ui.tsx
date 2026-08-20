@@ -149,6 +149,60 @@ document.querySelectorAll('[data-tagpop]').forEach((form) => {
   });
 });
 
+// Add-a-member modal: create an invitation without leaving the page. The
+// shown URL always matches the selects — changing type or role clears it.
+(() => {
+  const form = document.querySelector('[data-add-member]');
+  if (!form) return;
+  const type = form.querySelector('[name=type]');
+  const role = form.querySelector('[name=role]');
+  const hint = form.querySelector('[data-am-hint]');
+  const result = form.querySelector('[data-am-result]');
+  const urlEl = form.querySelector('[data-am-url]');
+  const noteEl = form.querySelector('[data-am-note]');
+  const copyBtn = form.querySelector('[data-am-copy]');
+  const sync = () => {
+    // agents top out at contribute — sender is a person-only role
+    form.querySelectorAll('[data-person-only]').forEach((o) => {
+      o.hidden = type.value === 'agent';
+      if (o.hidden && o.selected) role.value = 'commenter';
+    });
+    const opt = role.options[role.selectedIndex];
+    if (hint) hint.textContent = (opt && opt.getAttribute('data-hint')) || '';
+    result.hidden = true; // a new choice needs a new link
+  };
+  type.addEventListener('change', sync);
+  role.addEventListener('change', sync);
+  sync();
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    fetch(form.getAttribute('action'), {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'type=' + encodeURIComponent(type.value) + '&role=' + encodeURIComponent(role.value),
+    }).then((r) => r.json()).then((d) => {
+      if (d.url) {
+        urlEl.textContent = d.url;
+        noteEl.textContent = d.note || '';
+        result.hidden = false;
+      }
+    }).catch(() => {}).then(() => {
+      // this form lives on: release the global submit-once guard and its button
+      delete form.dataset.sent;
+      const btn = form.querySelector('button[type=submit]');
+      if (btn) { btn.disabled = false; btn.classList.remove('busy'); if (btn.dataset.label) btn.textContent = btn.dataset.label; }
+    });
+  });
+  if (copyBtn) copyBtn.addEventListener('click', () => {
+    if (navigator.clipboard && urlEl.textContent) {
+      navigator.clipboard.writeText(urlEl.textContent).then(() => {
+        copyBtn.classList.add('copied');
+        setTimeout(() => copyBtn.classList.remove('copied'), 1200);
+      }, () => {});
+    }
+  });
+})();
+
 // The hamburger only morphs when its state actually changed since the last
 // page — reloading the same kind of page must not replay the animation.
 (() => {
@@ -562,7 +616,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '72'
+export const ASSET_V = '73'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">
