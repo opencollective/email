@@ -43,7 +43,7 @@ Long-poll the event feed (waits up to 25s, then returns; call it in a loop):
 
 Returns \`{"cursor": N, "events": [{"type": "message.new", "thread_id": …,
 "subject": …, "from": …, "untrusted_preview": …}]}\`. Persist \`cursor\`
-between calls; start with \`since=0\` (or the cursor from \`GET /api/agent/me\`
+between calls; start with \`since=0\` (or the cursor from \`GET /<slug>/api/agent/me\`
 to skip history).
 
 ## Reading and acting
