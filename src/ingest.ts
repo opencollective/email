@@ -3,6 +3,7 @@ import { cfg } from './config.js'
 import {
   activeMembers, addEvent, addTag, all, get, getCollective, getMember, getMemberIn, getThread, run, setAssignee, setStatus, storeAttachment,
   suggestedAssigneeFor, type Collective, type Member, type Message, type Thread,
+  feedAgents,
 } from './db.js'
 import { htmlToText, normalizeSubject, now, randomToken, stripQuotedReply } from './util.js'
 import { matchingRule, type Rule } from './rules.js'
@@ -247,6 +248,8 @@ export async function ingestInbound(
   }
   if (thread.status !== 'spam') {
     await setStatus(thread.id, isForwardTest || answer ? 'answered' : rule?.close ? 'closed' : 'needs_reply', member?.id ?? null, true)
+    // wake the collective's agents (inbound only — their own event feed)
+    if (!answer) await feedAgents(collective.id, 'message.new', thread.id, messageDbId)
   }
   if (rule?.tag) await addTag(collective.id, thread.id, rule.tag, null, true)
   if (rule?.assign_member_id && !thread.assignee_member_id) {

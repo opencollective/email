@@ -134,41 +134,47 @@ test('contribute tier: notes and drafts land, sending does not exist, readers st
   assert.equal((await app.request(`/${fx.slug}/api/agent/threads/${fx.thread.id}/reply`, { method: 'POST', headers: { authorization: `Bearer ${a.token}` } })).status, 404)
 })
 
-test('notes and mentions wake the agent too, and its own notes do not echo', async () => {
+test('one cursor, one feed: mail, notes and mentions in order — never the agent\'s own echo', async () => {
   const fx = await fixture()
   const a = await joinedAgent(fx)
   const H = { headers: { authorization: `Bearer ${a.token}` } }
-  const start = await json(`/${fx.slug}/api/agent/events?since=999999`, H) // just the note cursor
-  const nc = start.body.note_cursor
+  let cursor = (await json(`/${fx.slug}/api/agent/me`, H)).body.cursor
 
   // a teammate mentions Clara in an internal note
   const { addNote } = await import('../src/notes.js')
   const admin = (await get<any>('SELECT * FROM members WHERE id = ?', [fx.adminId]))!
   await addNote(fx.collective, fx.thread, admin, '@Clara can you check availability for the 16th?')
-  const r = await json(`/${fx.slug}/api/agent/events?since=999999&since_note=${nc}`, H)
-  const notes = r.body.events.filter((e: any) => e.type === 'note.new')
-  assert.equal(notes.length, 1)
-  assert.equal(notes[0].mentions_you, true, 'the @mention is flagged')
-  assert.match(notes[0].untrusted_preview, /availability/)
-  assert.equal(notes[0].by, 'Xavier Damman')
+  const r = await json(`/${fx.slug}/api/agent/events?since=${cursor}`, H)
+  assert.equal(r.body.events.length, 1)
+  assert.equal(r.body.events[0].type, 'note.new')
+  assert.equal(r.body.events[0].mentions_you, true, 'the @mention is flagged')
+  assert.match(r.body.events[0].untrusted_preview, /availability/)
+  assert.equal(r.body.events[0].by, 'Xavier Damman')
+  cursor = r.body.cursor
 
-  // the agent's own note never comes back at it
+  // the agent's own note advances the cursor but never comes back at it
   await json(`/${fx.slug}/api/agent/threads/${fx.thread.id}/notes`, {
     method: 'POST', headers: { authorization: `Bearer ${a.token}`, 'content-type': 'application/json' },
     body: JSON.stringify({ body: 'On it.' }),
   })
-  const r2 = await json(`/${fx.slug}/api/agent/events?since=999999&since_note=${r.body.note_cursor}`, H)
+  const r2 = await json(`/${fx.slug}/api/agent/events?since=${cursor}`, H)
   assert.equal(r2.body.events.length, 0, 'no echo of its own note')
+  assert.ok(r2.body.cursor > cursor, 'the cursor still moves past it')
+  cursor = r2.body.cursor
 
-  // a note without a mention still arrives, unflagged
+  // note then mail: both arrive through the same cursor, in feed order
   await addNote(fx.collective, fx.thread, admin, 'General remark, nobody pinged.')
-  const r3 = await json(`/${fx.slug}/api/agent/events?since=999999&since_note=${r2.body.note_cursor}`, H)
+  await ingestInbound(fx.collective, await simpleParser(
+    `Message-ID: <mix-${uniq()}@x>\nFrom: Ruta <ruta@out.test>\nTo: ${fx.slug}@collective.email\nSubject: Mixed in\n\nHello`))
+  const r3 = await json(`/${fx.slug}/api/agent/events?since=${cursor}`, H)
+  assert.deepEqual(r3.body.events.map((e: any) => e.type), ['note.new', 'message.new'])
   assert.equal(r3.body.events[0].mentions_you, false)
 
-  // the join instructions say to start listening
+  // the join instructions say to start listening, with the one cursor
   const skill = await (await app.request('/skill.md')).text()
   assert.match(skill, /Start listening/i)
-  assert.match(skill, /since_note/)
+  assert.match(skill, /since=<cursor>/)
+  assert.doesNotMatch(skill, /since_note/)
 })
 
 test('the event feed hands new inbound mail to the agent, scoped and cursored', async () => {

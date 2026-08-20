@@ -1,4 +1,4 @@
-import { activeMembers, run, type Collective, type Member, type Thread } from './db.js'
+import { activeMembers, run, type Collective, type Member, type Thread, feedAgents } from './db.js'
 import { mentionedMembers } from './mentions.js'
 import { notifyMention } from './notify.js'
 import { now } from './util.js'
@@ -25,6 +25,8 @@ export async function addNote(
     await run('INSERT OR IGNORE INTO note_mentions (note_id, member_id, created_at) VALUES (?, ?, ?)',
       [lastId, m.id, now()])
   }
+  // fed AFTER the mentions exist, so a poll can never see the note without them
+  await feedAgents(collective.id, 'note.new', thread.id, lastId)
 
   let notified = true
   if (mentioned.length) {

@@ -116,55 +116,48 @@ export function threadJson(thread: Thread, msgs: { id: number; direction: string
   }
 }
 
-/** Everything an agent should wake up for since the cursors: new inbound
- *  mail, new internal notes (never its own), and whether a note mentions it.
- *  Long-poll: the caller waits up to `waitSeconds` for something to happen. */
-export async function agentEvents(collectiveId: number, memberId: number, sinceMsg: number, sinceNote: number, waitSeconds: number) {
+/** Everything an agent should wake up for, in one ordered feed with ONE
+ *  cursor. Long-poll: the caller waits up to `waitSeconds` for something to
+ *  happen. The agent's own notes are skipped — no agent needs an echo. */
+export async function agentEvents(collectiveId: number, memberId: number, since: number, waitSeconds: number) {
   const deadline = Date.now() + Math.min(Math.max(waitSeconds, 0), 25) * 1000
   for (;;) {
-    const [msgs, notes] = await Promise.all([
-      all<{ id: number; thread_id: number; subject: string; from_name: string | null; from_email: string | null; at: number; body_text: string | null }>(
-        `SELECT m.id, m.thread_id, t.subject, m.from_name, m.from_email, COALESCE(m.sent_at, m.created_at) AS at,
-                substr(m.body_text, 1, 500) AS body_text
-         FROM messages m JOIN threads t ON t.id = m.thread_id
-         WHERE t.collective_id = ? AND t.status != 'spam' AND m.direction = 'inbound' AND m.id > ?
-         ORDER BY m.id LIMIT 50`, [collectiveId, sinceMsg]),
-      all<{ id: number; thread_id: number; subject: string; by: string; at: number; body: string; mentioned: number }>(
-        `SELECT n.id, n.thread_id, t.subject, mem.name AS by, n.created_at AS at, substr(n.body, 1, 500) AS body,
-                EXISTS (SELECT 1 FROM note_mentions nm WHERE nm.note_id = n.id AND nm.member_id = ?) AS mentioned
-         FROM notes n JOIN threads t ON t.id = n.thread_id JOIN members mem ON mem.id = n.member_id
-         WHERE t.collective_id = ? AND n.id > ? AND n.member_id != ?
-         ORDER BY n.id LIMIT 50`, [memberId, collectiveId, sinceNote, memberId]),
-    ])
-    if (msgs.length || notes.length || Date.now() >= deadline) {
-      const events = [
-        ...msgs.map((r) => ({
-          type: 'message.new' as const,
-          thread_id: r.thread_id,
-          message_id: r.id,
-          subject: r.subject,
-          from: { name: r.from_name, email: r.from_email },
-          at: r.at,
-          untrusted_preview: r.body_text || '',
-        })),
-        ...notes.map((n) => ({
-          type: 'note.new' as const,
-          thread_id: n.thread_id,
-          note_id: n.id,
-          subject: n.subject,
-          by: n.by,
-          at: n.at,
-          // written by a teammate, not a stranger — but a note can quote a
-          // stranger, so the caution label stays
-          untrusted_preview: n.body,
-          mentions_you: !!n.mentioned,
-        })),
-      ].sort((a, b) => a.at - b.at)
-      return {
-        cursor: msgs.length ? msgs[msgs.length - 1].id : sinceMsg,
-        note_cursor: notes.length ? notes[notes.length - 1].id : sinceNote,
-        events,
-      }
+    const rows = await all<{
+      id: number; type: string; thread_id: number; subject: string
+      from_name: string | null; from_email: string | null; by: string | null
+      at: number; preview: string | null; mentioned: number; note_member: number | null
+    }>(
+      `SELECT f.id, f.type, f.thread_id, t.subject,
+              m.from_name, m.from_email,
+              mem.name AS by, n.member_id AS note_member,
+              COALESCE(f.created_at, 0) AS at,
+              substr(COALESCE(m.body_text, n.body), 1, 500) AS preview,
+              EXISTS (SELECT 1 FROM note_mentions nm WHERE nm.note_id = n.id AND nm.member_id = ?) AS mentioned
+       FROM agent_feed f
+       JOIN threads t ON t.id = f.thread_id
+       LEFT JOIN messages m ON f.type = 'message.new' AND m.id = f.ref_id
+       LEFT JOIN notes n ON f.type = 'note.new' AND n.id = f.ref_id
+       LEFT JOIN members mem ON mem.id = n.member_id
+       WHERE f.collective_id = ? AND f.id > ? AND t.status != 'spam'
+       ORDER BY f.id LIMIT 50`, [memberId, collectiveId, since])
+    const events = rows
+      .filter((r) => r.note_member !== memberId) // never echo the agent's own notes
+      .map((r) => r.type === 'note.new'
+        ? {
+            type: 'note.new' as const, thread_id: r.thread_id, note_id: r.id, subject: r.subject,
+            by: r.by || 'a member', at: r.at,
+            // written by a teammate, not a stranger — but a note can quote a
+            // stranger, so the caution label stays
+            untrusted_preview: r.preview || '',
+            mentions_you: !!r.mentioned,
+          }
+        : {
+            type: 'message.new' as const, thread_id: r.thread_id, subject: r.subject,
+            from: { name: r.from_name, email: r.from_email }, at: r.at,
+            untrusted_preview: r.preview || '',
+          })
+    if (rows.length || Date.now() >= deadline) {
+      return { cursor: rows.length ? rows[rows.length - 1].id : since, events }
     }
     await new Promise((res) => setTimeout(res, 2000))
   }
@@ -172,12 +165,8 @@ export async function agentEvents(collectiveId: number, memberId: number, sinceM
 
 /** Where the feed currently ends — handed out at claim time so a new agent
  *  starts from "now" instead of replaying history. */
-export async function agentCursors(collectiveId: number): Promise<{ cursor: number; note_cursor: number }> {
-  const [m, n] = await Promise.all([
-    get<{ id: number }>("SELECT MAX(m.id) AS id FROM messages m JOIN threads t ON t.id = m.thread_id WHERE t.collective_id = ? AND m.direction = 'inbound'", [collectiveId]),
-    get<{ id: number }>('SELECT MAX(n.id) AS id FROM notes n JOIN threads t ON t.id = n.thread_id WHERE t.collective_id = ?', [collectiveId]),
-  ])
-  return { cursor: m?.id ?? 0, note_cursor: n?.id ?? 0 }
+export async function agentCursor(collectiveId: number): Promise<number> {
+  return (await get<{ id: number }>('SELECT MAX(id) AS id FROM agent_feed WHERE collective_id = ?', [collectiveId]))?.id ?? 0
 }
 
 export const listAgentMembers = (collectiveId: number) =>

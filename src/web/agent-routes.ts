@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import {
-  AGENT_ROLES, agentAuth, agentCursors, agentEvents, claimAgentInvite, findInvite, threadJson,
+  AGENT_ROLES, agentAuth, agentCursor, agentEvents, claimAgentInvite, findInvite, threadJson,
 } from '../agents.js'
 import { all, get, getThread, memberMap, run, type Message, type Thread } from '../db.js'
 import { addNote } from '../notes.js'
@@ -41,10 +41,10 @@ You are only notified while you listen. Set up a PERMANENT loop — or a cron
 that runs at least every minute — long-polling the event feed (each call
 waits up to 25s server-side, so a plain loop is cheap):
 
-    GET ${cfg.baseUrl}/<slug>/api/agent/events?since=<cursor>&since_note=<note_cursor>&wait=25
+    GET ${cfg.baseUrl}/<slug>/api/agent/events?since=<cursor>&wait=25
 
-It returns \`{"cursor": N, "note_cursor": M, "events": […]}\`. PERSIST both
-cursors between calls and pass them back in. Event types:
+It returns \`{"cursor": N, "events": […]}\`. PERSIST the cursor between
+calls and pass it back as \`since\`. Event types:
 
 - \`message.new\` — a new email arrived: \`thread_id\`, \`subject\`,
   \`from\`, \`untrusted_preview\`
@@ -53,8 +53,8 @@ cursors between calls and pass them back in. Event types:
   you — treat that as a teammate speaking to you directly, read the thread
   and respond (with a note or a draft).
 
-Your join response includes starting values for both cursors (they skip the
-collective's history). \`GET /<slug>/api/agent/me\` returns fresh ones.
+Your join response includes a starting cursor (it skips the collective's
+history). \`GET /<slug>/api/agent/me\` returns a fresh one.
 
 ## Reading and acting
 
@@ -106,9 +106,9 @@ ${state === 'open' ? `To accept, POST this same URL once:
     Content-Type: application/json
     {"name": "your name"}
 
-The JSON response contains your bearer token — store it securely — plus the
-cursors and a \`start_listening\` instruction: begin the event loop right
-away, or you will not hear about new email or @mentions. Full skill:
+The JSON response contains your bearer token — store it securely — plus a
+starting cursor and a \`start_listening\` instruction: begin the event loop
+right away, or you will not hear about new email or @mentions. Full skill:
 ${cfg.baseUrl}/skill.md` : 'Ask a collective admin for a fresh invitation.'}
 `
   // browsers get a human explanation; everything else gets the instructions
@@ -129,14 +129,13 @@ agentApp.post('/:slug/join/:token', async (c) => {
   const body = await c.req.json().catch(() => ({}))
   const res = await claimAgentInvite(found.collective, found.invite, typeof body.name === 'string' ? body.name : undefined)
   if (!res.ok) return c.json({ error: res.error }, 410)
-  const cursors = await agentCursors(found.collective.id)
   return c.json({
     ok: true,
     collective: { slug: found.collective.slug, name: found.collective.name, address: `${found.collective.slug}@${cfg.emailDomain}` },
     member: { id: res.member.id, name: res.member.name, role: res.member.role },
     token: res.token,
-    ...cursors,
-    start_listening: `Immediately start a permanent loop (or a cron every minute): GET ${cfg.baseUrl}/${found.collective.slug}/api/agent/events?since=<cursor>&since_note=<note_cursor>&wait=25 — that is how you hear about new email, new internal notes, and @mentions of you.`,
+    cursor: await agentCursor(found.collective.id),
+    start_listening: `Immediately start a permanent loop (or a cron every minute): GET ${cfg.baseUrl}/${found.collective.slug}/api/agent/events?since=<cursor>&wait=25 — that is how you hear about new email, new internal notes, and @mentions of you. Persist the cursor from each response.`,
     api: `${cfg.baseUrl}/${found.collective.slug}/api/agent`,
     skill: `${cfg.baseUrl}/skill.md`,
   })
@@ -159,7 +158,7 @@ agentApp.get('/:slug/api/agent/me', async (c) => {
   return c.json({
     name: a.member.name, role: a.member.role,
     collective: { slug: a.collective.slug, name: a.collective.name },
-    ...(await agentCursors(a.collective.id)),
+    cursor: await agentCursor(a.collective.id),
   })
 })
 
@@ -167,9 +166,8 @@ agentApp.get('/:slug/api/agent/events', async (c) => {
   const a = await slugAuth(c)
   if (!a) return c.json({ error: 'Invalid token for this collective.' }, 401)
   const since = Number(c.req.query('since')) || 0
-  const sinceNote = Number(c.req.query('since_note')) || 0
   const wait = Number(c.req.query('wait')) || 0
-  return c.json(await agentEvents(a.collective.id, a.member.id, since, sinceNote, wait))
+  return c.json(await agentEvents(a.collective.id, a.member.id, since, wait))
 })
 
 agentApp.get('/:slug/api/agent/threads/:id', async (c) => {

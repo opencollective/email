@@ -225,6 +225,17 @@ const SCHEMA = [
     created_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_thread_drafts_thread ON thread_drafts(thread_id)`,
+  // one ordered feed of things an agent can be woken by — a single sequence,
+  // so the API has ONE cursor and new event types are just new rows
+  `CREATE TABLE IF NOT EXISTS agent_feed (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    collective_id INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    thread_id INTEGER NOT NULL,
+    ref_id INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_agent_feed ON agent_feed(collective_id, id)`,
   `CREATE TABLE IF NOT EXISTS agent_invites (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     collective_id INTEGER NOT NULL,
@@ -453,6 +464,12 @@ export interface Attachment {
 
 /** All members of a collective (including removed — needed to render history). */
 /** Record that a member has seen a thread (web view or email open). */
+/** Append to a collective's agent feed. Fire-and-forget shape: feeding the
+ *  agents must never break receiving mail or writing a note. */
+export const feedAgents = (collectiveId: number, type: string, threadId: number, refId: number) =>
+  run('INSERT INTO agent_feed (collective_id, type, thread_id, ref_id, created_at) VALUES (?, ?, ?, ?, ?)',
+    [collectiveId, type, threadId, refId, now()]).catch((err) => console.error('[agent-feed]', err))
+
 export async function markThreadSeen(threadId: number, memberId: number, via: 'web' | 'email'): Promise<void> {
   const member = await getMember(memberId)
   const thread = await getThread(threadId)
