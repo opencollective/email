@@ -148,7 +148,9 @@ export async function notifyInbound(
   ].map((a) => (a || '').toLowerCase().trim()).filter(Boolean))
 
   const recipients = members.filter(
-    (m) => m.role !== 'reader' && !muted.has(m.id) && (m.notify_level === 'every' || m.id === assigneeId)
+    // agents have synthetic addresses and hear about mail through their own
+    // event stream — never through SMTP
+    (m) => m.kind !== 'agent' && m.role !== 'reader' && !muted.has(m.id) && (m.notify_level === 'every' || m.id === assigneeId)
       && m.email !== message.from_email?.toLowerCase()
       && !directlyAddressed.has(m.email.toLowerCase()),
   )
@@ -276,7 +278,7 @@ export async function notifyMention(
   const counterpart = thread.counterpart_name || thread.counterpart_email || 'the sender'
   const roster = await activeMembers(collective.id)
 
-  for (const m of mentioned) {
+  for (const m of mentioned.filter((x) => x.kind !== 'agent')) {
     // the note as written, with the handles picked out — and the reader's own
     // name standing out, so a long note shows at a glance where they come in
     const bodyHtml = noteParts(noteBody, roster).map((p) =>

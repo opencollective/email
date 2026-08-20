@@ -138,6 +138,8 @@ export async function sendCollectiveReply(
   await run("UPDATE threads SET last_message_at = ?, last_direction = 'outbound', updated_at = ? WHERE id = ?", [ts, ts, threadId])
   await setStatus(threadId, 'answered', member.id, true)
   await addEvent(threadId, member.id, 'replied', { via })
+  // any proposed drafts are settled the moment a real reply goes out
+  await run('DELETE FROM thread_drafts WHERE thread_id = ?', [threadId]).catch(() => {})
 
   return (await get<Message>('SELECT * FROM messages WHERE id = ?', [r.lastId]))!
 }

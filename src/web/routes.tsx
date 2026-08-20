@@ -22,6 +22,7 @@ import { mentionLabels, noteParts } from '../mentions.js'
 import { addNote } from '../notes.js'
 import { backupTick } from '../backup.js'
 import { archiveCollective, messageCount, PURGE_AFTER, purgeArchivedTick, purgeDueAt, restoreCollective } from '../archive.js'
+import { agentInviteUrl, createAgentInvite, openAgentInvites } from '../agents.js'
 import { CONTRIBUTE_SLUG, creditBalance, creditsLedger, creditsTick, fileContribution, mintCredits, referralUrl , PRO_MONTH_CREDITS } from '../credits.js'
 import {
   approveApplication, checkDiscountCode, checkOcOwnershipCode, discountCodeFor, fileApplication, fileProApplication,
@@ -1715,6 +1716,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
     invQ
       ? { sql: `SELECT DISTINCT t.* FROM ${invQ.from} WHERE ${invQ.where} ORDER BY t.last_message_at DESC`, args: invQ.args }
       : { sql: 'SELECT 1 WHERE 0', args: [] },
+    { sql: 'SELECT * FROM thread_drafts WHERE thread_id = ? ORDER BY created_at', args: [thread.id] },
   ])
   const msgs = batch[0] as Message[]
   const notes = batch[1] as { id: number; member_id: number; body: string; created_at: number }[]
@@ -1736,6 +1738,8 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   // whole thread — so a glance in passing doesn't clear anyone's unread
   const reads = batch[8] as ThreadRead[]
   const rulesAll = batch[9] as Rule[]
+  // replies proposed by agents (or teammates), waiting for a human to send
+  const proposedDrafts = batch[11] as { id: number; member_id: number; body: string; created_at: number }[]
   // every other thread this contact is part of — sender OR merely Cc'd (the
   //  Odoo pattern: a quote emailed to the contact with the collective in copy)
   const otherAll = invQ ? (batch[10] as Thread[]) : []
@@ -2206,6 +2210,30 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               </div>
             )
           })()}
+
+          {proposedDrafts.length && member.role !== 'reader' ? (
+            <div class="proposed">
+              {proposedDrafts.map((d) => {
+                const by = members.get(d.member_id)
+                return (
+                  <div class="proposed-draft">
+                    <div class="pd-head">
+                      <span class="pd-who">{by?.kind === 'agent' ? '🤖 ' : ''}<b>{memberName(by)}</b> proposed a reply <small>· {relTime(d.created_at)}</small></span>
+                      <span class="pd-acts">
+                        {canSendRole(member.role) ? (
+                          <button class="btn small" type="button" data-use-draft={String(d.id)}>Use draft ↓</button>
+                        ) : null}
+                        <form method="post" action={`${base}/thread/${thread.id}/draft/${d.id}/dismiss`} class="inline">
+                          <button class="linkish" type="submit">Dismiss</button>
+                        </form>
+                      </span>
+                    </div>
+                    <div class="pd-body" data-draft-body={String(d.id)}>{d.body}</div>
+                  </div>
+                )
+              })}
+            </div>
+          ) : null}
 
           <div class="typing" id="typing" data-url={`${base}/thread/${thread.id}/typing`} hidden></div>
 
@@ -2798,6 +2826,18 @@ app.post('/inbox/:addr/thread/:id/status', async (c) => {
   return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}`)
 })
 
+// A proposed draft that served its purpose (or missed the mark) goes away.
+app.post('/inbox/:addr/thread/:id/draft/:draftId/dismiss', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const blocked = readerBlock(c, t)
+  if (blocked) return blocked
+  const thread = await threadOf(c, t)
+  if (!thread) return c.notFound()
+  await run('DELETE FROM thread_drafts WHERE id = ? AND thread_id = ?', [Number(c.req.param('draftId')), thread.id])
+  return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}`)
+})
+
 app.post('/inbox/:addr/thread/:id/tags', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
@@ -3316,9 +3356,10 @@ app.get('/inbox/:addr/members', async (c) => {
   const { collective, member } = t
   const base = `/inbox/${collective.slug}`
   const isAdmin = member.role === 'admin'
-  const [members, invite, replyCounts] = await Promise.all([
+  const [members, invite, agentInvites, replyCounts] = await Promise.all([
     activeMembers(collective.id),
     activeInvite(collective.id),
+    isAdmin ? openAgentInvites(collective.id) : Promise.resolve([]),
     all<{ mid: number; n: number }>(`
       SELECT m.sent_by_member_id AS mid, COUNT(*) AS n FROM messages m
       JOIN threads t ON t.id = m.thread_id
@@ -3416,6 +3457,30 @@ app.get('/inbox/:addr/members', async (c) => {
             })}
           </div>
         </section>
+
+        {isAdmin ? (
+          <section class="m-block">
+            <h2>Agents</h2>
+            <p class="muted">An agent joins like a member — through an invitation link — and gets a scoped token for this collective only.
+              Agents can read threads, leave internal notes and prepare draft replies for you to send. They can never send email themselves.</p>
+            {agentInvites.map((ai) => (
+              <p class="fineprint agent-invite">
+                Open invitation{ai.name ? <> for <b>{ai.name}</b></> : null} ({ai.role}) — paste this to the agent:{' '}
+                <code class="invite-url">{agentInviteUrl(collective, ai)}</code>
+                <button class="icon-btn" type="button" data-copy={agentInviteUrl(collective, ai)} title="Copy invitation" aria-label="Copy invitation"><Icon name="copy" /></button>
+              </p>
+            ))}
+            <form method="post" action={`${base}/agents/invite`} class="agent-invite-form">
+              <input class="input small" name="name" placeholder="Agent name (e.g. Clara)" />
+              <select class="input small" name="role">
+                <option value="commenter" selected>Can contribute — notes & drafts</option>
+                <option value="reader">Read-only</option>
+              </select>
+              <button class="btn small" type="submit">Create invitation link</button>
+            </form>
+            <p class="fineprint">The agent reads <a href="/skill.md">{cfg.baseUrl}/skill.md</a> to learn the ropes; the invitation link carries the rest.</p>
+          </section>
+        ) : null}
       </div>
     </Shell>,
   )
@@ -3454,6 +3519,16 @@ app.post('/inbox/:addr/members/:id/remove', async (c) => {
   return c.redirect(back + '?m=' + encodeURIComponent(`${memberName(target)} was removed from the collective.`))
 })
 
+app.post('/inbox/:addr/agents/invite', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const back = `/inbox/${t.collective.slug}/members`
+  if (t.member.role !== 'admin') return c.redirect(back)
+  const body = await c.req.parseBody()
+  await createAgentInvite(t.collective, String(body.role || 'commenter'), String(body.name || ''), t.member.id)
+  return c.redirect(back + '?m=' + encodeURIComponent('Invitation created — paste the link to your agent. It works once and expires in 7 days.'))
+})
+
 app.post('/inbox/:addr/members/:id/role', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
@@ -3464,6 +3539,10 @@ app.post('/inbox/:addr/members/:id/role', async (c) => {
   const body = await c.req.parseBody()
   const role = ['reader', 'commenter', 'member', 'admin'].includes(String(body.role)) ? (String(body.role) as Member['role']) : target.role
   if (role === target.role) return c.redirect(back)
+  // v1 agents top out at contribute: notes and drafts, never sending
+  if (target.kind === 'agent' && canSendRole(role)) {
+    return c.redirect(back + '?m=' + encodeURIComponent('Agents cannot hold sending roles yet — they read, note, and draft.'))
+  }
   const members = await activeMembers(t.collective.id)
   const adminCount = members.filter((m) => m.role === 'admin').length
   if (target.role === 'admin' && adminCount <= 1) return c.redirect(back + '?m=' + encodeURIComponent('Cannot demote the last admin.'))
@@ -4744,6 +4823,8 @@ app.get('/robots.txt', (c) => c.text(`User-agent: *
 Allow: /
 
 # Machine-readable guide for AI agents: ${cfg.baseUrl}/llms.txt
+# Agents can JOIN a collective (read threads, add internal notes, propose
+# draft replies) via a one-time invitation URL — full skill: ${cfg.baseUrl}/skill.md
 `))
 
 // ---------- offline fallback (cached by the service worker) ----------

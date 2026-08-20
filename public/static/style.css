@@ -1321,3 +1321,15 @@ button.row.new-thread-row {
 
 /* the burger morph only plays when the state changed since the previous page */
 .hb-was-burger .hamburger.to-burger .hl, .hb-was-arrow .hamburger.to-arrow .hl { animation: none !important; }
+
+/* a reply proposed by an agent: internal until a human sends it */
+.proposed { margin: 18px 24px 0; display: flex; flex-direction: column; gap: 10px; }
+.proposed-draft { border: 1.5px dashed var(--accent); border-radius: 10px; background: var(--card); }
+.pd-head { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-bottom: 1.5px solid var(--line-soft); font-size: 13px; flex-wrap: wrap; }
+.pd-who small { color: var(--muted); }
+.pd-acts { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.pd-body { padding: 12px 14px; font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 72ch; }
+@media (max-width: 900px) { .proposed { margin: 14px 12px 0; } }
+.agent-invite-form { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 6px; }
+.agent-invite-form .input { max-width: 240px; }
+.invite-url { font-size: 11px; overflow-wrap: anywhere; }

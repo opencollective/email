@@ -213,6 +213,37 @@ const SCHEMA = [
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (member_id, message_id)
   )`,
+  // agents join through a one-time invitation URL and act through a bearer
+  // token bound to their member row — one token, one collective, no wider
+  // a proposed reply: internal like a note, shaped like a reply. A human sends
+  // it (or doesn't) — nothing here ever leaves the collective by itself
+  `CREATE TABLE IF NOT EXISTS thread_drafts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id INTEGER NOT NULL,
+    member_id INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_thread_drafts_thread ON thread_drafts(thread_id)`,
+  `CREATE TABLE IF NOT EXISTS agent_invites (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    collective_id INTEGER NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    role TEXT NOT NULL DEFAULT 'commenter',
+    name TEXT NOT NULL DEFAULT '',
+    created_by INTEGER,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    claimed_at INTEGER,
+    claimed_member_id INTEGER
+  )`,
+  `CREATE TABLE IF NOT EXISTS agent_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    member_id INTEGER NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    created_at INTEGER NOT NULL,
+    last_used_at INTEGER
+  )`,
   `CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)`,
   `CREATE TABLE IF NOT EXISTS waitlist (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -239,6 +270,7 @@ function init(): Promise<void> {
       'ALTER TABLE collectives ADD COLUMN comped INTEGER NOT NULL DEFAULT 0',
       'ALTER TABLE login_codes ADD COLUMN claim_slug TEXT',
       "ALTER TABLE invites ADD COLUMN role TEXT DEFAULT 'reader'",
+      "ALTER TABLE members ADD COLUMN kind TEXT NOT NULL DEFAULT 'person'",
       'ALTER TABLE collectives ADD COLUMN contribution_offer TEXT',
       'ALTER TABLE collectives ADD COLUMN custom_domain TEXT',
       'ALTER TABLE collectives ADD COLUMN custom_local TEXT',
@@ -354,7 +386,10 @@ export interface Member {
   email: string
   name: string
   role: 'admin' | 'member' | 'commenter' | 'reader'
-  notify_level: 'every' | 'daily' | 'weekly'
+  // an agent is a member like any other — same rows, same enforcement — whose
+  // "email" is synthetic and who is reached through the agent API, never SMTP
+  kind?: 'person' | 'agent'
+  notify_level: 'every' | 'daily' | 'weekly' | 'none'
   avatar_path: string | null
   created_at: number
   last_seen_at: number | null

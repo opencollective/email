@@ -203,6 +203,20 @@ document.querySelectorAll('[data-tagpop]').forEach((form) => {
   });
 })();
 
+// "Use draft": copy a proposed reply into the composer for editing/sending
+document.querySelectorAll('[data-use-draft]').forEach((b) => {
+  b.addEventListener('click', () => {
+    const body = document.querySelector('[data-draft-body="' + b.getAttribute('data-use-draft') + '"]');
+    const ta = document.querySelector('form[data-pane=reply] textarea');
+    if (!body || !ta) return;
+    const tab = document.querySelector('[data-tab="reply"]');
+    if (tab) tab.click();
+    ta.value = body.textContent.trim() + '\\n\\n' + (ta.getAttribute('data-signature') || '');
+    ta.focus();
+    ta.scrollIntoView({ block: 'center' });
+  });
+});
+
 // Reading, reported honestly:// Reading, reported honestly: after 3 seconds on the page, seen up to the
 // last message on screen; on reaching the bottom, the whole thread. A page
 // opened and closed in one second marks nothing.
@@ -548,7 +562,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '71'
+export const ASSET_V = '72'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">
