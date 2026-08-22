@@ -227,6 +227,14 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_thread_drafts_thread ON thread_drafts(thread_id)`,
   // one ordered feed of things an agent can be woken by — a single sequence,
   // so the API has ONE cursor and new event types are just new rows
+  // which threads a GUEST member may see — guests are commenters whose world
+  // is only the conversations explicitly shared with them
+  `CREATE TABLE IF NOT EXISTS thread_access (
+    member_id INTEGER NOT NULL,
+    thread_id INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (member_id, thread_id)
+  )`,
   `CREATE TABLE IF NOT EXISTS agent_feed (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     collective_id INTEGER NOT NULL,
@@ -396,7 +404,7 @@ export interface Member {
   collective_id: number
   email: string
   name: string
-  role: 'admin' | 'member' | 'commenter' | 'reader'
+  role: 'admin' | 'member' | 'commenter' | 'reader' | 'guest'
   // an agent is a member like any other — same rows, same enforcement — whose
   // "email" is synthetic and who is reached through the agent API, never SMTP
   kind?: 'person' | 'agent'
@@ -469,6 +477,16 @@ export interface Attachment {
 export const feedAgents = (collectiveId: number, type: string, threadId: number, refId: number) =>
   run('INSERT INTO agent_feed (collective_id, type, thread_id, ref_id, created_at) VALUES (?, ?, ?, ?, ?)',
     [collectiveId, type, threadId, refId, now()]).catch((err) => console.error('[agent-feed]', err))
+
+/** Whether this member may see this thread. Everyone but guests sees all of
+ *  their collective; a guest sees exactly the threads shared with them. */
+export async function canSeeThread(member: Member, threadId: number): Promise<boolean> {
+  if (member.role !== 'guest') return true
+  return !!(await get('SELECT 1 FROM thread_access WHERE member_id = ? AND thread_id = ?', [member.id, threadId]))
+}
+
+export const grantThreadAccess = (memberId: number, threadId: number) =>
+  run('INSERT OR IGNORE INTO thread_access (member_id, thread_id, created_at) VALUES (?, ?, ?)', [memberId, threadId, now()])
 
 export async function markThreadSeen(threadId: number, memberId: number, via: 'web' | 'email'): Promise<void> {
   const member = await getMember(memberId)

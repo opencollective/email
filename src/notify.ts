@@ -147,10 +147,14 @@ export async function notifyInbound(
     ...(JSON.parse(message.bcc_json || '[]') as string[]),
   ].map((a) => (a || '').toLowerCase().trim()).filter(Boolean))
 
+  // guests only hear about the threads shared with them
+  const guestIds = new Set((await all<{ member_id: number }>(
+    'SELECT member_id FROM thread_access WHERE thread_id = ?', [thread.id])).map((r) => r.member_id))
   const recipients = members.filter(
     // agents have synthetic addresses and hear about mail through their own
     // event stream — never through SMTP
     (m) => m.kind !== 'agent' && m.role !== 'reader' && !muted.has(m.id) && (m.notify_level === 'every' || m.id === assigneeId)
+      && (m.role !== 'guest' || guestIds.has(m.id))
       && m.email !== message.from_email?.toLowerCase()
       && !directlyAddressed.has(m.email.toLowerCase()),
   )

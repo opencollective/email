@@ -1344,3 +1344,10 @@ button.row.new-thread-row {
 .am-result { border: 1.5px dashed var(--line); border-radius: 10px; padding: 10px 12px; margin: 4px 0; }
 .am-result .invite-row { display: flex; align-items: center; gap: 8px; }
 .am-result .invite-url { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+
+/* assign modal: guests + the someone-else reveal */
+.guest-tag { color: var(--muted); font-family: var(--mono); font-size: 10px; }
+.guests-h { margin-top: 22px; }
+.assign-else summary.assign-row { list-style: none; cursor: pointer; }
+.assign-else summary::-webkit-details-marker { display: none; }
+.assign-else-form { display: grid; gap: 8px; padding: 6px 10px 10px; }

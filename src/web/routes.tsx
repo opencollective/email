@@ -8,7 +8,7 @@ import {
   activeMembers, addTag, all, allCollectives, attachmentsByMessage, batchAll, createCollective, get, getCollective, messageFoldsQuery, popularTagsQuery, setMessageFold,
   getCollectiveBySlug, getMember, getMemberIn, getThread, kvGet, kvGetMany, kvSet, lastMessageQuery, memberMap, recordThreadSeenUpTo,
   renameCollectiveSlug,
-  markThreadSeen, membershipsByEmail, readsForMember, removeTag, run, setAssignee, setStatus, tagsByThread, threadMessages, threadReads, threadTags,
+  canSeeThread, grantThreadAccess, markThreadSeen, membershipsByEmail, readsForMember, removeTag, run, setAssignee, setStatus, tagsByThread, threadMessages, threadReads, threadTags,
   type ThreadRead,
   type Attachment, type Collective, type Invite, type Member, type Message, type Thread,
 } from '../db.js'
@@ -52,7 +52,7 @@ const SID = 'requests_sid'
  *  Readers see everything but act on nothing; commenters do everything except
  *  send external email; senders + admins are the paid contributor seats. */
 const canSendRole = (r: Member['role']) => r === 'member' || r === 'admin'
-const ROLE_LABELS: Record<Member['role'], string> = { reader: 'reader', commenter: 'commenter', member: 'sender', admin: 'admin' }
+const ROLE_LABELS: Record<Member['role'], string> = { reader: 'reader', commenter: 'commenter', member: 'sender', admin: 'admin', guest: 'guest' }
 /** "a sender" but "an admin" — only 'admin' starts with a vowel today, but the
  *  rule is cheap and survives the next role we name. */
 const withArticle = (label: string) => `${/^[aeiou]/i.test(label) ? 'an' : 'a'} ${label}`
@@ -61,6 +61,7 @@ const ROLE_HINTS: Record<Member['role'], string> = {
   commenter: 'Discusses internally: notes, assigning, tags — cannot email the outside world.',
   member: 'Answers senders as the collective — uses a paid seat.',
   admin: 'Everything a sender can, plus members, billing and settings.',
+  guest: 'A commenter who only sees the threads shared with them.',
 }
 /** Nothing may be written to an archived inbox — it is on its way out, and the
  *  outside world is already being told so by the bounces. */
@@ -1132,6 +1133,10 @@ app.get('/inbox/:addr', async (c) => {
 
   let where = `t.collective_id = ? AND (${FILTERS[f].where})`
   const args: (string | number)[] = [collective.id, ...filterArgs(f, member.id)]
+  if (member.role === 'guest') {
+    where += ' AND t.id IN (SELECT thread_id FROM thread_access WHERE member_id = ?)'
+    args.push(member.id)
+  }
   if (assignedTo) {
     where += ' AND t.assignee_member_id = ?'
     args.push(assignedTo)
@@ -1532,6 +1537,7 @@ const contactUrl = (base: string, email: string, back?: string) =>
 app.get('/inbox/:addr/contacts', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
+  if (t.member.role === 'guest') return c.redirect(`/inbox/${t.collective.slug}`)
   const { collective, member } = t
   const base = `/inbox/${collective.slug}`
   // one cheap scan, aggregated here: most recent name wins, spam stays out
@@ -1594,6 +1600,7 @@ app.get('/inbox/:addr/contacts', async (c) => {
 app.get('/inbox/:addr/contact/:email', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
+  if (t.member.role === 'guest') return c.redirect(`/inbox/${t.collective.slug}`)
   const { collective, member } = t
   const base = `/inbox/${collective.slug}`
   const email = decodeURIComponent(c.req.param('email') || '').toLowerCase().trim()
@@ -1696,9 +1703,13 @@ type TimelineItem =
   // the same contact while this conversation was running
   | { kind: 'related'; ts: number; threadId: number; subject: string; what: string }
 
-async function threadOf(c: Context<Env>, t: { collective: Collective }): Promise<Thread | undefined> {
+async function threadOf(c: Context<Env>, t: { collective: Collective; member: Member }): Promise<Thread | undefined> {
   const thread = await getThread(Number(c.req.param('id')))
-  return thread && thread.collective_id === t.collective.id ? thread : undefined
+  if (!thread || thread.collective_id !== t.collective.id) return undefined
+  // a guest's world is only the threads shared with them — everything else
+  // does not exist, exactly as another collective's threads don't
+  if (!(await canSeeThread(t.member, thread.id))) return undefined
+  return thread
 }
 
 app.get('/inbox/:addr/thread/:id', async (c) => {
@@ -1845,6 +1856,10 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
 
   const lastAssignEvent = [...allEvents].reverse().find((e) => e.type === 'assigned' || e.type === 'unassigned')
   const activeList = [...members.values()].filter((m) => !m.removed_at).sort((a, b) => memberName(a).localeCompare(memberName(b)))
+  // which guests already see THIS thread (for the mention roster)
+  const guestAccessIds = new Set(activeList.some((m) => m.role === 'guest')
+    ? (await all<{ member_id: number }>('SELECT member_id FROM thread_access WHERE thread_id = ?', [thread.id])).map((r) => r.member_id)
+    : [])
   const assignee = thread.assignee_member_id ? members.get(thread.assignee_member_id) : null
   const counterpartFirst = (thread.counterpart_name || thread.counterpart_email || 'the sender').split(' ')[0]
   // reflects the actual From: verified custom domain, else slug@collective.email
@@ -2331,7 +2346,8 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                 name="body" rows={4} placeholder="Add context, ask a teammate, leave a note… type @ to pull someone in"
                 data-draft="note" required
                 data-mentions={JSON.stringify({
-                  people: activeList.map((m) => ({ id: m.id, name: memberName(m), email: m.email })),
+                  people: activeList.filter((m2) => m2.role !== 'guest' || guestAccessIds.has(m2.id))
+                    .map((m) => ({ id: m.id, name: memberName(m), email: m.email })),
                   // the matching *rules* (unique first names, login names) stay
                   // server-side; the editor only replays the derived labels
                   labels: mentionLabels(activeList).map((c) => [c.label, c.member.id]),
@@ -2370,12 +2386,13 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                 <p class="fineprint">{eventText(lastAssignEvent, members)} · {relTime(lastAssignEvent.created_at)}</p>
               ) : null}
               <div class="assign-list">
-                {[member, ...activeList.filter((m) => m.id !== member.id)].map((m) => (
+                {[member, ...activeList.filter((m) => m.id !== member.id && m.role !== 'guest'),
+                  ...activeList.filter((m) => m.role === 'guest')].map((m) => (
                   <form method="post" action={`${base}/thread/${thread.id}/assign`}>
                     <input type="hidden" name="member_id" value={String(m.id)} />
                     <button class={`assign-row ${m.id === thread.assignee_member_id ? 'on' : ''}`} type="submit">
                       <Avatar member={m} />
-                      <span>{memberName(m)}{m.id === member.id ? ' (you)' : ''}</span>
+                      <span>{memberName(m)}{m.id === member.id ? ' (you)' : ''}{m.role === 'guest' ? <small class="guest-tag"> guest</small> : ''}</span>
                       {m.id === thread.assignee_member_id ? <span class="tick">✓</span> : null}
                     </button>
                   </form>
@@ -2387,6 +2404,28 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                   </form>
                 ) : null}
               </div>
+              <details class="assign-else">
+                <summary class="assign-row"><span class="avatar empty">+</span><span>Someone else…</span></summary>
+                <form method="post" action={`${base}/thread/${thread.id}/assign-new`} class="assign-else-form">
+                  <input class="input" type="email" name="email" placeholder="their@email.com" required />
+                  <input class="input" name="name" placeholder="Their name (optional)" />
+                  <label class="check-row">
+                    <input type="radio" name="access" value="thread" checked />
+                    <span>Only this thread — they join as a <b>guest</b></span>
+                  </label>
+                  <label class="check-row">
+                    <input type="radio" name="access" value="collective" />
+                    <span>The whole inbox — they join as a <b>commenter</b></span>
+                  </label>
+                  {thread.counterpart_email ? (
+                    <label class="check-row">
+                      <input type="checkbox" name="autoassign" value="1" />
+                      <span>Always assign mail from <b>{thread.counterpart_email}</b> to them</span>
+                    </label>
+                  ) : null}
+                  <button class="btn small" type="submit" data-busy="Assigning…">Assign &amp; invite</button>
+                </form>
+              </details>
               {member.role === 'admin' ? (
                 // automating the same decision: a rule is "always assign these"
                 rule ? (
@@ -2786,9 +2825,52 @@ app.post('/inbox/:addr/thread/:id/assign', async (c) => {
   if (target !== null) {
     const tm = await getMember(target)
     if (!tm || tm.collective_id !== t.collective.id || tm.removed_at) return c.notFound()
+    // handing a thread to a guest IS sharing it with them
+    if (tm.role === 'guest') await grantThreadAccess(tm.id, thread.id)
   }
   await setAssignee(thread, target, t.member.id, target === t.member.id ? 'claim' : 'manual')
   return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}`)
+})
+
+// Assign to someone who is not (yet) part of the collective: they become a
+// guest with access to this one thread (default) or a full commenter, get the
+// thread, optionally a from-rule, and an email telling them where to sign in.
+app.post('/inbox/:addr/thread/:id/assign-new', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const blocked = readerBlock(c, t)
+  if (blocked) return blocked
+  const thread = await threadOf(c, t)
+  if (!thread) return c.notFound()
+  const body = await c.req.parseBody()
+  const email = String(body.email || '').toLowerCase().trim()
+  const back = `/inbox/${t.collective.slug}/thread/${thread.id}`
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return c.redirect(back + '?m=' + encodeURIComponent('That email address does not look right.'))
+  const wantsAll = String(body.access) === 'collective'
+  let m = await getMemberIn(t.collective.id, email)
+  if (m?.removed_at) m = undefined
+  if (!m) {
+    const r = await run(
+      'INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [t.collective.id, email, String(body.name || '').trim().slice(0, 60) || email.split('@')[0], wantsAll ? 'commenter' : 'guest', 'every', now()])
+    m = (await getMember(r.lastId))!
+  } else if (wantsAll && m.role === 'guest') {
+    await run("UPDATE members SET role = 'commenter' WHERE id = ?", [m.id])
+    m = (await getMember(m.id))!
+  }
+  if (m.role === 'guest') await grantThreadAccess(m.id, thread.id)
+  await setAssignee(thread, m.id, t.member.id, 'manual')
+  if (String(body.autoassign) === '1' && thread.counterpart_email) {
+    await createRule(t.collective, { from: thread.counterpart_email, assignMemberId: m.id, close: false }, t.member.id)
+  }
+  // tell them — they sign in with their email like any member, no password
+  await sendAppEmail({
+    to: email,
+    subject: `${memberName(t.member)} assigned you a conversation: ${thread.subject}`,
+    text: `${memberName(t.member)} assigned you "${thread.subject}" in the ${t.collective.name} inbox.\n\nOpen it: ${cfg.baseUrl}${back}\nSign in with this email address (a code is sent to you, no password).${m.role === 'guest' ? '\n\nYou have guest access: you see only the conversations shared with you.' : ''}`,
+    html: `<p><b>${escapeHtml(memberName(t.member))}</b> assigned you a conversation in the <b>${escapeHtml(t.collective.name)}</b> inbox:</p><p><a href="${cfg.baseUrl}${back}">${escapeHtml(thread.subject)}</a></p><p style="color:#6b7280;font-size:13px">Sign in with this email address — a code is sent to you, no password.${m.role === 'guest' ? ' You have guest access: you see only the conversations shared with you.' : ''}</p>`,
+  }).catch(() => {})
+  return c.redirect(back + '?m=' + encodeURIComponent(`Assigned to ${memberName(m)} — they were invited by email${m.role === 'guest' ? ' as a guest (this thread only)' : ''}.`))
 })
 
 // Decide what an unrecognized answering address is: a teammate's other
@@ -3405,6 +3487,9 @@ app.get('/inbox/:addr/members', async (c) => {
   ])
   const inviteUrl = invite ? `${cfg.baseUrl}/join/${invite.token}` : null
   const inviteHoursLeft = invite ? Math.max(1, Math.ceil((invite.expires_at - now()) / 3600)) : 0
+  const guestThreadCounts = new Map((await all<{ member_id: number; n: number }>(
+    `SELECT member_id, COUNT(*) AS n FROM thread_access WHERE member_id IN (SELECT id FROM members WHERE collective_id = ?) GROUP BY member_id`,
+    [collective.id])).map((r) => [r.member_id, r.n]))
   const replies = (id: number) => replyCounts.find((r) => r.mid === id)?.n ?? 0
   const adminCount = members.filter((m) => m.role === 'admin').length
 
@@ -3415,9 +3500,9 @@ app.get('/inbox/:addr/members', async (c) => {
         <p class="muted">Manage the members of the <b>{collective.name}</b> collective and define who should be able to open this mailbox, add internal notes and reply as the collective.</p>
 
         <section class="card">
-          <h2>Members ({members.length})</h2>
+          <h2>Members ({members.filter((m) => m.role !== 'guest').length})</h2>
           <div class="member-table">
-            {members.map((m) => {
+            {members.filter((m) => m.role !== 'guest').map((m) => {
               const editable = isAdmin && m.id !== member.id
               return (
               <div class="member-row">
@@ -3466,6 +3551,39 @@ app.get('/inbox/:addr/members', async (c) => {
               )
             })}
           </div>
+          {members.some((m) => m.role === 'guest') ? (<>
+            <h2 class="guests-h">Guests</h2>
+            <p class="fineprint">Commenters who only see the threads shared with them — assign them a thread to share it.</p>
+            <div class="member-table">
+              {members.filter((m) => m.role === 'guest').map((m) => {
+                const editable = isAdmin && m.id !== member.id
+                return (
+                  <div class="member-row">
+                    <Avatar member={m} />
+                    <span class="m-name">{memberName(m)}<small>{m.email}</small></span>
+                    <span class="m-role">
+                      {editable ? (
+                        <form method="post" action={`${base}/members/${m.id}/role`} class="inline role-form">
+                          <select name="role" class="role-select" aria-label={`Role of ${memberName(m)}`} title={ROLE_HINTS.guest}>
+                            <option value="guest" selected>Guest</option>
+                            <option value="commenter" data-hint={ROLE_HINTS.commenter}>Commenter — whole inbox</option>
+                          </select>
+                        </form>
+                      ) : <span class="chip" title={ROLE_HINTS.guest}>guest</span>}
+                    </span>
+                    <span class="m-meta"><small>{guestThreadCounts.get(m.id) ?? 0} thread{(guestThreadCounts.get(m.id) ?? 0) === 1 ? '' : 's'} shared</small></span>
+                    <span class="m-remove">
+                      {editable ? (
+                        <form method="post" action={`${base}/members/${m.id}/remove`} class="inline">
+                          <button class="linkish danger" type="submit" data-confirm={`Remove ${memberName(m)}? They lose access to their shared threads immediately.`}>Remove</button>
+                        </form>
+                      ) : null}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          </>) : null}
           {isAdmin ? (
             <div class="btn-row add-member-row">
               <button class="btn" type="button" data-dialog="#add-member-modal">+ Add a member</button>
@@ -3645,7 +3763,10 @@ app.post('/inbox/:addr/members/:id/role', async (c) => {
   const target = await getMember(Number(c.req.param('id')))
   if (!target || target.collective_id !== t.collective.id || target.id === t.member.id) return c.redirect(back)
   const body = await c.req.parseBody()
-  const role = ['reader', 'commenter', 'member', 'admin'].includes(String(body.role)) ? (String(body.role) as Member['role']) : target.role
+  // 'guest' can only be KEPT, never assigned here — guests are made by
+  // sharing a thread with someone, which is what scopes their access
+  const askable = ['reader', 'commenter', 'member', 'admin', ...(target.role === 'guest' ? ['guest'] : [])]
+  const role = askable.includes(String(body.role)) ? (String(body.role) as Member['role']) : target.role
   if (role === target.role) return c.redirect(back)
   // v1 agents top out at contribute: notes and drafts, never sending
   if (target.kind === 'agent' && canSendRole(role)) {

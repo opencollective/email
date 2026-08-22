@@ -451,6 +451,17 @@ const draftKey = (pane) => 'draft:' + location.pathname + ':' + pane;
 // back into the textarea and looks like the send didn't take.
 const flashEl = document.querySelector('.flash');
 if (flashEl) {
+  // the flash said its piece: fade it after 5s, and take the message out of
+  // the address bar right away so the URL people copy stays clean
+  setTimeout(() => {
+    flashEl.style.transition = 'opacity 0.4s';
+    flashEl.style.opacity = '0';
+    setTimeout(() => flashEl.remove(), 450);
+  }, 5000);
+  try {
+    const u = new URL(location.href);
+    if (u.searchParams.has('m')) { u.searchParams.delete('m'); history.replaceState(history.state, '', u); }
+  } catch (e) {}
   try {
     if (flashEl.textContent.includes('Reply sent')) localStorage.removeItem(draftKey('reply'));
     if (flashEl.textContent.includes('Note added')) localStorage.removeItem(draftKey('note'));
@@ -666,7 +677,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '74'
+export const ASSET_V = '76'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">
