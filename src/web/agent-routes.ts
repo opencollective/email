@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import {
   AGENT_ROLES, agentAuth, agentCursor, agentEvents, claimAgentInvite, findInvite, threadJson,
 } from '../agents.js'
-import { all, get, getThread, memberMap, run, type Message, type Thread } from '../db.js'
+import { all, get, getThread, memberMap, recordThreadSeenUpTo, run, type Message, type Thread } from '../db.js'
 import { addNote } from '../notes.js'
 import { cfg } from '../config.js'
 import { now } from '../util.js'
@@ -74,7 +74,20 @@ returns.
 
 A note is internal discussion. A draft is a proposed reply: it appears on the
 thread for a human to review and send — nothing you write leaves the
-collective by itself. A human thread link looks like
+collective by itself.
+
+## Acknowledge what you have seen
+
+After you read a thread or process its events (a new message, a note, a
+mention), acknowledge it:
+
+    POST ${cfg.baseUrl}/<slug>/api/agent/threads/<id>/ack
+
+This marks the conversation as SEEN BY YOU — the thread then shows
+"seen by <your name>" to your teammates, exactly as when a member opens it.
+Do this even when no action is needed: knowing you have seen something is
+half of working together. (Optional body \`{"up_to": <unix seconds>}\`
+scopes the receipt to a point in the conversation; default is now.) A human thread link looks like
 \`${cfg.baseUrl}/inbox/<slug>/thread/<id>\` — use it when you notify people
 elsewhere (chat, tickets) about work you did here.
 
@@ -202,6 +215,20 @@ agentApp.post('/:slug/api/agent/threads/:id/notes', async (c) => {
   if (!text) return c.json({ error: 'body is required.' }, 400)
   const note = await addNote(a.collective, thread, a.member, text)
   return c.json({ ok: true, note_id: note.id })
+})
+
+// "I have seen this": the agent's read receipt. It feeds the same seen-state
+// as a member opening the thread, so teammates can tell the agent is up to
+// date ("seen by Clara") — and stop wondering whether it noticed.
+agentApp.post('/:slug/api/agent/threads/:id/ack', async (c) => {
+  const a = await slugAuth(c)
+  if (!a) return c.json({ error: 'Invalid token for this collective.' }, 401)
+  const thread = await getThread(Number(c.req.param('id')))
+  if (!thread || thread.collective_id !== a.collective.id) return c.json({ error: 'No such thread.' }, 404)
+  const body = await c.req.json().catch(() => ({}))
+  const upTo = Number(body.up_to) || now()
+  await recordThreadSeenUpTo(thread.id, a.member.id, upTo, 'agent')
+  return c.json({ ok: true })
 })
 
 agentApp.post('/:slug/api/agent/threads/:id/draft', async (c) => {

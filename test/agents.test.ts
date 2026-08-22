@@ -333,3 +333,32 @@ test('a cursor from the future cannot deafen an agent — the feed clamps it', a
   assert.match(skill, /expected to answer/i)
   assert.match(skill, /trust `\/me`/)
 })
+
+test('an agent acknowledges a thread and shows up in its seen state', async () => {
+  const fx = await fixture()
+  const a = await joinedAgent(fx)
+  const ack = await json(`/${fx.slug}/api/agent/threads/${fx.thread.id}/ack`, {
+    method: 'POST', headers: { authorization: `Bearer ${a.token}`, 'content-type': 'application/json' }, body: '{}',
+  })
+  assert.equal(ack.status, 200)
+  const read = (await get<any>('SELECT * FROM thread_reads WHERE thread_id = ? AND member_id = ?', [fx.thread.id, a.member.id]))!
+  assert.equal(read.via, 'agent')
+  // and the humans can see it: the thread head names the agent as a reader
+  const html = await (await app.request(`/inbox/${fx.slug}/thread/${fx.thread.id}`, { headers: { cookie: `requests_sid=${fx.sid}` } })).text()
+  assert.match(html, /seen by [^<]*Clara/)
+  // scoped like everything else: another collective's thread cannot be acked
+  const other = await fixture()
+  assert.equal((await json(`/${fx.slug}/api/agent/threads/${other.thread.id}/ack`, {
+    method: 'POST', headers: { authorization: `Bearer ${a.token}` } })).status, 404)
+  // monotonic: a stale up_to cannot roll the receipt back
+  await json(`/${fx.slug}/api/agent/threads/${fx.thread.id}/ack`, {
+    method: 'POST', headers: { authorization: `Bearer ${a.token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ up_to: 1000 }),
+  })
+  const read2 = (await get<any>('SELECT * FROM thread_reads WHERE thread_id = ? AND member_id = ?', [fx.thread.id, a.member.id]))!
+  assert.ok(read2.last_seen_at >= read.last_seen_at)
+  // the skill teaches it
+  const skill = await (await app.request('/skill.md')).text()
+  assert.match(skill, /Acknowledge what you have seen/i)
+  assert.match(skill, /\/ack/)
+})

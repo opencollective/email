@@ -497,12 +497,12 @@ export async function markThreadSeen(threadId: number, memberId: number, via: 'w
 
 /** The write half of markThreadSeen, for callers that have already proved the
  *  member belongs to the thread's collective — one round-trip, not three. */
-export const recordThreadSeen = (threadId: number, memberId: number, via: 'web' | 'email') =>
+export const recordThreadSeen = (threadId: number, memberId: number, via: 'web' | 'email' | 'agent') =>
   recordThreadSeenUpTo(threadId, memberId, now(), via)
 
 /** Seen up to a point in the conversation. Reading is monotonic: a beacon
  *  arriving late or covering less than an earlier one never rolls it back. */
-export const recordThreadSeenUpTo = (threadId: number, memberId: number, upTo: number, via: 'web' | 'email') =>
+export const recordThreadSeenUpTo = (threadId: number, memberId: number, upTo: number, via: 'web' | 'email' | 'agent') =>
   run(`INSERT INTO thread_reads (thread_id, member_id, first_seen_at, last_seen_at, via) VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(thread_id, member_id) DO UPDATE SET last_seen_at = MAX(last_seen_at, excluded.last_seen_at), via = excluded.via`,
     [threadId, memberId, now(), Math.min(upTo, now()), via])
