@@ -76,19 +76,21 @@ test('assign to someone else with full access makes a commenter; autoassign writ
   assert.equal((await page(`/inbox/${fx.slug}/thread/${fx.t2}`, sid)).status, 200)
 })
 
-test('guests appear in their own section; guest→commenter is the only role move offered', async () => {
+test('guests appear in their own section, edited through the same pencil-modal as members', async () => {
   const fx = await fixture()
   await post(`/inbox/${fx.slug}/thread/${fx.t1}/assign-new`, fx.sid, 'email=guesty%40out.test&access=thread')
   const html = await (await page(`/inbox/${fx.slug}/members`, fx.sid)).text()
-  const gsec = html.slice(html.indexOf('Guests'))
+  const gsec = html.slice(html.indexOf('Guests'), html.indexOf('<dialog id="member-edit-modal"'))
   assert.match(gsec, /guesty@out\.test/)
   assert.match(gsec, /1 thread shared/)
+  assert.match(gsec, /data-edit-member=/, 'guests get the same pencil as members')
+  assert.doesNotMatch(gsec, /role-select/, 'no inline dropdown of its own')
   const guest = (await get<any>("SELECT * FROM members WHERE email = 'guesty@out.test'", []))!
-  // promoting to commenter works; promoting to sender is not offered but also not accepted silently as guest
-  await post(`/inbox/${fx.slug}/members/${guest.id}/role`, fx.sid, 'role=commenter')
+  // promoting to commenter goes through the shared edit route
+  await post(`/inbox/${fx.slug}/members/${guest.id}/update`, fx.sid, 'name=Guesty&kind=person&role=commenter&notify_level=every')
   assert.equal((await get<any>('SELECT role FROM members WHERE id = ?', [guest.id]))!.role, 'commenter')
-  // nobody can be turned INTO a guest from here
-  await post(`/inbox/${fx.slug}/members/${guest.id}/role`, fx.sid, 'role=guest')
+  // a person cannot be turned INTO a guest by role edit — guesthood is made by sharing
+  await post(`/inbox/${fx.slug}/members/${guest.id}/update`, fx.sid, 'name=Guesty&kind=person&role=guest&notify_level=every')
   assert.equal((await get<any>('SELECT role FROM members WHERE id = ?', [guest.id]))!.role, 'commenter')
 })
 

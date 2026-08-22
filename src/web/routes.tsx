@@ -1,6 +1,6 @@
 /** @jsxImportSource hono/jsx */
 import { Hono } from 'hono'
-import type { FC } from 'hono/jsx'
+import type { Child, FC } from 'hono/jsx'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import type { Context } from 'hono'
 import { cfg } from '../config.js'
@@ -3465,6 +3465,47 @@ app.post('/inbox/:addr/rules/:id/delete', async (c) => {
   return c.redirect(`/inbox/${t.collective.slug}/rules?m=` + encodeURIComponent('Rule removed.'))
 })
 
+/** THE member row: avatar, identity, role chip, a meta column, and — when the
+ *  viewer may edit — the pencil that opens the shared edit modal. Members and
+ *  Guests both render this, so a member reads the same everywhere. */
+const MemberRow: FC<{ m: Member; viewer: Member; editable: boolean; lastAdmin: boolean; meta: Child }> = ({ m, viewer, editable, lastAdmin, meta }) => (
+  <div class="member-row">
+    <Avatar member={m} />
+    <span class="m-name">
+      {memberName(m)}{m.id === viewer.id ? ' (you)' : ''}
+      {/* an agent's address is plumbing, not identity */}
+      {m.kind === 'agent' ? <small class="muted">agent · acts through the API</small> : <small>{m.email}</small>}
+    </span>
+    <span class="m-role">
+      <span class={m.role === 'admin' ? 'chip solid' : 'chip'} title={ROLE_HINTS[m.role]}>{ROLE_LABELS[m.role]}</span>
+    </span>
+    <span class="m-meta">{meta}</span>
+    <span class="m-remove">
+      {editable ? (
+        <button class="icon-btn" type="button" data-dialog="#member-edit-modal" title={`Edit ${memberName(m)}`}
+          aria-label={`Edit ${memberName(m)}`}
+          data-edit-member={JSON.stringify({ id: m.id, name: memberName(m), role: m.role, kind: m.kind ?? 'person', notify: m.notify_level, lastAdmin })}>
+          <Icon name="pencil" />
+        </button>
+      ) : null}
+    </span>
+  </div>
+)
+
+/** Role choice as a grouped card list — bold name, its meaning underneath.
+ *  Which cards show is decided live (person vs agent ladders differ), so every
+ *  card renders and the modal script hides the off-ladder ones. */
+const RoleCards: FC<{ roles: Member['role'][]; checked?: Member['role'] }> = ({ roles, checked }) => (
+  <div class="role-cards" data-role-cards>
+    {roles.map((value) => (
+      <label class="level-card" data-role-card={value}>
+        <input type="radio" name="role" value={value} checked={value === checked} />
+        <span><b>{ROLE_LABELS[value].charAt(0).toUpperCase() + ROLE_LABELS[value].slice(1)}</b><small>{ROLE_HINTS[value]}</small></span>
+      </label>
+    ))}
+  </div>
+)
+
 app.get('/inbox/:addr/members', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
@@ -3499,67 +3540,23 @@ app.get('/inbox/:addr/members', async (c) => {
         <section class="card">
           <h2>Members ({members.filter((m) => m.role !== 'guest').length})</h2>
           <div class="member-table">
-            {members.filter((m) => m.role !== 'guest').map((m) => {
-              const editable = isAdmin && m.id !== member.id
-              return (
-              <div class="member-row">
-                <Avatar member={m} />
-                <span class="m-name">
-                  {memberName(m)}{m.id === member.id ? ' (you)' : ''}
-                  {/* an agent's address is plumbing, not identity */}
-                  {m.kind === 'agent' ? <small class="muted">agent · acts through the API</small> : <small>{m.email}</small>}
-                </span>
-                <span class="m-role">
-                  <span class={m.role === 'admin' ? 'chip solid' : 'chip'} title={ROLE_HINTS[m.role]}>{ROLE_LABELS[m.role]}</span>
-                </span>
-                <span class="m-meta">
+            {members.filter((m) => m.role !== 'guest').map((m) => (
+              <MemberRow m={m} viewer={member} editable={isAdmin && m.id !== member.id}
+                lastAdmin={m.role === 'admin' && adminCount <= 1}
+                meta={<>
                   {LEVELS.find((l) => l.value === m.notify_level)?.label}
                   <small>{replies(m.id)} replies · seen {relTime(m.last_seen_at)}</small>
-                </span>
-                <span class="m-remove">
-                  {editable ? (
-                    <button class="icon-btn" type="button" data-dialog="#member-edit-modal" title={`Edit ${memberName(m)}`}
-                      aria-label={`Edit ${memberName(m)}`}
-                      data-edit-member={JSON.stringify({ id: m.id, name: memberName(m), role: m.role, kind: m.kind ?? 'person', notify: m.notify_level, lastAdmin: m.role === 'admin' && adminCount <= 1 })}>
-                      <Icon name="pencil" />
-                    </button>
-                  ) : null}
-                </span>
-              </div>
-              )
-            })}
+                </>} />
+            ))}
           </div>
           {members.some((m) => m.role === 'guest') ? (<>
             <h2 class="guests-h">Guests</h2>
-            <p class="fineprint">Commenters who only see the threads shared with them — assign them a thread to share it.</p>
+            <p class="fineprint">Only see the threads shared with them or where they are @mentioned — assign or mention them to share.</p>
             <div class="member-table">
-              {members.filter((m) => m.role === 'guest').map((m) => {
-                const editable = isAdmin && m.id !== member.id
-                return (
-                  <div class="member-row">
-                    <Avatar member={m} />
-                    <span class="m-name">{memberName(m)}{m.kind === 'agent' ? <small class="muted">agent · acts through the API</small> : <small>{m.email}</small>}</span>
-                    <span class="m-role">
-                      {editable ? (
-                        <form method="post" action={`${base}/members/${m.id}/role`} class="inline role-form">
-                          <select name="role" class="role-select" aria-label={`Role of ${memberName(m)}`} title={ROLE_HINTS.guest}>
-                            <option value="guest" selected>Guest</option>
-                            <option value="commenter" data-hint={ROLE_HINTS.commenter}>Commenter — whole inbox</option>
-                          </select>
-                        </form>
-                      ) : <span class="chip" title={ROLE_HINTS.guest}>guest</span>}
-                    </span>
-                    <span class="m-meta"><small>{guestThreadCounts.get(m.id) ?? 0} thread{(guestThreadCounts.get(m.id) ?? 0) === 1 ? '' : 's'} shared</small></span>
-                    <span class="m-remove">
-                      {editable ? (
-                        <form method="post" action={`${base}/members/${m.id}/remove`} class="inline">
-                          <button class="linkish danger" type="submit" data-confirm={`Remove ${memberName(m)}? They lose access to their shared threads immediately.`}>Remove</button>
-                        </form>
-                      ) : null}
-                    </span>
-                  </div>
-                )
-              })}
+              {members.filter((m) => m.role === 'guest').map((m) => (
+                <MemberRow m={m} viewer={member} editable={isAdmin && m.id !== member.id} lastAdmin={false}
+                  meta={<small>{guestThreadCounts.get(m.id) ?? 0} thread{(guestThreadCounts.get(m.id) ?? 0) === 1 ? '' : 's'} shared</small>} />
+              ))}
             </div>
           </>) : null}
           {isAdmin ? (
@@ -3610,14 +3607,7 @@ app.get('/inbox/:addr/members', async (c) => {
                 <option value="agent">Agent</option>
               </select>
               <label class="lbl">Role</label>
-              <div class="role-cards" data-role-cards>
-                {([['reader', 'Reader'], ['commenter', 'Commenter'], ['guest', 'Guest'], ['member', 'Sender'], ['admin', 'Admin']] as [Member['role'], string][]).map(([value, label]) => (
-                  <label class="level-card" data-role-card={value}>
-                    <input type="radio" name="role" value={value} />
-                    <span><b>{label}</b><small>{ROLE_HINTS[value]}</small></span>
-                  </label>
-                ))}
-              </div>
+              <RoleCards roles={['reader', 'commenter', 'guest', 'member', 'admin']} />
               <label class="lbl">Notifications</label>
               <div data-notify-wrap>
                 <select class="input" name="notify_level" id="me-notify">
@@ -3646,14 +3636,7 @@ app.get('/inbox/:addr/members', async (c) => {
                 <option value="agent">Agent</option>
               </select>
               <label class="lbl">Role</label>
-              <div class="role-cards" data-role-cards>
-                {([['reader', 'Reader'], ['commenter', 'Commenter'], ['guest', 'Guest'], ['member', 'Sender']] as [Member['role'], string][]).map(([value, label]) => (
-                  <label class="level-card" data-role-card={value}>
-                    <input type="radio" name="role" value={value} checked={value === 'commenter'} />
-                    <span><b>{label}</b><small>{ROLE_HINTS[value]}</small></span>
-                  </label>
-                ))}
-              </div>
+              <RoleCards roles={['reader', 'commenter', 'guest', 'member']} checked="commenter" />
               <div class="btn-row">
                 <button class="btn" type="submit" data-busy="Creating…">Create invitation link</button>
               </div>

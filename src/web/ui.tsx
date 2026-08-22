@@ -599,14 +599,6 @@ document.querySelectorAll('.wl-addr input, .claim .addr input').forEach((a) => {
 
 // Instant feedback on every submit: disable the button and show progress,
 // so a slow network never invites a double tap.
-document.addEventListener('change', (e) => {
-  const rs = e.target.closest && e.target.closest('.role-select');
-  if (!rs) return;
-  const hint = rs.form && rs.form.querySelector('.role-hint');
-  if (hint) hint.textContent = (rs.selectedOptions[0] && rs.selectedOptions[0].dataset.hint) || '';
-  if (rs.form && rs.form.classList.contains('role-form')) rs.form.requestSubmit();
-});
-
 document.addEventListener('submit', (e) => {
   if (e.target.dataset.sent) { e.preventDefault(); return; } // a form only submits once
   e.target.dataset.sent = '1';
