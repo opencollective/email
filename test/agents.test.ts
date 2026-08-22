@@ -445,14 +445,26 @@ test('a guest agent lives in a shared-threads-only world, and a mention opens it
   assert.match(html, /acts through the API/)
 })
 
-test('an admin can scope an existing agent down to guest through the edit modal', async () => {
+test('scoping an agent down to guest keeps the threads history already gave it', async () => {
   const fx = await fixture()
   const a = await joinedAgent(fx) // commenter agent
+  // history: mentioned on the fixture thread, assigned another
+  const { addNote } = await import('../src/notes.js')
+  const admin = (await get<any>('SELECT * FROM members WHERE id = ?', [fx.adminId]))!
+  await addNote(fx.collective, fx.thread, admin, '@Clara this one is yours')
+  const t2 = await run(`INSERT INTO threads (collective_id, subject, status, counterpart_email, first_message_at, last_message_at, last_direction, created_at, updated_at)
+    VALUES (?, 'Assigned one', 'needs_reply', 'z@y.test', ?, ?, 'inbound', ?, ?)`, [fx.collective.id, now(), now(), now(), now()])
+  await run('UPDATE threads SET assignee_member_id = ? WHERE id = ?', [a.member.id, t2.lastId])
+  const t3 = await run(`INSERT INTO threads (collective_id, subject, status, counterpart_email, first_message_at, last_message_at, last_direction, created_at, updated_at)
+    VALUES (?, 'Untouched one', 'needs_reply', 'q@y.test', ?, ?, 'inbound', ?, ?)`, [fx.collective.id, now(), now(), now(), now()])
+
   await app.request(`/inbox/${fx.slug}/members/${a.member.id}/update`, {
     method: 'POST', headers: { cookie: `requests_sid=${fx.sid}`, 'content-type': 'application/x-www-form-urlencoded' },
     body: 'name=Clara&kind=agent&role=guest',
   })
   assert.equal((await get<any>('SELECT role FROM members WHERE id = ?', [a.member.id]))!.role, 'guest')
-  // and its API world shrinks accordingly
-  assert.equal((await json(`/${fx.slug}/api/agent/threads/${fx.thread.id}`, { headers: { authorization: `Bearer ${a.token}` } })).status, 404)
+  const H = { headers: { authorization: `Bearer ${a.token}` } }
+  assert.equal((await json(`/${fx.slug}/api/agent/threads/${fx.thread.id}`, H)).status, 200, 'once mentioned, still hers')
+  assert.equal((await json(`/${fx.slug}/api/agent/threads/${t2.lastId}`, H)).status, 200, 'once assigned, still hers')
+  assert.equal((await json(`/${fx.slug}/api/agent/threads/${t3.lastId}`, H)).status, 404, 'the untouched thread is not')
 })

@@ -8,7 +8,7 @@ import {
   activeMembers, addTag, all, allCollectives, attachmentsByMessage, batchAll, createCollective, get, getCollective, messageFoldsQuery, popularTagsQuery, setMessageFold,
   getCollectiveBySlug, getMember, getMemberIn, getThread, kvGet, kvGetMany, kvSet, lastMessageQuery, memberMap, recordThreadSeenUpTo,
   renameCollectiveSlug,
-  canSeeThread, grantThreadAccess, markThreadSeen, membershipsByEmail, readsForMember, removeTag, run, setAssignee, setStatus, tagsByThread, threadMessages, threadReads, threadTags,
+  backfillGuestAccess, canSeeThread, grantThreadAccess, markThreadSeen, membershipsByEmail, readsForMember, removeTag, run, setAssignee, setStatus, tagsByThread, threadMessages, threadReads, threadTags,
   type ThreadRead,
   type Attachment, type Collective, type Invite, type Member, type Message, type Thread,
 } from '../db.js'
@@ -3607,7 +3607,7 @@ app.get('/inbox/:addr/members', async (c) => {
               <label class="lbl" for="me-type">Type</label>
               <select class="input" name="kind" id="me-type">
                 <option value="person">Person</option>
-                <option value="agent">Agent — acts through the API, receives no email</option>
+                <option value="agent">Agent</option>
               </select>
               <label class="lbl">Role</label>
               <div class="role-cards" data-role-cards>
@@ -3618,11 +3618,14 @@ app.get('/inbox/:addr/members', async (c) => {
                   </label>
                 ))}
               </div>
-              <label class="lbl" for="me-notify">Notifications</label>
-              <select class="input" name="notify_level" id="me-notify">
-                {LEVELS.map((l) => <option value={l.value}>{l.label}</option>)}
-                <option value="none">None</option>
-              </select>
+              <label class="lbl">Notifications</label>
+              <div data-notify-wrap>
+                <select class="input" name="notify_level" id="me-notify">
+                  {LEVELS.map((l) => <option value={l.value}>{l.label}</option>)}
+                  <option value="none">None</option>
+                </select>
+              </div>
+              <p class="fineprint" data-agent-notify hidden></p>
               <div class="btn-row">
                 <button class="btn" type="submit" data-busy="Saving…">Save</button>
                 <button class="btn ghost" type="button" data-close>Cancel</button>
@@ -3639,8 +3642,8 @@ app.get('/inbox/:addr/members', async (c) => {
             <form class="modal-form" data-add-member action={`${base}/members/add`} method="post">
               <label class="lbl" for="am-type">Type</label>
               <select class="input" name="type" id="am-type">
-                <option value="person">Person — joins with their own email</option>
-                <option value="agent">Agent — an AI teammate on a scoped token</option>
+                <option value="person">Person</option>
+                <option value="agent">Agent</option>
               </select>
               <label class="lbl">Role</label>
               <div class="role-cards" data-role-cards>
@@ -3838,6 +3841,8 @@ app.post('/inbox/:addr/members/:id/update', async (c) => {
       notes.push(`sending-seat limit reached (${planLimits(t.collective.plan).contributors} on the ${t.collective.plan} plan)`)
     } else {
       await run('UPDATE members SET role = ? WHERE id = ?', [role, target.id])
+      // history counts: past mentions and assignments come along into guesthood
+      if (role === 'guest') await backfillGuestAccess(target.id)
     }
   }
 

@@ -1355,6 +1355,18 @@ button.row.new-thread-row {
 .am-result .invite-row { display: flex; align-items: center; gap: 8px; }
 .am-result .invite-url { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 
+/* role cards read as ONE grouped control: square shoulders in the middle,
+   rounded only at the visible ends (classes set by JS — hidden cards move
+   which card is first/last, and CSS cannot see that) */
+.role-cards { display: flex; flex-direction: column; }
+.role-cards .level-card { border-radius: 0; }
+.role-cards .level-card:not(.rc-first) { margin-top: -1.5px; }
+.role-cards .level-card.rc-first { border-radius: 10px 10px 0 0; }
+.role-cards .level-card.rc-last { border-radius: 0 0 10px 10px; }
+.role-cards .level-card.rc-first.rc-last { border-radius: 10px; }
+/* the selected card's accent border wins over its neighbour's overlap */
+.role-cards .level-card:has(input:checked) { position: relative; z-index: 1; }
+
 /* assign modal: guests + the someone-else reveal */
 .guest-tag { color: var(--muted); font-family: var(--mono); font-size: 10px; }
 .guests-h { margin-top: 22px; }

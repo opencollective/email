@@ -488,6 +488,16 @@ export async function canSeeThread(member: Member, threadId: number): Promise<bo
 export const grantThreadAccess = (memberId: number, threadId: number) =>
   run('INSERT OR IGNORE INTO thread_access (member_id, thread_id, created_at) VALUES (?, ?, ?)', [memberId, threadId, now()])
 
+/** Becoming a guest keeps the conversations that were already theirs: every
+ *  thread where they were ever @mentioned or assigned is granted up front. */
+export const backfillGuestAccess = (memberId: number) => Promise.all([
+  run(`INSERT OR IGNORE INTO thread_access (member_id, thread_id, created_at)
+       SELECT nm.member_id, n.thread_id, ? FROM note_mentions nm JOIN notes n ON n.id = nm.note_id
+       WHERE nm.member_id = ?`, [now(), memberId]),
+  run(`INSERT OR IGNORE INTO thread_access (member_id, thread_id, created_at)
+       SELECT ?, id, ? FROM threads WHERE assignee_member_id = ?`, [memberId, now(), memberId]),
+])
+
 export async function markThreadSeen(threadId: number, memberId: number, via: 'web' | 'email'): Promise<void> {
   const member = await getMember(memberId)
   const thread = await getThread(threadId)

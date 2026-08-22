@@ -102,6 +102,21 @@ document.querySelectorAll('[data-filter]').forEach((form) => {
 // one submits it; typing narrows the list so a near-match is easier to spot
 // than to retype (which is how "follow-up" grows a twin called "followup").
 
+// Grouped role cards: after any show/hide, re-mark the visible ends so the
+// group keeps rounded shoulders only where it actually ends.
+function shapeRoleCards(container) {
+  const vis = [].filter.call(container.querySelectorAll('[data-role-card]'), (c) => !c.hidden);
+  vis.forEach((c, i) => {
+    c.classList.toggle('rc-first', i === 0);
+    c.classList.toggle('rc-last', i === vis.length - 1);
+  });
+}
+function agentNotifyText(role) {
+  return role === 'guest'
+    ? 'As a guest agent it is notified through its event feed — only about threads shared with it or where it is @mentioned.'
+    : 'As an agent it is notified through its event feed: every new email, every internal note, and @mentions. No email is ever sent to it.';
+}
+
 // Member-edit modal: one dialog, filled from the pencil that opened it.
 (() => {
   const dlg = document.querySelector('#member-edit-modal');
@@ -126,7 +141,13 @@ document.querySelectorAll('[data-filter]').forEach((form) => {
         if (fallback) fallback.checked = true;
       }
     });
-    if (notify) notify.disabled = agent;
+    shapeRoleCards(form);
+    // an agent's notifications aren't a setting — say what its feed carries,
+    // which depends on the role picked right now
+    const wrap = form.querySelector('[data-notify-wrap]');
+    const explain = form.querySelector('[data-agent-notify]');
+    if (wrap) wrap.hidden = agent;
+    if (explain) { explain.hidden = !agent; explain.textContent = agent ? agentNotifyText(roleVal()) : ''; }
   };
   document.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-edit-member]');
@@ -143,6 +164,7 @@ document.querySelectorAll('[data-filter]').forEach((form) => {
     syncRoles(d.role);
   });
   kind.addEventListener('change', () => syncRoles(roleVal()));
+  form.querySelectorAll('[name=role]').forEach((r) => r.addEventListener('change', () => syncRoles(roleVal())));
 })();
 
 // Add-a-member modal: create an invitation without leaving the page. The
@@ -169,6 +191,7 @@ document.querySelectorAll('[data-filter]').forEach((form) => {
         if (fallback) fallback.checked = true;
       }
     });
+    shapeRoleCards(form);
     result.hidden = true; // a new choice needs a new link
   };
   type.addEventListener('change', sync);
@@ -761,7 +784,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '80'
+export const ASSET_V = '81'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">
