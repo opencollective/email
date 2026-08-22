@@ -213,7 +213,15 @@ document.querySelectorAll('[data-filter]').forEach((form) => {
 // The compose box grows with what you write: height follows content, capped
 // at 80% of the screen on a phone and a reading-friendly height on desktop.
 function autoGrow(t) {
-  const cap = matchMedia('(max-width: 900px)').matches ? Math.round(innerHeight * 0.8) : 480;
+  // the WHOLE composer stays within ~80% of a phone screen: the textarea's
+  // share is that minus the tabs, the To row and the actions bar — so Send
+  // never grows out of reach
+  let cap = 480;
+  if (matchMedia('(max-width: 900px)').matches) {
+    const box = t.closest('.composer, .compose-form');
+    const chrome = box ? box.offsetHeight - t.offsetHeight : 0;
+    cap = Math.max(120, Math.round(innerHeight * 0.8) - chrome);
+  }
   t.style.height = 'auto';
   t.style.height = Math.min(t.scrollHeight + 2, cap) + 'px';
   t.style.overflowY = t.scrollHeight + 2 > cap ? 'auto' : 'hidden';
@@ -324,6 +332,18 @@ root.querySelectorAll('[data-tagpop]').forEach((form) => {
       if (det) { det.open = false; input.blur(); }
     }
   });
+});
+root.querySelectorAll('[data-pd]').forEach((pd) => {
+  const key = 'pdfold:' + location.pathname + ':' + pd.getAttribute('data-pd');
+  try { if (sessionStorage.getItem(key) === '1') pd.classList.add('folded'); } catch (e) {}
+  const toggle = () => {
+    const folded = pd.classList.toggle('folded');
+    try { sessionStorage.setItem(key, folded ? '1' : '0'); } catch (e) {}
+  };
+  const head = pd.querySelector('.pd-head');
+  if (head) head.addEventListener('click', toggle);
+  const peek = pd.querySelector('.pd-peek');
+  if (peek) peek.addEventListener('click', toggle);
 });
 root.querySelectorAll('[data-use-draft]').forEach((b) => {
   b.addEventListener('click', () => {
@@ -691,7 +711,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '77'
+export const ASSET_V = '78'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">

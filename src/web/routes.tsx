@@ -2249,20 +2249,19 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               {proposedDrafts.map((d) => {
                 const by = members.get(d.member_id)
                 return (
-                  <div class="proposed-draft">
+                  <div class="proposed-draft" data-pd={String(d.id)}>
+                    {/* the head folds the proposal away, exactly like a message's */}
                     <div class="pd-head">
                       <span class="pd-who">{by?.kind === 'agent' ? '🤖 ' : ''}<b>{memberName(by)}</b> proposed a reply <small>· {relTime(d.created_at)}</small></span>
                     </div>
+                    <div class="pd-peek">{excerpt(d.body, 120)}</div>
                     <div class="pd-body" data-draft-body={String(d.id)}>{d.body}</div>
-                    {/* actions AFTER the text — you read a proposal before acting on it */}
+                    {/* the action AFTER the text — you read a proposal before acting on it */}
                     <div class="pd-foot">
                       {canSendRole(member.role) ? (
                         <button class="linkish pd-use" type="button" data-use-draft={String(d.id)}
                           title="Copy this draft into the reply box below, where you can edit and send it">Use this draft ↓</button>
                       ) : null}
-                      <form method="post" action={`${base}/thread/${thread.id}/draft/${d.id}/dismiss`} class="inline">
-                        <button class="linkish pd-dismiss" type="submit">Dismiss</button>
-                      </form>
                     </div>
                   </div>
                 )
