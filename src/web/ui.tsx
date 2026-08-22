@@ -210,6 +210,19 @@ document.querySelectorAll('[data-filter]').forEach((form) => {
   });
 })();
 
+// The compose box grows with what you write: height follows content, capped
+// at 80% of the screen on a phone and a reading-friendly height on desktop.
+function autoGrow(t) {
+  const cap = matchMedia('(max-width: 900px)').matches ? Math.round(innerHeight * 0.8) : 480;
+  t.style.height = 'auto';
+  t.style.height = Math.min(t.scrollHeight + 2, cap) + 'px';
+  t.style.overflowY = t.scrollHeight + 2 > cap ? 'auto' : 'hidden';
+}
+document.querySelectorAll('.composer textarea, .compose-form textarea').forEach((t) => {
+  t.addEventListener('input', () => autoGrow(t));
+  if (t.value.trim()) autoGrow(t);
+});
+
 // "Use draft": copy a proposed reply into the composer for editing/sending
 
 // Reading, reported honestly:// Reading, reported honestly: after 3 seconds on the page, seen up to the
@@ -320,6 +333,7 @@ root.querySelectorAll('[data-use-draft]').forEach((b) => {
     const tab = document.querySelector('[data-tab="reply"]');
     if (tab) tab.click();
     ta.value = body.textContent.trim() + '\\n\\n' + (ta.getAttribute('data-signature') || '');
+    autoGrow(ta);
     ta.focus();
     ta.scrollIntoView({ block: 'center' });
   });
@@ -677,7 +691,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '76'
+export const ASSET_V = '77'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">

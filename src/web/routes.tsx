@@ -2252,16 +2252,18 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                   <div class="proposed-draft">
                     <div class="pd-head">
                       <span class="pd-who">{by?.kind === 'agent' ? '🤖 ' : ''}<b>{memberName(by)}</b> proposed a reply <small>· {relTime(d.created_at)}</small></span>
-                      <span class="pd-acts">
-                        {canSendRole(member.role) ? (
-                          <button class="btn small" type="button" data-use-draft={String(d.id)}>Use draft ↓</button>
-                        ) : null}
-                        <form method="post" action={`${base}/thread/${thread.id}/draft/${d.id}/dismiss`} class="inline">
-                          <button class="linkish" type="submit">Dismiss</button>
-                        </form>
-                      </span>
                     </div>
                     <div class="pd-body" data-draft-body={String(d.id)}>{d.body}</div>
+                    {/* actions AFTER the text — you read a proposal before acting on it */}
+                    <div class="pd-foot">
+                      {canSendRole(member.role) ? (
+                        <button class="linkish pd-use" type="button" data-use-draft={String(d.id)}
+                          title="Copy this draft into the reply box below, where you can edit and send it">Use this draft ↓</button>
+                      ) : null}
+                      <form method="post" action={`${base}/thread/${thread.id}/draft/${d.id}/dismiss`} class="inline">
+                        <button class="linkish pd-dismiss" type="submit">Dismiss</button>
+                      </form>
+                    </div>
                   </div>
                 )
               })}
