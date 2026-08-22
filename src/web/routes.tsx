@@ -1179,12 +1179,14 @@ app.get('/inbox/:addr', async (c) => {
       args: [collective.id],
     },
     { sql: 'SELECT * FROM members WHERE collective_id = ?', args: [collective.id] },
+    listVersionQuery(collective.id),
   ])
   const threads = batch1[0] as Thread[]
   const counts: Record<string, number> = {}
   filterKeys.forEach((key, i) => { counts[key] = (batch1[1 + i][0] as { n: number }).n })
   const tagRows = batch1[1 + filterKeys.length] as { name: string; n: number }[]
   const members = new Map((batch1[2 + filterKeys.length] as Member[]).map((m) => [m.id, m]))
+  const liveV = listVersion((batch1[3 + filterKeys.length] as any[])[0])
 
   // round-trip 2: everything the listed rows show — tags, read state, the
   // participant stacks, note counts and last-message snippets, all together
@@ -1303,7 +1305,7 @@ app.get('/inbox/:addr', async (c) => {
           </div>
         </form>
       </dialog>
-      <div class="rows">
+      <div class="rows" data-live={`${base}/ping`} data-live-v={liveV}>
         {threads.length === 0 ? (
           <div class="empty-state">
             {f === 'needs_reply'
@@ -1411,6 +1413,24 @@ function nameList(people: (Member | undefined)[]): string {
   if (firsts.length <= 4) return `${firsts.slice(0, -1).join(', ')} and ${firsts[firsts.length - 1]}`
   return `${firsts.slice(0, 3).join(', ')} and ${firsts.length - 3} others`
 }
+
+/** Version stamps for the live poller. Cheap to compute, changing whenever
+ *  what the page shows could have changed — the client refetches on change. */
+const threadVersionQuery = (threadId: number) => ({
+  sql: `SELECT (SELECT COALESCE(MAX(id), 0) FROM messages WHERE thread_id = ?) AS m,
+               (SELECT COALESCE(MAX(id), 0) FROM notes WHERE thread_id = ?) AS n,
+               (SELECT COALESCE(MAX(id), 0) FROM events WHERE thread_id = ?) AS e,
+               (SELECT COALESCE(MAX(id), 0) FROM thread_drafts WHERE thread_id = ?) AS d`,
+  args: [threadId, threadId, threadId, threadId] as (string | number)[],
+})
+const threadVersion = (r: { m: number; n: number; e: number; d: number }) => `${r.m}-${r.n}-${r.e}-${r.d}`
+
+const listVersionQuery = (collectiveId: number) => ({
+  sql: `SELECT COUNT(*) AS c, COALESCE(MAX(updated_at), 0) AS u, COALESCE(MAX(last_message_at), 0) AS l
+        FROM threads WHERE collective_id = ? AND status != 'spam'`,
+  args: [collectiveId] as (string | number)[],
+})
+const listVersion = (r: { c: number; u: number; l: number }) => `${r.c}-${r.u}-${r.l}`
 
 // ---------- the one way a thread appears in a list ----------
 
@@ -1596,6 +1616,8 @@ app.get('/inbox/:addr/contact/:email', async (c) => {
     "SELECT id, assign_member_id FROM rules WHERE collective_id = ? AND lower(match_from) = ? AND (match_subject IS NULL OR match_subject = '') AND assign_member_id IS NOT NULL ORDER BY id DESC LIMIT 1",
     [collective.id, email])
   const autoAssignee = autoRule?.assign_member_id ? members.get(autoRule.assign_member_id) : undefined
+  const lvq = listVersionQuery(collective.id)
+  const liveV = listVersion((await get<any>(lvq.sql, lvq.args))!)
   const activeMembersOnly = [...members.values()].filter((m) => !m.removed_at).sort((a, b) => memberName(a).localeCompare(memberName(b)))
   const signature = signatureFor(collective, member)
 
@@ -1625,7 +1647,7 @@ app.get('/inbox/:addr/contact/:email', async (c) => {
             </p>
           </div>
         </div>
-        <div class="rows">
+        <div class="rows" data-live={`${base}/ping`} data-live-v={liveV}>
           {canSendRole(member.role) ? (<>
             {/* mobile: a drawer; desktop: link straight to the full composer */}
             <a class="row no-sender new-thread-row nt-dated" href={`${base}/compose?to=${encodeURIComponent(email)}`} data-sheet="#new-thread-sheet">
@@ -1961,7 +1983,14 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
           </div>
           </div>
 
-          <div class="tl" data-seen-url={`${base}/thread/${thread.id}/seen`}>
+          <div class="tl" data-seen-url={`${base}/thread/${thread.id}/seen`}
+            data-live={`${base}/thread/${thread.id}/ping`}
+            data-live-v={threadVersion({
+              m: Math.max(0, ...msgs.map((m) => m.id)),
+              n: Math.max(0, ...notes.map((n) => n.id)),
+              e: Math.max(0, ...(batch[2] as { id?: number }[]).map((ev) => ev.id ?? 0)),
+              d: Math.max(0, ...proposedDrafts.map((d) => d.id)),
+            })}>
             {(() => { return null })()}
             {groups.map((g, gi) => <>
               {prevSeen > 0 && groupTs[gi] > prevSeen && (gi === 0 || groupTs[gi - 1] <= prevSeen) ? (
@@ -2838,6 +2867,24 @@ app.post('/inbox/:addr/thread/:id/tags', async (c) => {
   // a clicked suggestion wins over whatever was half-typed in the box
   await addTag(t.collective.id, thread.id, String(body.pick || body.name || ''), t.member.id)
   return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}`)
+})
+
+// Version stamps for the live poller — tiny text responses, polled while a
+// page is visible so what you look at stays current.
+app.get('/inbox/:addr/ping', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const q = listVersionQuery(t.collective.id)
+  return c.text(listVersion((await get<any>(q.sql, q.args))!), 200, { 'Cache-Control': 'no-store' })
+})
+
+app.get('/inbox/:addr/thread/:id/ping', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const thread = await threadOf(c, t)
+  if (!thread) return c.notFound()
+  const q = threadVersionQuery(thread.id)
+  return c.text(threadVersion((await get<any>(q.sql, q.args))!), 200, { 'Cache-Control': 'no-store' })
 })
 
 // The reading beacon: fired by the page after a 3s dwell (seen up to the

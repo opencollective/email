@@ -101,53 +101,6 @@ document.querySelectorAll('[data-filter]').forEach((form) => {
 // Tag suggestions: the collective's own vocabulary, most-used first. Clicking
 // one submits it; typing narrows the list so a near-match is easier to spot
 // than to retype (which is how "follow-up" grows a twin called "followup").
-document.querySelectorAll('[data-tagpop]').forEach((form) => {
-  const input = form.querySelector('input[name=name]');
-  const box = form.querySelector('.tag-sugs');
-  const det = form.closest('details');
-  if (det) det.addEventListener('toggle', () => { if (det.open && input) input.focus(); });
-  if (!input) return;
-  let at = -1; // which suggestion the arrow keys are on; -1 = the typed text
-  const live = () => box ? [].slice.call(box.querySelectorAll('.tag-sug')).filter((b) => !b.hidden) : [];
-  const mark = () => {
-    const list = live();
-    list.forEach((b, i) => b.classList.toggle('on', i === at));
-    if (at >= 0 && list[at] && list[at].scrollIntoView) list[at].scrollIntoView({ block: 'nearest' });
-  };
-  input.addEventListener('input', () => {
-    // a leading # is how people write tags; we store them without it
-    if (input.value.charAt(0) === '#') input.value = input.value.slice(1);
-    const q = input.value.trim().toLowerCase();
-    at = -1;
-    let shown = 0;
-    if (box) {
-      box.querySelectorAll('.tag-sug').forEach((b) => {
-        const hit = !q || (b.getAttribute('data-find') || '').indexOf(q) !== -1;
-        b.hidden = !hit;
-        b.classList.remove('on');
-        if (hit) shown++;
-      });
-      box.hidden = shown === 0;
-    }
-  });
-  input.addEventListener('keydown', (e) => {
-    const list = live();
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      if (!list.length) return;
-      e.preventDefault();
-      at = e.key === 'ArrowDown'
-        ? (at + 1 >= list.length ? -1 : at + 1)
-        : (at - 1 < -1 ? list.length - 1 : at - 1);
-      mark();
-    } else if (e.key === 'Enter') {
-      // on a highlighted suggestion, Enter takes it; otherwise the typed text
-      // submits as usual, so a brand-new tag is one Enter away too
-      if (at >= 0 && list[at]) { e.preventDefault(); list[at].click(); }
-    } else if (e.key === 'Escape') {
-      if (det) { det.open = false; input.blur(); }
-    }
-  });
-});
 
 // Add-a-member modal: create an invitation without leaving the page. The
 // shown URL always matches the selects — changing type or role clears it.
@@ -258,18 +211,6 @@ document.querySelectorAll('[data-tagpop]').forEach((form) => {
 })();
 
 // "Use draft": copy a proposed reply into the composer for editing/sending
-document.querySelectorAll('[data-use-draft]').forEach((b) => {
-  b.addEventListener('click', () => {
-    const body = document.querySelector('[data-draft-body="' + b.getAttribute('data-use-draft') + '"]');
-    const ta = document.querySelector('form[data-pane=reply] textarea');
-    if (!body || !ta) return;
-    const tab = document.querySelector('[data-tab="reply"]');
-    if (tab) tab.click();
-    ta.value = body.textContent.trim() + '\\n\\n' + (ta.getAttribute('data-signature') || '');
-    ta.focus();
-    ta.scrollIntoView({ block: 'center' });
-  });
-});
 
 // Reading, reported honestly:// Reading, reported honestly: after 3 seconds on the page, seen up to the
 // last message on screen; on reaching the bottom, the whole thread. A page
@@ -307,7 +248,83 @@ document.querySelectorAll('[data-use-draft]').forEach((b) => {
 
 // Folding a message: instant here, remembered on the server. Without JS the
 // same control is a form post that reloads the thread.
-document.querySelectorAll('[data-msg]').forEach((msg) => {
+// one message menu open at a time; any click elsewhere closes it
+document.addEventListener('click', (e) => {
+  document.querySelectorAll('.msg-menu[open]').forEach((d) => {
+    if (!d.contains(e.target)) d.open = false;
+  });
+});
+
+// Sender cards: CSS opens them on hover where there is a pointer; on a
+// touchscreen the first tap opens the card instead of following the link.
+document.addEventListener('click', (e) => {
+  if (e.target.closest && e.target.closest('[data-person]')) return;
+  document.querySelectorAll('[data-person].open').forEach((o) => o.classList.remove('open'));
+});
+
+// Everything bound per-element inside regions the live poller may replace
+// lives here, so a swap can rebind just the fresh nodes.
+function wireLive(root) {
+root.querySelectorAll('[data-tagpop]').forEach((form) => {
+  const input = form.querySelector('input[name=name]');
+  const box = form.querySelector('.tag-sugs');
+  const det = form.closest('details');
+  if (det) det.addEventListener('toggle', () => { if (det.open && input) input.focus(); });
+  if (!input) return;
+  let at = -1; // which suggestion the arrow keys are on; -1 = the typed text
+  const live = () => box ? [].slice.call(box.querySelectorAll('.tag-sug')).filter((b) => !b.hidden) : [];
+  const mark = () => {
+    const list = live();
+    list.forEach((b, i) => b.classList.toggle('on', i === at));
+    if (at >= 0 && list[at] && list[at].scrollIntoView) list[at].scrollIntoView({ block: 'nearest' });
+  };
+  input.addEventListener('input', () => {
+    // a leading # is how people write tags; we store them without it
+    if (input.value.charAt(0) === '#') input.value = input.value.slice(1);
+    const q = input.value.trim().toLowerCase();
+    at = -1;
+    let shown = 0;
+    if (box) {
+      box.querySelectorAll('.tag-sug').forEach((b) => {
+        const hit = !q || (b.getAttribute('data-find') || '').indexOf(q) !== -1;
+        b.hidden = !hit;
+        b.classList.remove('on');
+        if (hit) shown++;
+      });
+      box.hidden = shown === 0;
+    }
+  });
+  input.addEventListener('keydown', (e) => {
+    const list = live();
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      if (!list.length) return;
+      e.preventDefault();
+      at = e.key === 'ArrowDown'
+        ? (at + 1 >= list.length ? -1 : at + 1)
+        : (at - 1 < -1 ? list.length - 1 : at - 1);
+      mark();
+    } else if (e.key === 'Enter') {
+      // on a highlighted suggestion, Enter takes it; otherwise the typed text
+      // submits as usual, so a brand-new tag is one Enter away too
+      if (at >= 0 && list[at]) { e.preventDefault(); list[at].click(); }
+    } else if (e.key === 'Escape') {
+      if (det) { det.open = false; input.blur(); }
+    }
+  });
+});
+root.querySelectorAll('[data-use-draft]').forEach((b) => {
+  b.addEventListener('click', () => {
+    const body = document.querySelector('[data-draft-body="' + b.getAttribute('data-use-draft') + '"]');
+    const ta = document.querySelector('form[data-pane=reply] textarea');
+    if (!body || !ta) return;
+    const tab = document.querySelector('[data-tab="reply"]');
+    if (tab) tab.click();
+    ta.value = body.textContent.trim() + '\\n\\n' + (ta.getAttribute('data-signature') || '');
+    ta.focus();
+    ta.scrollIntoView({ block: 'center' });
+  });
+});
+root.querySelectorAll('[data-msg]').forEach((msg) => {
   const form = msg.querySelector('.msg-fold');
   if (!form) return;
   const flag = form.querySelector('input[name=collapsed]');
@@ -338,16 +355,7 @@ document.querySelectorAll('[data-msg]').forEach((msg) => {
     toggle(e);
   });
 });
-// one message menu open at a time; any click elsewhere closes it
-document.addEventListener('click', (e) => {
-  document.querySelectorAll('.msg-menu[open]').forEach((d) => {
-    if (!d.contains(e.target)) d.open = false;
-  });
-});
-
-// Sender cards: CSS opens them on hover where there is a pointer; on a
-// touchscreen the first tap opens the card instead of following the link.
-document.querySelectorAll('[data-person]').forEach((p) => {
+root.querySelectorAll('[data-person]').forEach((p) => {
   const hit = p.querySelector('.person-hit');
   if (!hit) return;
   hit.addEventListener('click', (e) => {
@@ -358,11 +366,7 @@ document.querySelectorAll('[data-person]').forEach((p) => {
     if (!wasOpen) p.classList.add('open');
   });
 });
-document.addEventListener('click', (e) => {
-  if (e.target.closest && e.target.closest('[data-person]')) return;
-  document.querySelectorAll('[data-person].open').forEach((o) => o.classList.remove('open'));
-});
-document.querySelectorAll('[data-copy]').forEach((b) => {
+root.querySelectorAll('[data-copy]').forEach((b) => {
   b.addEventListener('click', (e) => {
     e.preventDefault();
     const done = () => {
@@ -380,6 +384,52 @@ document.querySelectorAll('[data-copy]').forEach((b) => {
     }, () => {});
   });
 });
+}
+wireLive(document);
+
+// Live view: poll a cheap version stamp; when it moves, refetch this page and
+// swap the regions that show thread/list state — never the composer, never
+// while the user is mid-interaction. The page you look at stays current.
+(() => {
+  const live = document.querySelector('[data-live]');
+  if (!live) return;
+  const url = live.getAttribute('data-live');
+  let v = live.getAttribute('data-live-v') || '';
+  const REGIONS = ['.tl', '.thread-side', '.head-people', '.thread-sub', '.proposed', '.rows', '.tag-bar'];
+  const busy = () => {
+    const a = document.activeElement;
+    if (a && (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && a.type !== 'submit') || a.tagName === 'SELECT')) return true;
+    return !!document.querySelector('.tl details[open], .thread-sub details[open], dialog[open], [data-person].open');
+  };
+  let inflight = false;
+  const tick = () => {
+    if (document.hidden || inflight) return;
+    inflight = true;
+    fetch(url, { headers: { accept: 'text/plain' } })
+      .then((r) => (r.ok ? r.text() : Promise.reject()))
+      .then((nv) => {
+        if (nv === v || busy()) return; // busy: leave v so the next tick retries
+        return fetch(location.href).then((r) => (r.ok ? r.text() : Promise.reject())).then((html) => {
+          const doc = new DOMParser().parseFromString(html, 'text/html');
+          REGIONS.forEach((sel) => {
+            const fresh = doc.querySelector(sel);
+            const cur = document.querySelector(sel);
+            if (cur && fresh) { cur.innerHTML = fresh.innerHTML; wireLive(cur); }
+            else if (!cur && fresh && sel === '.proposed') {
+              // a first agent draft arrived: give it a home above the composer
+              const before = document.querySelector('.typing') || document.querySelector('.composer');
+              if (before) { before.parentElement.insertBefore(fresh, before); wireLive(fresh); }
+            }
+          });
+          v = nv;
+        });
+      })
+      .catch(() => {})
+      .then(() => { inflight = false; });
+  };
+  setInterval(tick, 8000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+})();
 
 document.querySelectorAll('.file-input').forEach((inp) => {
   inp.addEventListener('change', () => {
@@ -616,7 +666,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '73'
+export const ASSET_V = '74'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">

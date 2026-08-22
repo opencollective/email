@@ -363,3 +363,34 @@ test('unassigned wears no warning triangle anywhere', async () => {
     assert.match(html, /unassigned/i, 'the state is still named, just not shouted')
   }
 })
+
+test('the live version stamps move when the page content would', async () => {
+  const fx = await fixture()
+  const H = { headers: { cookie: `requests_sid=${fx.alice.sid}` } }
+  const ping = async (path: string) => await (await app.request(path, H)).text()
+
+  // thread: the page embeds the same stamp the ping returns — no phantom first refresh
+  const html = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
+  const embedded = html.match(/data-live-v="([^"]+)"/)?.[1]
+  const v0 = await ping(`/inbox/${fx.slug}/thread/${fx.threadId}/ping`)
+  assert.equal(embedded, v0, 'render-time stamp matches the ping')
+
+  // a note moves it; so does a new message; so does an event; so does a draft
+  const { addNote } = await import('../src/notes.js')
+  const alice = (await get<any>('SELECT * FROM members WHERE id = ?', [fx.alice.id]))!
+  await addNote(fx.collective, (await get<any>('SELECT * FROM threads WHERE id = ?', [fx.threadId]))!, alice, 'live?')
+  const v1 = await ping(`/inbox/${fx.slug}/thread/${fx.threadId}/ping`)
+  assert.notEqual(v1, v0, 'a note changes the thread version')
+  await post(`/inbox/${fx.slug}/thread/${fx.threadId}/status`, fx.alice.sid, 'status=closed')
+  const v2 = await ping(`/inbox/${fx.slug}/thread/${fx.threadId}/ping`)
+  assert.notEqual(v2, v1, 'a status event changes it')
+
+  // list: new thread and status change both move the collective stamp
+  const l0 = await ping(`/inbox/${fx.slug}/ping`)
+  await run(`INSERT INTO threads (collective_id, subject, status, counterpart_email, first_message_at, last_message_at, last_direction, created_at, updated_at)
+    VALUES (?, 'Fresh one', 'needs_reply', 'x@y.test', ?, ?, 'inbound', ?, ?)`, [fx.collective.id, now(), now(), now(), now()])
+  const l1 = await ping(`/inbox/${fx.slug}/ping`)
+  assert.notEqual(l1, l0, 'a new thread changes the list version')
+  const inbox = await (await page(`/inbox/${fx.slug}`, fx.alice.sid)).text()
+  assert.equal(inbox.match(/data-live-v="([^"]+)"/)?.[1], l1, 'the inbox embeds the current list stamp')
+})
