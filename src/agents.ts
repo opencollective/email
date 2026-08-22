@@ -121,6 +121,14 @@ export function threadJson(thread: Thread, msgs: { id: number; direction: string
  *  happen. The agent's own notes are skipped — no agent needs an echo. */
 export async function agentEvents(collectiveId: number, memberId: number, since: number, waitSeconds: number) {
   const deadline = Date.now() + Math.min(Math.max(waitSeconds, 0), 25) * 1000
+  // Self-heal a cursor from the future: a client holding a cursor beyond the
+  // feed's end (a stale value from before a migration, a bug of theirs, a
+  // restored backup) would otherwise wait forever in silence, because every
+  // new event lands at max+1 ≤ their cursor. Clamping to the feed's end is
+  // always safe — there is nothing between the end and a too-big cursor —
+  // and turns "deaf forever" into "current from the next event on".
+  const end = (await get<{ id: number }>('SELECT MAX(id) AS id FROM agent_feed WHERE collective_id = ?', [collectiveId]))?.id ?? 0
+  if (since > end) since = end
   for (;;) {
     const rows = await all<{
       id: number; type: string; thread_id: number; subject: string

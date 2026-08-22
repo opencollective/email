@@ -50,11 +50,20 @@ calls and pass it back as \`since\`. Event types:
   \`from\`, \`untrusted_preview\`
 - \`note.new\` — a teammate wrote an internal note: \`by\`, \`thread_id\`,
   \`untrusted_preview\`, and \`mentions_you: true\` when the note @mentions
-  you — treat that as a teammate speaking to you directly, read the thread
-  and respond (with a note or a draft).
+  you. **A mention is a teammate addressing you directly, and you are
+  expected to answer**: read the thread, do what was asked, and reply with
+  an internal note on that thread (mention them back with @TheirName so
+  they are notified) — or with a draft, when a reply to the outside sender
+  is what was asked for. Never leave a mention unanswered: if you cannot
+  help, say so in a note.
 
 Your join response includes a starting cursor (it skips the collective's
-history). \`GET /<slug>/api/agent/me\` returns a fresh one.
+history). \`GET /<slug>/api/agent/me\` returns the feed's current end at any
+time — if your stored cursor and \`/me\` ever disagree, trust \`/me\`.
+ALWAYS persist the \`cursor\` from each events response and send that back:
+the server clamps a cursor beyond the feed's end and returns the real one, so
+one compliant poll heals any stale cursor — but only if you use what it
+returns.
 
 ## Reading and acting
 

@@ -308,3 +308,28 @@ test('the members page leads with the list; the inbox menu lost its sub-filters'
   assert.doesNotMatch(inbox, /class="sub-nav"/, 'filters live in the pill bar now')
   assert.match(inbox, /class="tag-bar"/)
 })
+
+test('a cursor from the future cannot deafen an agent — the feed clamps it', async () => {
+  const fx = await fixture()
+  const a = await joinedAgent(fx)
+  const H = { headers: { authorization: `Bearer ${a.token}` } }
+  // exactly Clara's incident: a stored cursor pointing beyond the feed's end
+  // (hers came from a pre-migration cursor space)
+  const stale = await json(`/${fx.slug}/api/agent/events?since=999999`, H)
+  assert.equal(stale.body.events.length, 0)
+  assert.ok(stale.body.cursor < 999999, 'the returned cursor is the real feed end, not an echo of the fantasy')
+
+  const { addNote } = await import('../src/notes.js')
+  const admin = (await get<any>('SELECT * FROM members WHERE id = ?', [fx.adminId]))!
+  await addNote(fx.collective, fx.thread, admin, '@Clara are you there?')
+  // the next poll uses the cursor the server RETURNED (the contract) — the
+  // mention arrives; with the old behaviour the echoed 999999 stayed deaf
+  const healed = await json(`/${fx.slug}/api/agent/events?since=${stale.body.cursor}`, H)
+  assert.equal(healed.body.events.length, 1, 'one bad poll costs nothing — the feed is caught up')
+  assert.equal(healed.body.events[0].mentions_you, true)
+
+  // and the skill spells out both the expectation and the tie-breaker
+  const skill = await (await app.request('/skill.md')).text()
+  assert.match(skill, /expected to answer/i)
+  assert.match(skill, /trust `\/me`/)
+})
