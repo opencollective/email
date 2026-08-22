@@ -61,7 +61,7 @@ const ROLE_HINTS: Record<Member['role'], string> = {
   commenter: 'Discusses internally: notes, assigning, tags — cannot email the outside world.',
   member: 'Answers senders as the collective — uses a paid seat.',
   admin: 'Everything a sender can, plus members, billing and settings.',
-  guest: 'A commenter who only sees the threads shared with them.',
+  guest: 'Only sees the threads shared with them or where they are @mentioned.',
 }
 /** Nothing may be written to an archived inbox — it is on its way out, and the
  *  outside world is already being told so by the bounces. */
@@ -1856,10 +1856,6 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
 
   const lastAssignEvent = [...allEvents].reverse().find((e) => e.type === 'assigned' || e.type === 'unassigned')
   const activeList = [...members.values()].filter((m) => !m.removed_at).sort((a, b) => memberName(a).localeCompare(memberName(b)))
-  // which guests already see THIS thread (for the mention roster)
-  const guestAccessIds = new Set(activeList.some((m) => m.role === 'guest')
-    ? (await all<{ member_id: number }>('SELECT member_id FROM thread_access WHERE thread_id = ?', [thread.id])).map((r) => r.member_id)
-    : [])
   const assignee = thread.assignee_member_id ? members.get(thread.assignee_member_id) : null
   const counterpartFirst = (thread.counterpart_name || thread.counterpart_email || 'the sender').split(' ')[0]
   // reflects the actual From: verified custom domain, else slug@collective.email
@@ -2347,8 +2343,8 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                 name="body" rows={4} placeholder="Add context, ask a teammate, leave a note… type @ to pull someone in"
                 data-draft="note" required
                 data-mentions={JSON.stringify({
-                  people: activeList.filter((m2) => m2.role !== 'guest' || guestAccessIds.has(m2.id))
-                    .map((m) => ({ id: m.id, name: memberName(m), email: m.email })),
+                  // mentioning a guest SHARES the thread with them, so everyone is offerable
+                  people: activeList.map((m) => ({ id: m.id, name: memberName(m), email: m.email })),
                   // the matching *rules* (unique first names, login names) stay
                   // server-side; the editor only replays the derived labels
                   labels: mentionLabels(activeList).map((c) => [c.label, c.member.id]),
@@ -3510,7 +3506,8 @@ app.get('/inbox/:addr/members', async (c) => {
                 <Avatar member={m} />
                 <span class="m-name">
                   {memberName(m)}{m.id === member.id ? ' (you)' : ''}
-                  <small>{m.email}</small>
+                  {/* an agent's address is plumbing, not identity */}
+                  {m.kind === 'agent' ? <small class="muted">agent · acts through the API</small> : <small>{m.email}</small>}
                 </span>
                 <span class="m-role">
                   <span class={m.role === 'admin' ? 'chip solid' : 'chip'} title={ROLE_HINTS[m.role]}>{ROLE_LABELS[m.role]}</span>
@@ -3541,7 +3538,7 @@ app.get('/inbox/:addr/members', async (c) => {
                 return (
                   <div class="member-row">
                     <Avatar member={m} />
-                    <span class="m-name">{memberName(m)}<small>{m.email}</small></span>
+                    <span class="m-name">{memberName(m)}{m.kind === 'agent' ? <small class="muted">agent · acts through the API</small> : <small>{m.email}</small>}</span>
                     <span class="m-role">
                       {editable ? (
                         <form method="post" action={`${base}/members/${m.id}/role`} class="inline role-form">
@@ -3612,14 +3609,15 @@ app.get('/inbox/:addr/members', async (c) => {
                 <option value="person">Person</option>
                 <option value="agent">Agent — acts through the API, receives no email</option>
               </select>
-              <label class="lbl" for="me-role">Role</label>
-              <select class="input" name="role" id="me-role">
-                <option value="reader">Reader</option>
-                <option value="commenter">Commenter</option>
-                <option value="guest" data-guest-only>Guest</option>
-                <option value="member" data-person-only>Sender</option>
-                <option value="admin" data-person-only>Admin</option>
-              </select>
+              <label class="lbl">Role</label>
+              <div class="role-cards" data-role-cards>
+                {([['reader', 'Reader'], ['commenter', 'Commenter'], ['guest', 'Guest'], ['member', 'Sender'], ['admin', 'Admin']] as [Member['role'], string][]).map(([value, label]) => (
+                  <label class="level-card" data-role-card={value}>
+                    <input type="radio" name="role" value={value} />
+                    <span><b>{label}</b><small>{ROLE_HINTS[value]}</small></span>
+                  </label>
+                ))}
+              </div>
               <label class="lbl" for="me-notify">Notifications</label>
               <select class="input" name="notify_level" id="me-notify">
                 {LEVELS.map((l) => <option value={l.value}>{l.label}</option>)}
@@ -3644,13 +3642,15 @@ app.get('/inbox/:addr/members', async (c) => {
                 <option value="person">Person — joins with their own email</option>
                 <option value="agent">Agent — an AI teammate on a scoped token</option>
               </select>
-              <label class="lbl" for="am-role">Role</label>
-              <select class="input" name="role" id="am-role">
-                <option value="reader" data-hint={ROLE_HINTS.reader}>Reader</option>
-                <option value="commenter" data-hint={ROLE_HINTS.commenter} selected>Commenter</option>
-                <option value="member" data-hint={ROLE_HINTS.member} data-person-only>Sender</option>
-              </select>
-              <p class="fineprint" data-am-hint>{ROLE_HINTS.commenter}</p>
+              <label class="lbl">Role</label>
+              <div class="role-cards" data-role-cards>
+                {([['reader', 'Reader'], ['commenter', 'Commenter'], ['guest', 'Guest'], ['member', 'Sender']] as [Member['role'], string][]).map(([value, label]) => (
+                  <label class="level-card" data-role-card={value}>
+                    <input type="radio" name="role" value={value} checked={value === 'commenter'} />
+                    <span><b>{label}</b><small>{ROLE_HINTS[value]}</small></span>
+                  </label>
+                ))}
+              </div>
               <div class="btn-row">
                 <button class="btn" type="submit" data-busy="Creating…">Create invitation link</button>
               </div>
@@ -3687,10 +3687,10 @@ app.post('/inbox/:addr/members/add', async (c) => {
   const wantsJson = (c.req.header('accept') || '').includes('application/json')
   let url: string, note: string
   if (type === 'agent') {
-    const role = String(body.role) === 'reader' ? 'reader' : 'commenter'
+    const role = ['reader', 'commenter', 'guest'].includes(String(body.role)) ? String(body.role) : 'commenter'
     const inv = await createAgentInvite(t.collective, role, String(body.name || ''), t.member.id)
     url = agentInviteUrl(t.collective, inv)
-    note = 'Paste this to the agent. It works once and expires in 7 days.'
+    note = `Paste this to the agent. It works once and expires in 7 days.${role === 'guest' ? ' As a guest it only sees threads shared with it or where it is @mentioned.' : ''}`
   } else {
     const role = ['reader', 'commenter', 'member'].includes(String(body.role)) ? String(body.role) : 'reader'
     await run('UPDATE invites SET revoked_at = ? WHERE collective_id = ? AND revoked_at IS NULL', [now(), t.collective.id])
@@ -3823,7 +3823,10 @@ app.post('/inbox/:addr/members/:id/update', async (c) => {
   }
 
   const fresh = (await getMember(target.id))!
-  const askable = ['reader', 'commenter', 'member', 'admin', ...(fresh.role === 'guest' ? ['guest'] : [])]
+  // guests are made by sharing threads — except agents, which an admin may
+  // scope down to guest at any time (their access list starts empty)
+  const askable = ['reader', 'commenter', 'member', 'admin',
+    ...(fresh.role === 'guest' || fresh.kind === 'agent' ? ['guest'] : [])]
   const role = askable.includes(String(body.role)) ? (String(body.role) as Member['role']) : fresh.role
   if (role !== fresh.role) {
     if (fresh.kind === 'agent' && canSendRole(role)) {

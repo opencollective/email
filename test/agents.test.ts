@@ -415,3 +415,44 @@ test('an agent can set its own avatar; without one it wears the bot face', async
   assert.match(skill, /api\/agent\/avatar/)
   assert.match(skill, /🤖/)
 })
+
+test('a guest agent lives in a shared-threads-only world, and a mention opens it', async () => {
+  const fx = await fixture()
+  const invite = await createAgentInvite(fx.collective, 'guest', 'Scoped', fx.adminId)
+  const claim = await json(`/${fx.slug}/join/${invite.token}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Scoped' }),
+  })
+  assert.equal(claim.body.member.role, 'guest')
+  const H = { headers: { authorization: `Bearer ${claim.body.token}` } }
+
+  // nothing shared yet: the thread does not exist for it, the feed is silent
+  assert.equal((await json(`/${fx.slug}/api/agent/threads/${fx.thread.id}`, H)).status, 404)
+  const before = await json(`/${fx.slug}/api/agent/events?since=0`, H)
+  assert.equal(before.body.events.length, 0, 'the feed shows nothing outside its world')
+
+  // a teammate mentions it — that SHARES the thread
+  const { addNote } = await import('../src/notes.js')
+  const admin = (await get<any>('SELECT * FROM members WHERE id = ?', [fx.adminId]))!
+  await addNote(fx.collective, fx.thread, admin, '@Scoped have a look at this one?')
+  assert.equal((await json(`/${fx.slug}/api/agent/threads/${fx.thread.id}`, H)).status, 200, 'mentioned → shared → visible')
+  const after = await json(`/${fx.slug}/api/agent/events?since=0`, H)
+  const note = after.body.events.find((e: any) => e.type === 'note.new')
+  assert.ok(note && note.mentions_you, 'and the mention reaches its feed')
+
+  // members page shows no synthetic address for agents
+  const html = await (await app.request(`/inbox/${fx.slug}/members`, { headers: { cookie: `requests_sid=${fx.sid}` } })).text()
+  assert.doesNotMatch(html, /@agents\./, 'the plumbing address is not shown')
+  assert.match(html, /acts through the API/)
+})
+
+test('an admin can scope an existing agent down to guest through the edit modal', async () => {
+  const fx = await fixture()
+  const a = await joinedAgent(fx) // commenter agent
+  await app.request(`/inbox/${fx.slug}/members/${a.member.id}/update`, {
+    method: 'POST', headers: { cookie: `requests_sid=${fx.sid}`, 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'name=Clara&kind=agent&role=guest',
+  })
+  assert.equal((await get<any>('SELECT role FROM members WHERE id = ?', [a.member.id]))!.role, 'guest')
+  // and its API world shrinks accordingly
+  assert.equal((await json(`/${fx.slug}/api/agent/threads/${fx.thread.id}`, { headers: { authorization: `Bearer ${a.token}` } })).status, 404)
+})

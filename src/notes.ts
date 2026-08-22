@@ -1,4 +1,4 @@
-import { activeMembers, run, type Collective, type Member, type Thread, feedAgents } from './db.js'
+import { activeMembers, run, type Collective, type Member, type Thread, feedAgents, grantThreadAccess } from './db.js'
 import { mentionedMembers } from './mentions.js'
 import { notifyMention } from './notify.js'
 import { now } from './util.js'
@@ -24,6 +24,9 @@ export async function addNote(
   for (const m of mentioned) {
     await run('INSERT OR IGNORE INTO note_mentions (note_id, member_id, created_at) VALUES (?, ?, ?)',
       [lastId, m.id, now()])
+    // mentioning a guest IS sharing the thread with them — otherwise the
+    // mention would point at a conversation they cannot open
+    if (m.role === 'guest') await grantThreadAccess(m.id, thread.id)
   }
   // fed AFTER the mentions exist, so a poll can never see the note without them
   await feedAgents(collective.id, 'note.new', thread.id, lastId)

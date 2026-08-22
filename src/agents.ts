@@ -21,7 +21,7 @@ export interface AgentInvite {
 const INVITE_TTL = 7 * 86400
 /** v1 deliberately tops out at contribute: notes, drafts, tags — nothing that
  *  leaves the collective. Send-tier waits until there's an audit trail. */
-export const AGENT_ROLES = ['reader', 'commenter'] as const
+export const AGENT_ROLES = ['reader', 'commenter', 'guest'] as const
 
 const hash = (token: string) => crypto.createHash('sha256').update(token).digest('hex')
 
@@ -119,7 +119,12 @@ export function threadJson(thread: Thread, msgs: { id: number; direction: string
 /** Everything an agent should wake up for, in one ordered feed with ONE
  *  cursor. Long-poll: the caller waits up to `waitSeconds` for something to
  *  happen. The agent's own notes are skipped — no agent needs an echo. */
-export async function agentEvents(collectiveId: number, memberId: number, since: number, waitSeconds: number) {
+export async function agentEvents(collectiveId: number, member: Member, since: number, waitSeconds: number) {
+  const memberId = member.id
+  // a guest agent's world is only the threads shared with it (a mention
+  // shares, and the grant lands before the feed row — no race)
+  const guestScope = member.role === 'guest'
+    ? ' AND f.thread_id IN (SELECT thread_id FROM thread_access WHERE member_id = ?)' : ''
   const deadline = Date.now() + Math.min(Math.max(waitSeconds, 0), 25) * 1000
   // Self-heal a cursor from the future: a client holding a cursor beyond the
   // feed's end (a stale value from before a migration, a bug of theirs, a
@@ -146,8 +151,8 @@ export async function agentEvents(collectiveId: number, memberId: number, since:
        LEFT JOIN messages m ON f.type = 'message.new' AND m.id = f.ref_id
        LEFT JOIN notes n ON f.type = 'note.new' AND n.id = f.ref_id
        LEFT JOIN members mem ON mem.id = n.member_id
-       WHERE f.collective_id = ? AND f.id > ? AND t.status != 'spam'
-       ORDER BY f.id LIMIT 50`, [memberId, collectiveId, since])
+       WHERE f.collective_id = ? AND f.id > ? AND t.status != 'spam'${guestScope}
+       ORDER BY f.id LIMIT 50`, [memberId, collectiveId, since, ...(guestScope ? [memberId] : [])])
     const events = rows
       .filter((r) => r.note_member !== memberId) // never echo the agent's own notes
       .map((r) => r.type === 'note.new'

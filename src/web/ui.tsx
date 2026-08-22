@@ -108,13 +108,25 @@ document.querySelectorAll('[data-filter]').forEach((form) => {
   if (!dlg) return;
   const form = dlg.querySelector('[data-member-edit]');
   const kind = form.querySelector('[name=kind]');
-  const role = form.querySelector('[name=role]');
   const notify = form.querySelector('[name=notify_level]');
+  const roleVal = () => (form.querySelector('[name=role]:checked') || {}).value;
   const syncRoles = (current) => {
-    form.querySelectorAll('[data-person-only]').forEach((o) => { o.hidden = kind.value === 'agent'; });
-    form.querySelectorAll('[data-guest-only]').forEach((o) => { o.hidden = current !== 'guest'; });
-    if (role.selectedOptions[0] && role.selectedOptions[0].hidden) role.value = 'commenter';
-    notify.disabled = kind.value === 'agent';
+    // person and agent offer different ladders; hiding the CARD works on every
+    // platform (iOS ignores hidden on <option>, which is why these are radios)
+    const agent = kind.value === 'agent';
+    form.querySelectorAll('[data-role-card]').forEach((card) => {
+      const v = card.getAttribute('data-role-card');
+      const input = card.querySelector('input');
+      card.hidden = agent
+        ? (v === 'member' || v === 'admin')
+        : (v === 'guest' && current !== 'guest');
+      if (card.hidden && input.checked) {
+        input.checked = false;
+        const fallback = form.querySelector('[data-role-card=commenter] input');
+        if (fallback) fallback.checked = true;
+      }
+    });
+    if (notify) notify.disabled = agent;
   };
   document.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-edit-member]');
@@ -124,13 +136,13 @@ document.querySelectorAll('[data-filter]').forEach((form) => {
     form.setAttribute('action', location.pathname.split('/members')[0] + '/members/' + d.id + '/update');
     form.querySelector('[name=name]').value = d.name;
     kind.value = d.kind;
-    role.value = d.role;
-    notify.value = d.notify;
+    form.querySelectorAll('[name=role]').forEach((r) => { r.checked = r.value === d.role; });
+    if (notify) notify.value = d.notify;
     const rm = form.querySelector('.me-remove');
     if (rm) rm.disabled = !!d.lastAdmin;
     syncRoles(d.role);
   });
-  kind.addEventListener('change', () => syncRoles(role.value));
+  kind.addEventListener('change', () => syncRoles(roleVal()));
 })();
 
 // Add-a-member modal: create an invitation without leaving the page. The
@@ -139,31 +151,36 @@ document.querySelectorAll('[data-filter]').forEach((form) => {
   const form = document.querySelector('[data-add-member]');
   if (!form) return;
   const type = form.querySelector('[name=type]');
-  const role = form.querySelector('[name=role]');
-  const hint = form.querySelector('[data-am-hint]');
+  const roleVal = () => (form.querySelector('[name=role]:checked') || {}).value || 'commenter';
   const result = form.querySelector('[data-am-result]');
   const urlEl = form.querySelector('[data-am-url]');
   const noteEl = form.querySelector('[data-am-note]');
   const copyBtn = form.querySelector('[data-am-copy]');
   const sync = () => {
-    // agents top out at contribute — sender is a person-only role
-    form.querySelectorAll('[data-person-only]').forEach((o) => {
-      o.hidden = type.value === 'agent';
-      if (o.hidden && o.selected) role.value = 'commenter';
+    // person: reader/commenter/sender · agent: reader/commenter/guest
+    const agent = type.value === 'agent';
+    form.querySelectorAll('[data-role-card]').forEach((card) => {
+      const v = card.getAttribute('data-role-card');
+      const input = card.querySelector('input');
+      card.hidden = agent ? v === 'member' : v === 'guest';
+      if (card.hidden && input.checked) {
+        input.checked = false;
+        const fallback = form.querySelector('[data-role-card=commenter] input');
+        if (fallback) fallback.checked = true;
+      }
     });
-    const opt = role.options[role.selectedIndex];
-    if (hint) hint.textContent = (opt && opt.getAttribute('data-hint')) || '';
     result.hidden = true; // a new choice needs a new link
   };
   type.addEventListener('change', sync);
-  role.addEventListener('change', sync);
+  form.querySelectorAll('[name=role]').forEach((r) => r.addEventListener('change', sync));
   sync();
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     fetch(form.getAttribute('action'), {
       method: 'POST',
       headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
-      body: 'type=' + encodeURIComponent(type.value) + '&role=' + encodeURIComponent(role.value),
+      body: 'type=' + encodeURIComponent(type.value) + '&role=' + encodeURIComponent(roleVal())
+        + '&name=' + encodeURIComponent((form.querySelector('[name=name]') || { value: '' }).value),
     }).then((r) => r.json()).then((d) => {
       if (d.url) {
         urlEl.textContent = d.url;
@@ -744,7 +761,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '79'
+export const ASSET_V = '80'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">

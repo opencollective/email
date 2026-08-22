@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import {
   AGENT_ROLES, agentAuth, agentCursor, agentEvents, claimAgentInvite, findInvite, threadJson,
 } from '../agents.js'
-import { all, get, getThread, memberMap, recordThreadSeenUpTo, run, type Message, type Thread } from '../db.js'
+import { all, canSeeThread, get, getThread, memberMap, recordThreadSeenUpTo, run, type Message, type Thread } from '../db.js'
 import { saveBlob } from '../storage.js'
 import { addNote } from '../notes.js'
 import { cfg } from '../config.js'
@@ -26,7 +26,10 @@ You need an invitation URL from a collective admin, shaped like:
     ${cfg.baseUrl}/<collective-slug>/join/<token>
 
 The slug is the FIRST path segment of every URL you will touch — the
-collective is always visible in the link. Claim the invitation (once) with:
+collective is always visible in the link. Roles: **reader** (read-only),
+**commenter** (read, notes, drafts), **guest** (like commenter, but only on
+the threads shared with you or where a teammate @mentions you — everything
+else does not exist for you, and your event feed covers only your threads). Claim the invitation (once) with:
 
     POST ${cfg.baseUrl}/<slug>/join/<token>
     Content-Type: application/json
@@ -131,7 +134,7 @@ agentApp.get('/:slug/join/:token', async (c) => {
   const state = invite.claimed_at ? 'already used' : invite.expires_at < now() ? 'expired' : 'open'
   const md = `# Invitation: join ${collective.name} (${collective.slug}) on collective.email
 
-Status: ${state}. Role on offer: **${invite.role}** (${invite.role === 'reader' ? 'read-only' : 'read, internal notes, draft replies — no sending'}).
+Status: ${state}. Role on offer: **${invite.role}** (${invite.role === 'reader' ? 'read-only' : invite.role === 'guest' ? 'notes and drafts, but ONLY on threads shared with you or where you are @mentioned' : 'read, internal notes, draft replies — no sending'}).
 
 ${state === 'open' ? `To accept, POST this same URL once:
 
@@ -200,7 +203,7 @@ agentApp.get('/:slug/api/agent/events', async (c) => {
   if (!a) return c.json({ error: 'Invalid token for this collective.' }, 401)
   const since = Number(c.req.query('since')) || 0
   const wait = Number(c.req.query('wait')) || 0
-  return c.json(await agentEvents(a.collective.id, a.member.id, since, wait))
+  return c.json(await agentEvents(a.collective.id, a.member, since, wait))
 })
 
 agentApp.get('/:slug/api/agent/threads/:id', async (c) => {
@@ -208,7 +211,7 @@ agentApp.get('/:slug/api/agent/threads/:id', async (c) => {
   if (!a) return c.json({ error: 'Invalid token for this collective.' }, 401)
   const thread = await getThread(Number(c.req.param('id')))
   // same wall as the web UI: not this collective's thread → it doesn't exist
-  if (!thread || thread.collective_id !== a.collective.id) return c.json({ error: 'No such thread.' }, 404)
+  if (!thread || thread.collective_id !== a.collective.id || !(await canSeeThread(a.member, thread.id))) return c.json({ error: 'No such thread.' }, 404)
   const msgs = await all<Message>('SELECT * FROM messages WHERE thread_id = ? ORDER BY sent_at, id', [thread.id])
   const notes = await all<{ id: number; member_id: number; body: string; created_at: number }>(
     'SELECT id, member_id, body, created_at FROM notes WHERE thread_id = ? ORDER BY created_at', [thread.id])
@@ -220,7 +223,7 @@ agentApp.post('/:slug/api/agent/threads/:id/notes', async (c) => {
   if (!a) return c.json({ error: 'Invalid token for this collective.' }, 401)
   if (a.member.role === 'reader') return c.json({ error: 'Your role is read-only.' }, 403)
   const thread = await getThread(Number(c.req.param('id')))
-  if (!thread || thread.collective_id !== a.collective.id) return c.json({ error: 'No such thread.' }, 404)
+  if (!thread || thread.collective_id !== a.collective.id || !(await canSeeThread(a.member, thread.id))) return c.json({ error: 'No such thread.' }, 404)
   const body = await c.req.json().catch(() => ({}))
   const text = typeof body.body === 'string' ? body.body.trim() : ''
   if (!text) return c.json({ error: 'body is required.' }, 400)
@@ -235,7 +238,7 @@ agentApp.post('/:slug/api/agent/threads/:id/ack', async (c) => {
   const a = await slugAuth(c)
   if (!a) return c.json({ error: 'Invalid token for this collective.' }, 401)
   const thread = await getThread(Number(c.req.param('id')))
-  if (!thread || thread.collective_id !== a.collective.id) return c.json({ error: 'No such thread.' }, 404)
+  if (!thread || thread.collective_id !== a.collective.id || !(await canSeeThread(a.member, thread.id))) return c.json({ error: 'No such thread.' }, 404)
   const body = await c.req.json().catch(() => ({}))
   const upTo = Number(body.up_to) || now()
   await recordThreadSeenUpTo(thread.id, a.member.id, upTo, 'agent')
@@ -265,7 +268,7 @@ agentApp.post('/:slug/api/agent/threads/:id/draft', async (c) => {
   if (!a) return c.json({ error: 'Invalid token for this collective.' }, 401)
   if (a.member.role === 'reader') return c.json({ error: 'Your role is read-only.' }, 403)
   const thread = await getThread(Number(c.req.param('id')))
-  if (!thread || thread.collective_id !== a.collective.id) return c.json({ error: 'No such thread.' }, 404)
+  if (!thread || thread.collective_id !== a.collective.id || !(await canSeeThread(a.member, thread.id))) return c.json({ error: 'No such thread.' }, 404)
   const body = await c.req.json().catch(() => ({}))
   const text = typeof body.body === 'string' ? body.body.trim().slice(0, 50_000) : ''
   if (!text) return c.json({ error: 'body is required.' }, 400)
