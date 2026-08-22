@@ -3509,44 +3509,24 @@ app.get('/inbox/:addr/members', async (c) => {
               <div class="member-row">
                 <Avatar member={m} />
                 <span class="m-name">
-                  {m.kind === 'agent' ? '🤖 ' : ''}{memberName(m)}{m.id === member.id ? ' (you)' : ''}
+                  {memberName(m)}{m.id === member.id ? ' (you)' : ''}
                   <small>{m.email}</small>
                 </span>
                 <span class="m-role">
-                  {editable ? (
-                    <form method="post" action={`${base}/members/${m.id}/role`} class="inline role-form">
-                      <select name="role" class="role-select" aria-label={`Role of ${memberName(m)}`} title={ROLE_HINTS[m.role]}>
-                        <option value="reader" data-hint={ROLE_HINTS.reader} selected={m.role === 'reader'}>Reader</option>
-                        <option value="commenter" data-hint={ROLE_HINTS.commenter} selected={m.role === 'commenter'}>Commenter</option>
-                        {/* agents top out at contribute in v1 */}
-                        {m.kind === 'agent' ? null : <option value="member" data-hint={ROLE_HINTS.member} selected={m.role === 'member'}>Sender</option>}
-                        {m.kind === 'agent' ? null : <option value="admin" data-hint={ROLE_HINTS.admin} selected={m.role === 'admin'}>Admin</option>}
-                      </select>
-                    </form>
-                  ) : (
-                    <span class={m.role === 'admin' ? 'chip solid' : 'chip'} title={ROLE_HINTS[m.role]}>{ROLE_LABELS[m.role]}</span>
-                  )}
+                  <span class={m.role === 'admin' ? 'chip solid' : 'chip'} title={ROLE_HINTS[m.role]}>{ROLE_LABELS[m.role]}</span>
                 </span>
                 <span class="m-meta">
                   {LEVELS.find((l) => l.value === m.notify_level)?.label}
                   <small>{replies(m.id)} replies · seen {relTime(m.last_seen_at)}</small>
                 </span>
                 <span class="m-remove">
-                  {editable ? (<>
-                    <form method="post" action={`${base}/members/${m.id}/kind`} class="inline">
-                      <input type="hidden" name="kind" value={m.kind === 'agent' ? 'person' : 'agent'} />
-                      <button class="linkish" type="submit" disabled={m.role === 'admin' && adminCount <= 1}
-                        data-confirm={m.kind === 'agent'
-                          ? `Make ${memberName(m)} a person again? Their agent tokens stop working immediately.`
-                          : `Make ${memberName(m)} an agent? They stop receiving email, their role is capped at contribute, and you get an API token to hand to the agent.`}>
-                        {m.kind === 'agent' ? 'Make person' : 'Make agent'}
-                      </button>
-                    </form>
-                    <form method="post" action={`${base}/members/${m.id}/remove`} class="inline">
-                      <button class="linkish danger" type="submit" disabled={m.role === 'admin' && adminCount <= 1}
-                        data-confirm={`Remove ${memberName(m)} from the collective? They lose access immediately; their past replies stay attributed.`}>Remove</button>
-                    </form>
-                  </>) : null}
+                  {editable ? (
+                    <button class="icon-btn" type="button" data-dialog="#member-edit-modal" title={`Edit ${memberName(m)}`}
+                      aria-label={`Edit ${memberName(m)}`}
+                      data-edit-member={JSON.stringify({ id: m.id, name: memberName(m), role: m.role, kind: m.kind ?? 'person', notify: m.notify_level, lastAdmin: m.role === 'admin' && adminCount <= 1 })}>
+                      <Icon name="pencil" />
+                    </button>
+                  ) : null}
                 </span>
               </div>
               )
@@ -3617,6 +3597,42 @@ app.get('/inbox/:addr/members', async (c) => {
               </div>
             ))}
           </section>
+        ) : null}
+
+        {isAdmin ? (
+          <dialog id="member-edit-modal" class="modal sheet">
+            <h2>Edit <span data-me-name></span></h2>
+            <form class="modal-form" method="post" enctype="multipart/form-data" data-member-edit>
+              <label class="lbl" for="me-name">Name</label>
+              <input class="input" name="name" id="me-name" maxlength={60} />
+              <label class="lbl" for="me-avatar">Avatar</label>
+              <input class="input" type="file" name="avatar" id="me-avatar" accept="image/*" />
+              <label class="lbl" for="me-type">Type</label>
+              <select class="input" name="kind" id="me-type">
+                <option value="person">Person</option>
+                <option value="agent">Agent — acts through the API, receives no email</option>
+              </select>
+              <label class="lbl" for="me-role">Role</label>
+              <select class="input" name="role" id="me-role">
+                <option value="reader">Reader</option>
+                <option value="commenter">Commenter</option>
+                <option value="guest" data-guest-only>Guest</option>
+                <option value="member" data-person-only>Sender</option>
+                <option value="admin" data-person-only>Admin</option>
+              </select>
+              <label class="lbl" for="me-notify">Notifications</label>
+              <select class="input" name="notify_level" id="me-notify">
+                {LEVELS.map((l) => <option value={l.value}>{l.label}</option>)}
+                <option value="none">None</option>
+              </select>
+              <div class="btn-row">
+                <button class="btn" type="submit" data-busy="Saving…">Save</button>
+                <button class="btn ghost" type="button" data-close>Cancel</button>
+                <button class="linkish danger me-remove" type="submit" formnovalidate name="act" value="remove"
+                  data-confirm="Remove this member from the collective? They lose access immediately; their past replies stay attributed.">Remove from collective</button>
+              </div>
+            </form>
+          </dialog>
         ) : null}
 
         {isAdmin ? (
@@ -3754,6 +3770,78 @@ app.post('/inbox/:addr/members/:id/kind', async (c) => {
   await run("UPDATE members SET kind = 'person', notify_level = 'every' WHERE id = ?", [target.id])
   await run('DELETE FROM agent_tokens WHERE member_id = ?', [target.id])
   return c.redirect(back + '?m=' + encodeURIComponent(`${memberName(target)} is a person again — their agent tokens were revoked.`))
+})
+
+// The member-edit modal: everything about one member in one POST, with the
+// same guards the single-purpose routes enforce.
+app.post('/inbox/:addr/members/:id/update', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const back = `/inbox/${t.collective.slug}/members`
+  if (t.member.role !== 'admin') return c.redirect(back)
+  const target = await getMember(Number(c.req.param('id')))
+  if (!target || target.collective_id !== t.collective.id || target.id === t.member.id) return c.redirect(back)
+  const body = await c.req.parseBody({ all: true })
+  const members = await activeMembers(t.collective.id)
+  const adminCount = members.filter((m) => m.role === 'admin').length
+  const lastAdmin = target.role === 'admin' && adminCount <= 1
+
+  if (String(body.act) === 'remove') {
+    if (lastAdmin) return c.redirect(back + '?m=' + encodeURIComponent('Cannot remove the last admin.'))
+    await run('UPDATE members SET removed_at = ? WHERE id = ?', [now(), target.id])
+    await run('DELETE FROM agent_tokens WHERE member_id = ?', [target.id])
+    return c.redirect(back + '?m=' + encodeURIComponent(`${memberName(target)} was removed.`))
+  }
+
+  const notes: string[] = []
+  const name = String(body.name || '').trim().slice(0, 60)
+  if (name) await run("UPDATE members SET name = ? WHERE id = ?", [name, target.id])
+
+  const avatar = body.avatar
+  if (avatar instanceof File && avatar.size > 0) {
+    if (!avatar.type.startsWith('image/')) return c.redirect(back + '?m=' + encodeURIComponent('Avatars must be an image.'))
+    if (avatar.size > 2 * 1024 * 1024) return c.redirect(back + '?m=' + encodeURIComponent('Avatar too large — keep it under 2 MB.'))
+    const locator = await saveBlob(`avatars/${target.id}/${Date.now()}-${avatar.name.replace(/[^\w.-]+/g, '_')}`,
+      Buffer.from(await avatar.arrayBuffer()), avatar.type)
+    await run('UPDATE members SET avatar_path = ? WHERE id = ?', [locator, target.id])
+  }
+
+  // kind first: it constrains which roles are legal below
+  const kind = String(body.kind) === 'agent' ? 'agent' : 'person'
+  if ((target.kind ?? 'person') !== kind) {
+    if (lastAdmin) return c.redirect(back + '?m=' + encodeURIComponent('Cannot change the last admin.'))
+    if (kind === 'agent') {
+      const capped = canSendRole(target.role) ? 'commenter' : target.role
+      await run("UPDATE members SET kind = 'agent', role = ?, notify_level = 'none' WHERE id = ?", [capped, target.id])
+      const token = await mintAgentToken(target.id)
+      notes.push(`now an agent (${capped}). Its API token — shown this once, give it to the agent: ${token}`)
+    } else {
+      await run("UPDATE members SET kind = 'person', notify_level = 'every' WHERE id = ?", [target.id])
+      await run('DELETE FROM agent_tokens WHERE member_id = ?', [target.id])
+      notes.push('a person again — their agent tokens were revoked')
+    }
+  }
+
+  const fresh = (await getMember(target.id))!
+  const askable = ['reader', 'commenter', 'member', 'admin', ...(fresh.role === 'guest' ? ['guest'] : [])]
+  const role = askable.includes(String(body.role)) ? (String(body.role) as Member['role']) : fresh.role
+  if (role !== fresh.role) {
+    if (fresh.kind === 'agent' && canSendRole(role)) {
+      notes.push('agents cannot hold sending roles yet')
+    } else if (lastAdmin) {
+      notes.push('cannot demote the last admin')
+    } else if (!canSendRole(fresh.role) && canSendRole(role)
+      && members.filter((m) => canSendRole(m.role)).length >= planLimits(t.collective.plan).contributors) {
+      notes.push(`sending-seat limit reached (${planLimits(t.collective.plan).contributors} on the ${t.collective.plan} plan)`)
+    } else {
+      await run('UPDATE members SET role = ? WHERE id = ?', [role, target.id])
+    }
+  }
+
+  const level = ['every', 'daily', 'weekly', 'none'].includes(String(body.notify_level)) ? String(body.notify_level) : null
+  if (level && fresh.kind !== 'agent') await run('UPDATE members SET notify_level = ? WHERE id = ?', [level, target.id])
+
+  return c.redirect(back + '?m=' + encodeURIComponent(`Saved${notes.length ? ' — ' + memberName(target) + ' is ' + notes.join('; ') : ' ✓'}`))
 })
 
 app.post('/inbox/:addr/members/:id/role', async (c) => {

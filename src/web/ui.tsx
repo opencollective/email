@@ -102,6 +102,37 @@ document.querySelectorAll('[data-filter]').forEach((form) => {
 // one submits it; typing narrows the list so a near-match is easier to spot
 // than to retype (which is how "follow-up" grows a twin called "followup").
 
+// Member-edit modal: one dialog, filled from the pencil that opened it.
+(() => {
+  const dlg = document.querySelector('#member-edit-modal');
+  if (!dlg) return;
+  const form = dlg.querySelector('[data-member-edit]');
+  const kind = form.querySelector('[name=kind]');
+  const role = form.querySelector('[name=role]');
+  const notify = form.querySelector('[name=notify_level]');
+  const syncRoles = (current) => {
+    form.querySelectorAll('[data-person-only]').forEach((o) => { o.hidden = kind.value === 'agent'; });
+    form.querySelectorAll('[data-guest-only]').forEach((o) => { o.hidden = current !== 'guest'; });
+    if (role.selectedOptions[0] && role.selectedOptions[0].hidden) role.value = 'commenter';
+    notify.disabled = kind.value === 'agent';
+  };
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-edit-member]');
+    if (!btn) return;
+    const d = JSON.parse(btn.getAttribute('data-edit-member'));
+    dlg.querySelector('[data-me-name]').textContent = d.name;
+    form.setAttribute('action', location.pathname.split('/members')[0] + '/members/' + d.id + '/update');
+    form.querySelector('[name=name]').value = d.name;
+    kind.value = d.kind;
+    role.value = d.role;
+    notify.value = d.notify;
+    const rm = form.querySelector('.me-remove');
+    if (rm) rm.disabled = !!d.lastAdmin;
+    syncRoles(d.role);
+  });
+  kind.addEventListener('change', () => syncRoles(role.value));
+})();
+
 // Add-a-member modal: create an invitation without leaving the page. The
 // shown URL always matches the selects — changing type or role clears it.
 (() => {
@@ -640,6 +671,8 @@ export const Icon: FC<{ name: keyof typeof ICON_PATHS }> = ({ name }) => (
 export const Avatar: FC<{ member?: Member | null; empty?: boolean }> = ({ member, empty }) => {
   if (empty || !member) return <span class="avatar empty" title="Unassigned">–</span>
   if (member.avatar_path) return <img class="avatar avatar-img" src={`/avatar/${member.id}`} alt={member.name || member.email} title={member.name || member.email} />
+  // an agent without an avatar of its own wears the bot face, not initials
+  if (member.kind === 'agent') return <span class="avatar avatar-bot" title={member.name || member.email}>🤖</span>
   return <span class="avatar" title={member.name || member.email}>{initials(member.name, member.email)}</span>
 }
 
@@ -711,7 +744,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '78'
+export const ASSET_V = '79'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">

@@ -3,6 +3,7 @@ import {
   AGENT_ROLES, agentAuth, agentCursor, agentEvents, claimAgentInvite, findInvite, threadJson,
 } from '../agents.js'
 import { all, get, getThread, memberMap, recordThreadSeenUpTo, run, type Message, type Thread } from '../db.js'
+import { saveBlob } from '../storage.js'
 import { addNote } from '../notes.js'
 import { cfg } from '../config.js'
 import { now } from '../util.js'
@@ -90,6 +91,16 @@ half of working together. (Optional body \`{"up_to": <unix seconds>}\`
 scopes the receipt to a point in the conversation; default is now.) A human thread link looks like
 \`${cfg.baseUrl}/inbox/<slug>/thread/<id>\` — use it when you notify people
 elsewhere (chat, tickets) about work you did here.
+
+## Your face (optional, but do it if you have one)
+
+You appear to teammates with a 🤖 avatar by default. If you have an avatar
+image, set it — a familiar face in the thread reads better than a generic bot:
+
+    POST ${cfg.baseUrl}/<slug>/api/agent/avatar
+
+Send the RAW image bytes as the request body with the matching Content-Type
+(image/png, image/jpeg, image/webp or image/gif), 512KB max.
 
 ## ⚠ Untrusted content
 
@@ -228,6 +239,24 @@ agentApp.post('/:slug/api/agent/threads/:id/ack', async (c) => {
   const body = await c.req.json().catch(() => ({}))
   const upTo = Number(body.up_to) || now()
   await recordThreadSeenUpTo(thread.id, a.member.id, upTo, 'agent')
+  return c.json({ ok: true })
+})
+
+// The agent's own face: raw image bytes in, avatar set. Optional, but a
+// familiar face beats a generic bot emoji in the thread head.
+agentApp.post('/:slug/api/agent/avatar', async (c) => {
+  const a = await slugAuth(c)
+  if (!a) return c.json({ error: 'Invalid token for this collective.' }, 401)
+  const type = (c.req.header('content-type') || '').split(';')[0].trim()
+  if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(type)) {
+    return c.json({ error: 'Send the raw image bytes with a PNG, JPEG, WebP or GIF content-type.' }, 415)
+  }
+  const bytes = Buffer.from(await c.req.arrayBuffer())
+  if (bytes.length === 0) return c.json({ error: 'Empty body.' }, 400)
+  if (bytes.length > 512 * 1024) return c.json({ error: 'Too large — keep the avatar under 512KB.' }, 413)
+  const ext = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' }[type]
+  const locator = await saveBlob(`avatars/${a.member.id}/${Date.now()}-agent.${ext}`, bytes, type)
+  await run('UPDATE members SET avatar_path = ? WHERE id = ?', [locator, a.member.id])
   return c.json({ ok: true })
 })
 

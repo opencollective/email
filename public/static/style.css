@@ -1361,3 +1361,6 @@ button.row.new-thread-row {
 .assign-else summary.assign-row { list-style: none; cursor: pointer; }
 .assign-else summary::-webkit-details-marker { display: none; }
 .assign-else-form { display: grid; gap: 8px; padding: 6px 10px 10px; }
+
+.avatar-bot { font-size: 15px; background: var(--fill); }
+.me-remove { margin-left: auto; font-size: 13px; }

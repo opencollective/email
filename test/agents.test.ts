@@ -362,3 +362,56 @@ test('an agent acknowledges a thread and shows up in its seen state', async () =
   assert.match(skill, /Acknowledge what you have seen/i)
   assert.match(skill, /\/ack/)
 })
+
+test('the member-edit modal route: name, role, kind and notifications in one save', async () => {
+  const fx = await fixture()
+  const r = await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [fx.collective.id, `edit-${uniq()}@example.org`, 'Eddy', 'member', 'every', now()])
+  const post2 = (body: string) => app.request(`/inbox/${fx.slug}/members/${r.lastId}/update`, {
+    method: 'POST', headers: { cookie: `requests_sid=${fx.sid}`, 'content-type': 'application/x-www-form-urlencoded' }, body,
+  })
+  // rename + demote + digest, one post
+  await post2('name=Edwina&role=commenter&kind=person&notify_level=daily')
+  let m = (await get<any>('SELECT * FROM members WHERE id = ?', [r.lastId]))!
+  assert.equal(m.name, 'Edwina'); assert.equal(m.role, 'commenter'); assert.equal(m.notify_level, 'daily')
+
+  // person → agent through the same route: capped, muted, token in the flash
+  const res = await post2('name=Edwina&role=commenter&kind=agent&notify_level=daily')
+  assert.match(decodeURIComponent(res.headers.get('location')!), /cea_[A-Za-z0-9_-]+/)
+  m = (await get<any>('SELECT * FROM members WHERE id = ?', [r.lastId]))!
+  assert.equal(m.kind, 'agent'); assert.equal(m.notify_level, 'none')
+
+  // the members page offers a pencil, not inline links
+  const html = await (await app.request(`/inbox/${fx.slug}/members`, { headers: { cookie: `requests_sid=${fx.sid}` } })).text()
+  assert.match(html, /data-edit-member=/)
+  assert.doesNotMatch(html, />Make agent</)
+  assert.match(html, /id="member-edit-modal"/)
+
+  // remove through the modal
+  await post2('act=remove')
+  assert.ok((await get<any>('SELECT removed_at FROM members WHERE id = ?', [r.lastId]))!.removed_at)
+})
+
+test('an agent can set its own avatar; without one it wears the bot face', async () => {
+  const fx = await fixture()
+  const a = await joinedAgent(fx)
+  // default: 🤖 in the members page
+  let html = await (await app.request(`/inbox/${fx.slug}/members`, { headers: { cookie: `requests_sid=${fx.sid}` } })).text()
+  assert.match(html, /avatar-bot/)
+
+  // a tiny real PNG, raw bytes
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64')
+  const up = await app.request(`/${fx.slug}/api/agent/avatar`, {
+    method: 'POST', headers: { authorization: `Bearer ${a.token}`, 'content-type': 'image/png' }, body: png,
+  })
+  assert.equal(up.status, 200)
+  assert.ok((await get<any>('SELECT avatar_path FROM members WHERE id = ?', [a.member.id]))!.avatar_path)
+
+  // wrong type refused; the skill teaches the endpoint
+  assert.equal((await app.request(`/${fx.slug}/api/agent/avatar`, {
+    method: 'POST', headers: { authorization: `Bearer ${a.token}`, 'content-type': 'text/plain' }, body: 'x',
+  })).status, 415)
+  const skill = await (await app.request('/skill.md')).text()
+  assert.match(skill, /api\/agent\/avatar/)
+  assert.match(skill, /🤖/)
+})
