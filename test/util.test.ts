@@ -149,3 +149,25 @@ test('splitQuotedTail: a dash ruler that is just a signature divider stays in th
   assert.equal(quoted, '', 'no header line after the ruler — not a quote')
   assert.match(main, /Miriam Dean/)
 })
+
+test('splitQuotedTail: a booking form with rulers and Field: lines is content, not history', () => {
+  const booking = `NEW BOOKING REQUEST ⚠ This is a PRIVATE request
+
+CONTACT DETAILS
+----------------------------------------
+Name: Xavier
+Email: xdamman@gmail.com
+Room: Ostrom Room
+Date: 2026-09-16
+
+Message: We would like to book the room for a workshop.`
+  const { main, quoted } = splitQuotedTail(booking)
+  assert.equal(quoted, '', 'nothing is folded away')
+  assert.match(main, /Room: Ostrom Room/)
+  assert.match(main, /book the room for a workshop/)
+})
+
+test('splitQuotedTail: the genuine Outlook ruler block still folds', () => {
+  const { quoted } = splitQuotedTail('Thanks!\n\n________\nFrom: Marlen <m@x.org>\nSent: Monday\nTo: hello@x.org\n\nOriginal text here.')
+  assert.match(quoted, /From: Marlen/)
+})

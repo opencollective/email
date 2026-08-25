@@ -110,13 +110,16 @@ export function splitQuotedTail(text: string): { main: string; quoted: string } 
   // "… wrote:" to land up to two lines below the "On …" opener.
   outer: for (let i = 0; i < lines.length; i++) {
     if (/^\s*-{2,}\s*(Original Message|Ursprüngliche Nachricht|Forwarded message|Message d'origine)/i.test(lines[i])) { cut = i; break }
-    // a bare ruler of dashes/underscores introducing header lines ("From: …",
-    // "Von: …") — Outlook's way of quoting, with no attribution sentence
+    // a bare ruler of dashes/underscores introducing an Outlook-style header
+    // block. The block always OPENS with a From: line (any language) — that
+    // exact requirement is what keeps structured mail alive: a booking form's
+    // "----- / Name: / Room:" is content, not history (it once got folded
+    // away wholesale, prod thread 193).
     if (/^\s*[-_]{6,}\s*$/.test(lines[i])) {
       for (let k = 1; k <= 3 && i + k < lines.length; k++) {
         const l = lines[i + k]
         if (l.trim() === '') continue
-        if (/^\s*[\w][\w /-]{1,30}:\s/.test(l)) { cut = i; break outer }
+        if (/^\s*(From|Von|De|Van|Da|Fra|Från)\s*:\s/i.test(l)) { cut = i; break outer }
         break
       }
     }
