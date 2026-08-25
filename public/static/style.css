@@ -1128,7 +1128,7 @@ button.row.new-thread-row {
 
 /* tags: a filter bar under the search, scrollable rather than wrapping */
 .tag-bar {
-  display: flex; gap: 6px; align-items: center; overflow-x: auto; padding: 0 14px 10px;
+  display: flex; gap: 6px; align-items: center; overflow-x: auto; padding: 12px 14px 10px;
   scrollbar-width: none; -webkit-overflow-scrolling: touch;
 }
 .tag-bar::-webkit-scrollbar { display: none; }
@@ -1138,15 +1138,15 @@ button.row.new-thread-row {
 .tag-chip:hover { border-color: var(--accent); color: var(--accent); }
 .tag-chip.on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 .tag-chip.on .count { color: var(--paper); opacity: 0.7; }
-@media (min-width: 901px) { .tag-bar { padding: 0 18px 10px; } }
+@media (min-width: 901px) { .tag-bar { padding: 14px 18px 10px; } }
 
 /* ---------- one width envelope for every surface ---------- */
 /* the thread view filled the viewport while list pages stopped at 860px; both
    now share this, so switching pages doesn't reflow the whole window */
-.main > .topbar, .main > .tag-bar, .main > .rows, .main > .page, .thread-wrap { max-width: 1180px; }
+.main > .topbar, .main > .tag-bar, .main > .rows, .main > .page, .thread-wrap { max-width: 1440px; }
  /* list pages: rows run edge-to-edge inside the envelope, exactly like the
     inbox's, and everything else lines up with the row text (20px) */
-.page.wide { max-width: 1180px; padding-left: 0; padding-right: 0; }
+.page.wide { max-width: 1440px; padding-left: 0; padding-right: 0; }
 .page.wide > *:not(.rows) { padding-left: 20px; padding-right: 20px; }
 .page.wide > .rows { margin-left: 0; margin-right: 0; }
 
@@ -1307,10 +1307,7 @@ button.row.new-thread-row {
 
 /* filter funnel lights up when a modal filter is active */
 .icon-btn.filter-on { color: var(--accent); border-color: var(--accent); }
-/* phones: air between the header hairline and the pill row */
-@media (max-width: 900px) {
-  .tag-bar { padding-top: 12px; }
-}
+
 
 /* filter modal: tag ticks as pills; the box itself is hidden, the pill shows it */
 .tag-picks { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 6px; }
