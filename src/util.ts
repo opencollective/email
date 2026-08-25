@@ -84,6 +84,16 @@ export function stripQuotedReply(text: string): string {
       cut = i
       break
     }
+    // Gmail wraps long attributions: "On …, Name via addr" on one line,
+    // "<address> wrote:" on the next. Both lines are the quote's preamble.
+    if (/^\s*(On|Le|Op|Am)\b\s.{3,}/i.test(l)) {
+      let matched = false
+      for (let k = 1; k <= 2 && i + k < lines.length; k++) {
+        if (lines[i + k].trim() === '') break
+        if (/\b(wrote|schreef|a écrit|geschrieben)\s*:\s*$/i.test(lines[i + k])) { matched = true; break }
+      }
+      if (matched) { cut = i; break }
+    }
     if (/^\s*>/.test(l)) {
       // start of a quoted block: only cut if everything after is quotes/blank
       const rest = lines.slice(i)

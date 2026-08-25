@@ -171,3 +171,16 @@ test('splitQuotedTail: the genuine Outlook ruler block still folds', () => {
   const { quoted } = splitQuotedTail('Thanks!\n\n________\nFrom: Marlen <m@x.org>\nSent: Monday\nTo: hello@x.org\n\nOriginal text here.')
   assert.match(quoted, /From: Marlen/)
 })
+
+test('stripQuotedReply: a Gmail-wrapped attribution goes with its quote', () => {
+  // exactly prod thread 193: the attribution wrapped over two lines, so the
+  // old code stripped the "> " block but left the attribution dangling — and
+  // the auto-appended signature then read as an empty quote
+  const out = stripQuotedReply(
+    'Hey Xavier,\n\nI suspect you are testing the system? Ostrom is available.\n\nMiriam for Commons Hub team\n\n'
+    + 'On Tue, 25 Aug 2026 at 13:05, Xavier via hello@commonshub.brussels\n<commonshub@collective.email> wrote:\n'
+    + '> NEW BOOKING REQUEST\n> Room: Ostrom\n')
+  assert.match(out, /Ostrom is available/)
+  assert.doesNotMatch(out, /wrote:/, 'no dangling attribution')
+  assert.doesNotMatch(out, /On Tue, 25 Aug/)
+})

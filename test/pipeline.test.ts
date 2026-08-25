@@ -8,7 +8,7 @@ import {
 } from '../src/db.js'
 import { createSession } from '../src/auth.js'
 import { now, replyAddress } from '../src/util.js'
-import { handleEmailReply } from '../src/ingest.js'
+import { handleEmailReply, ingestInbound } from '../src/ingest.js'
 
 // ---------- helpers ----------
 
@@ -1359,4 +1359,28 @@ test('a reply-all does not notify the people it was already addressed to', async
   const msgs = await threadMessages(thread.id)
   assert.equal(msgs.length, 1)
   assert.match(msgs[0].body_text!, /Signed and returned/)
+})
+
+test('a reply email carries the quoted conversation; the stored body stays clean', async () => {
+  const col = await createCollective(`rq${uniq()}`, 'Quote Co')
+  const mid = await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [col.id, `mir-${uniq()}@t.test`, 'Miriam', 'admin', 'every', now()])
+  await ingestInbound(col, await simpleParser(
+    `Message-ID: <rq-${uniq()}@x>\nFrom: Xavier <x@out.test>\nTo: ${col.slug}@collective.email\nSubject: Booking the Ostrom Room\n\nNEW BOOKING REQUEST\nRoom: Ostrom\nDate: 27 August`))
+  const thread = await lastThread(col.id)
+  const member = (await get<any>('SELECT * FROM members WHERE id = ?', [mid.lastId]))!
+
+  const logs: string[] = []
+  const orig = console.log
+  console.log = (...a: any[]) => { logs.push(a.join(' ')); orig(...a) }
+  try {
+    const { sendCollectiveReply } = await import('../src/outbound.js')
+    await sendCollectiveReply(col, thread.id, 'Ostrom is available on the 27th.', member, 'web')
+  } finally { console.log = orig }
+
+  const wire = logs.find((l) => l.includes('[outbound:dev]') && l.includes('Ostrom is available'))!
+  assert.match(wire, /Xavier wrote:/, 'the email quotes the request with attribution')
+  assert.match(wire, /> NEW BOOKING REQUEST/, 'the request text rides along, quoted')
+  const stored = (await get<any>("SELECT body_text FROM messages WHERE thread_id = ? AND direction = 'outbound'", [thread.id]))!
+  assert.doesNotMatch(stored.body_text, /wrote:|> NEW/, 'the archive keeps only the reply itself')
 })

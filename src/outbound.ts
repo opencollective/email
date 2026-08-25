@@ -36,6 +36,11 @@ export interface OutAttachment {
 
 /** Send a reply from <slug>@collective.email to the thread's counterpart via Resend,
  *  record it as an outbound message and flip the thread to answered. */
+/** The quoted tail, for HTML bodies: same text, muted, left-ruled. */
+const quotedHtml = (history: string) => history
+  ? `<blockquote style="margin:16px 0 0;padding-left:12px;border-left:2px solid #d5d7da;color:#6b7280;white-space:pre-wrap;font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:13px">${escapeHtml(history.trim())}</blockquote>`
+  : ''
+
 export async function sendCollectiveReply(
   collective: Collective,
   threadId: number,
@@ -82,9 +87,16 @@ export async function sendCollectiveReply(
         : '').join('')
     : undefined
 
+  // The email carries the quoted conversation underneath, the way any mail
+  // client's reply would — the recipient reads their own request at the
+  // bottom instead of an answer floating free. The STORED body stays clean:
+  // the thread view is the history, it doesn't need a copy quoted back.
+  const history = await threadHistory(threadId, { id: 0, ts: now() }, collective.name)
+  const wireText = `${body}${history}`
+
   let resendEmailId: string | null = null
   if (!cfg.resendKey) {
-    console.log(`\n[outbound:dev] From: ${fromAddress}\n[outbound:dev] To: ${to}${cc.length ? `\n[outbound:dev] Cc: ${cc.join(', ')}` : ''}\n[outbound:dev] Subject: ${subject}\n${body}\n[outbound:dev] attachments: ${attachments.map((a) => a.filename).join(', ') || 'none'}${hasImages ? ' (images inline)' : ''}\n`)
+    console.log(`\n[outbound:dev] From: ${fromAddress}\n[outbound:dev] To: ${to}${cc.length ? `\n[outbound:dev] Cc: ${cc.join(', ')}` : ''}\n[outbound:dev] Subject: ${subject}\n${wireText}\n[outbound:dev] attachments: ${attachments.map((a) => a.filename).join(', ') || 'none'}${hasImages ? ' (images inline)' : ''}\n`)
   } else {
     const headers: Record<string, string> = { 'Message-ID': messageId }
     if (lastIn?.rfc822_message_id) headers['In-Reply-To'] = lastIn.rfc822_message_id
@@ -96,8 +108,8 @@ export async function sendCollectiveReply(
       ...(bcc.length ? { bcc } : {}),
       reply_to: [fromAddress],
       subject,
-      text: body,
-      ...(inline && html ? { html } : {}),
+      text: wireText,
+      ...(inline && html ? { html: html + quotedHtml(history) } : {}),
       headers,
       attachments: attachments.map((a, i) => ({
         filename: a.filename,
@@ -159,10 +171,10 @@ export async function sendCollectiveReply(
 const HISTORY_MAX = 12
 const HISTORY_CHARS = 60000
 
-async function threadHistory(threadId: number, forwarded: Message, collectiveName: string): Promise<string> {
+async function threadHistory(threadId: number, before: { id: number; ts: number }, collectiveName: string): Promise<string> {
   const earlier = await all<Message>(
     'SELECT * FROM messages WHERE thread_id = ? AND id != ? AND (sent_at IS NOT NULL OR direction = ?) AND COALESCE(sent_at, created_at) <= ? ORDER BY COALESCE(sent_at, created_at) DESC, id DESC',
-    [threadId, forwarded.id, 'inbound', (forwarded.sent_at || forwarded.created_at) as number])
+    [threadId, before.id, 'inbound', before.ts])
   if (!earlier.length) return ''
 
   const kept = earlier.slice(0, HISTORY_MAX)
@@ -220,7 +232,7 @@ export async function forwardMessage(
   const label = (m: Message) => m.from_name || (m.direction === 'outbound' ? collective.name : '') || m.from_email || 'unknown'
   const who = (m: Message) => m.from_email ? `${label(m)} <${m.from_email}>` : label(m)
   const stamp = (m: Message) => new Date(((m.sent_at || m.created_at) as number) * 1000).toUTCString()
-  const history = await threadHistory(thread.id, message, collective.name)
+  const history = await threadHistory(thread.id, { id: message.id, ts: (message.sent_at || message.created_at) as number }, collective.name)
   // when we rebuild the chain below, the sender's own quoted tail is the same
   // text a second time — keep it only when there is no history to replace it
   const forwardedBody = history
