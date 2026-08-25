@@ -102,6 +102,71 @@ document.querySelectorAll('[data-filter]').forEach((form) => {
 // one submits it; typing narrows the list so a near-match is easier to spot
 // than to retype (which is how "follow-up" grows a twin called "followup").
 
+// Keyboard shortcuts — a laptop affordance (pointer devices with hover).
+// Single-letter keys act only when nothing is being typed; ⌘↵ acts exactly
+// while typing, because sending is the point of typing.
+(() => {
+  if (!matchMedia('(hover: hover)').matches) return;
+  const typing = () => {
+    const a = document.activeElement;
+    return !!(a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT' || a.isContentEditable));
+  };
+  const liveRows = () => [].filter.call(document.querySelectorAll('.rows .row'), (r) => !r.hidden && r.getAttribute('href'));
+  let sel = -1;
+  const mark = () => {
+    const rs = liveRows();
+    rs.forEach((r, i) => r.classList.toggle('kb-sel', i === sel));
+    if (sel >= 0 && rs[sel]) rs[sel].scrollIntoView({ block: 'nearest' });
+  };
+  const openPane = (pane) => {
+    const tab = document.querySelector('[data-tab=' + pane + ']');
+    if (tab) tab.click();
+    const form = document.querySelector('form[data-pane=' + pane + ']') || (pane === 'note' ? document.querySelector('.composer form') : null);
+    if (!form) return false;
+    // the note pane may carry a rich editor that hides its textarea — focus
+    // whichever editable is actually on screen
+    const ta = [].find.call(form.querySelectorAll('[contenteditable=true], textarea'), (el) => el.offsetParent !== null);
+    if (!ta) return false;
+    ta.focus();
+    ta.scrollIntoView({ block: 'center' });
+    return true;
+  };
+  document.addEventListener('keydown', (e) => {
+    // send what you are writing — the one shortcut that works mid-typing
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      const form = document.activeElement && document.activeElement.closest && document.activeElement.closest('form');
+      if (form && form.querySelector('textarea')) { e.preventDefault(); form.requestSubmit(); }
+      return;
+    }
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+      e.preventDefault();
+      const d = document.querySelector('#kbd-modal');
+      if (!d) return;
+      if (d.open) d.close();
+      else { d.showModal(); d.setAttribute('tabindex', '-1'); d.focus(); }
+      return;
+    }
+    if (typing() || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]')) return;
+    if (e.key === 'i') {
+      const org = document.querySelector('a.org');
+      if (org) { e.preventDefault(); location.href = org.getAttribute('href'); }
+    } else if (e.key === 'r') {
+      if (openPane('reply')) e.preventDefault();
+    } else if (e.key === 'n') {
+      if (openPane('note')) e.preventDefault();
+    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      const rs = liveRows();
+      if (!rs.length) return;
+      e.preventDefault();
+      sel = e.key === 'ArrowDown' ? Math.min(sel + 1, rs.length - 1) : Math.max(sel - 1, 0);
+      mark();
+    } else if (e.key === 'Enter') {
+      const rs = liveRows();
+      if (sel >= 0 && rs[sel]) { e.preventDefault(); location.href = rs[sel].getAttribute('href'); }
+    }
+  });
+})();
+
 // Grouped role cards: after any show/hide, re-mark the visible ends so the
 // group keeps rounded shoulders only where it actually ends.
 function shapeRoleCards(container) {
@@ -776,7 +841,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '82'
+export const ASSET_V = '83'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">
@@ -855,6 +920,30 @@ const Menu: FC<{ base: string; active: string; isAdmin: boolean; canSend: boolea
       <a class={`nav-item ${['settings', 'domain', 'billing'].includes(active) ? 'active' : ''}`} href={`${base}/settings`}><Icon name="gear" /> Settings</a>
     ) : null}
   </nav>
+)
+
+/** ⌘K overlay: the keyboard, explained. Rendered once by Shell so every app
+ *  page carries it; the shortcuts themselves live in the global script. */
+const KEY_ROWS: [string, string][] = [
+  ['i', 'Go to the inbox'],
+  ['↑ / ↓', 'Move through the thread list'],
+  ['↵', 'Open the highlighted thread'],
+  ['r', 'Reply — jumps to the composer'],
+  ['n', 'New internal note'],
+  ['⌘ ↵', 'Send what you are writing'],
+  ['⌘ K', 'Show or hide this overview'],
+  ['esc', 'Close dialogs like this one'],
+]
+const KbdModal: FC = () => (
+  <dialog id="kbd-modal" class="modal">
+    <h2>Keyboard shortcuts</h2>
+    <div class="kbd-rows">
+      {KEY_ROWS.map(([keys, what]) => (
+        <div class="kbd-row"><span class="kbd-keys">{keys.split(' ').map((k) => <kbd>{k}</kbd>)}</span><span>{what}</span></div>
+      ))}
+    </div>
+    <div class="btn-row"><button class="btn ghost" type="button" data-close>Close</button></div>
+  </dialog>
 )
 
 export const Shell: FC<{
@@ -981,6 +1070,7 @@ export const Shell: FC<{
           {props.children}
         </main>
       </div>
+      <KbdModal />
       <script dangerouslySetInnerHTML={{ __html: SWITCHER_SCRIPT }} />
     </Page>
   )
