@@ -154,6 +154,21 @@ document.querySelectorAll('[data-filter]').forEach((form) => {
       if (openPane('reply')) e.preventDefault();
     } else if (e.key === 'n') {
       if (openPane('note')) e.preventDefault();
+    } else if (e.key === '/') {
+      const search = document.querySelector('input.search');
+      if (search) { e.preventDefault(); search.focus(); search.select && search.select(); }
+    } else if (e.key === 'Backspace') {
+      e.preventDefault();
+      history.back();
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      // walk the filter pills; each step applies instantly through the pill cache
+      const pills = [].filter.call(document.querySelectorAll('.tag-bar .tag-chip'), (a) => !a.hidden);
+      if (!pills.length) return;
+      e.preventDefault();
+      const cur = pills.findIndex((a) => a.classList.contains('on'));
+      const next = pills[Math.max(0, Math.min(pills.length - 1, (cur < 0 ? 0 : cur) + (e.key === 'ArrowRight' ? 1 : -1)))];
+      if (next && !next.classList.contains('on')) next.click();
+      if (next) next.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       const rs = liveRows();
       if (!rs.length) return;
@@ -841,7 +856,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '83'
+export const ASSET_V = '84'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">
@@ -924,22 +939,25 @@ const Menu: FC<{ base: string; active: string; isAdmin: boolean; canSend: boolea
 
 /** ⌘K overlay: the keyboard, explained. Rendered once by Shell so every app
  *  page carries it; the shortcuts themselves live in the global script. */
-const KEY_ROWS: [string, string][] = [
-  ['i', 'Go to the inbox'],
-  ['↑ / ↓', 'Move through the thread list'],
-  ['↵', 'Open the highlighted thread'],
-  ['r', 'Reply — jumps to the composer'],
-  ['n', 'New internal note'],
-  ['⌘ ↵', 'Send what you are writing'],
-  ['⌘ K', 'Show or hide this overview'],
-  ['esc', 'Close dialogs like this one'],
+const KEY_ROWS: [string[], string][] = [
+  [['i'], 'Go to the inbox'],
+  [['/'], 'Jump to the search bar'],
+  [['↑', '↓'], 'Move through the thread list'],
+  [['↵'], 'Open the highlighted thread'],
+  [['←', '→'], 'Switch filter or tag'],
+  [['⌫'], 'Go back'],
+  [['r'], 'Reply — jumps to the composer'],
+  [['n'], 'New internal note'],
+  [['⌘', '↵'], 'Send what you are writing'],
+  [['⌘', 'K'], 'Show or hide this overview'],
+  [['esc'], 'Close dialogs like this one'],
 ]
 const KbdModal: FC = () => (
   <dialog id="kbd-modal" class="modal">
     <h2>Keyboard shortcuts</h2>
     <div class="kbd-rows">
       {KEY_ROWS.map(([keys, what]) => (
-        <div class="kbd-row"><span class="kbd-keys">{keys.split(' ').map((k) => <kbd>{k}</kbd>)}</span><span>{what}</span></div>
+        <div class="kbd-row"><span class="kbd-keys">{keys.map((k) => <kbd>{k}</kbd>)}</span><span>{what}</span></div>
       ))}
     </div>
     <div class="btn-row"><button class="btn ghost" type="button" data-close>Close</button></div>
