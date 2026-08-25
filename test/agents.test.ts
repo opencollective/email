@@ -468,3 +468,16 @@ test('scoping an agent down to guest keeps the threads history already gave it',
   assert.equal((await json(`/${fx.slug}/api/agent/threads/${t2.lastId}`, H)).status, 200, 'once assigned, still hers')
   assert.equal((await json(`/${fx.slug}/api/agent/threads/${t3.lastId}`, H)).status, 404, 'the untouched thread is not')
 })
+
+test('the skill tells cron-shaped runners to never long-poll', async () => {
+  const skill = await (await app.request('/skill.md')).text()
+  assert.match(skill, /wait=0/, 'the quick-poll variant is prescribed')
+  assert.match(skill, /cron/i)
+  assert.match(skill, /only AFTER you have handled/i, 'cursor advances after handling, not before')
+  // and wait=0 really returns immediately (no server-side hold)
+  const fx = await fixture()
+  const a = await joinedAgent(fx)
+  const t0 = Date.now()
+  await json(`/${fx.slug}/api/agent/events?since=999999&wait=0`, { headers: { authorization: `Bearer ${a.token}` } })
+  assert.ok(Date.now() - t0 < 1500, 'an empty wait=0 poll answers at once')
+})
