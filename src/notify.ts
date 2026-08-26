@@ -438,7 +438,7 @@ export async function digestTick() {
   for (const collective of await allCollectives()) {
     if (collective.status !== 'active') continue
     const threads = await all<Thread>(
-      "SELECT * FROM threads WHERE collective_id = ? AND status = 'needs_reply' ORDER BY last_message_at ASC", [collective.id])
+      "SELECT * FROM threads WHERE collective_id = ? AND status = 'needs_reply' AND deleted_at IS NULL ORDER BY last_message_at ASC", [collective.id])
     if (threads.length === 0) continue
     const members = await activeMembers(collective.id)
     const membersById = new Map(members.map((m) => [m.id, m]))

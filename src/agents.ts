@@ -151,7 +151,7 @@ export async function agentEvents(collectiveId: number, member: Member, since: n
        LEFT JOIN messages m ON f.type = 'message.new' AND m.id = f.ref_id
        LEFT JOIN notes n ON f.type = 'note.new' AND n.id = f.ref_id
        LEFT JOIN members mem ON mem.id = n.member_id
-       WHERE f.collective_id = ? AND f.id > ? AND t.status != 'spam'${guestScope}
+       WHERE f.collective_id = ? AND f.id > ? AND t.status != 'spam' AND t.deleted_at IS NULL${guestScope}
        ORDER BY f.id LIMIT 50`, [memberId, collectiveId, since, ...(guestScope ? [memberId] : [])])
     const events = rows
       .filter((r) => r.note_member !== memberId) // never echo the agent's own notes

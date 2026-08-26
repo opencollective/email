@@ -290,6 +290,7 @@ function init(): Promise<void> {
       'ALTER TABLE login_codes ADD COLUMN claim_slug TEXT',
       "ALTER TABLE invites ADD COLUMN role TEXT DEFAULT 'reader'",
       "ALTER TABLE members ADD COLUMN kind TEXT NOT NULL DEFAULT 'person'",
+      'ALTER TABLE threads ADD COLUMN deleted_at INTEGER',
       'ALTER TABLE collectives ADD COLUMN contribution_offer TEXT',
       'ALTER TABLE collectives ADD COLUMN custom_domain TEXT',
       'ALTER TABLE collectives ADD COLUMN custom_local TEXT',
@@ -428,7 +429,8 @@ export interface Thread {
   last_message_at: number | null
   last_direction: string | null
   created_at: number
-  updated_at: number
+  updated_at: number  // soft-deleted: hidden everywhere, purged for good after 30 days
+  deleted_at?: number | null
 }
 
 export interface Message {
@@ -679,7 +681,7 @@ export const threadTags = (threadId: number) =>
 export const popularTagsQuery = (collectiveId: number, limit = 40) => ({
   sql: `SELECT tg.name, COUNT(t.id) AS n FROM tags tg
         LEFT JOIN thread_tags tt ON tt.tag_id = tg.id
-        LEFT JOIN threads t ON t.id = tt.thread_id AND t.status != 'spam'
+        LEFT JOIN threads t ON t.id = tt.thread_id AND t.status != 'spam' AND t.deleted_at IS NULL
         WHERE tg.collective_id = ?
         GROUP BY tg.id ORDER BY n DESC, tg.name LIMIT ?`,
   args: [collectiveId, limit] as (string | number)[],

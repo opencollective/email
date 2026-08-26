@@ -341,7 +341,7 @@ function agentNotifyText(role) {
   // warm the other pills once the page is idle
   const warm = () => bar.querySelectorAll('a.tag-chip').forEach((a) => {
     const u = a.getAttribute('href');
-    if (!cache[u]) fetch(u).then((r) => r.text()).then((t) => { const d = extract(t); if (d) { cache[u] = d; save(); } }).catch(() => {});
+    if (!cache[u]) fetch(u, { headers: { 'x-prefetch': '1' } }).then((r) => r.text()).then((t) => { const d = extract(t); if (d) { cache[u] = d; save(); } }).catch(() => {});
   });
   (window.requestIdleCallback || ((fn) => setTimeout(fn, 500)))(warm);
   bar.addEventListener('click', (e) => {
@@ -845,6 +845,8 @@ export function eventText(
     case 'tag_added': return data.auto ? `Automatically tagged #${data.tag}` : `${a ?? 'Someone'} added #${data.tag}`
     case 'tag_removed': return `${a ?? 'Someone'} removed #${data.tag}`
     case 'replied': return data.via === 'email' ? `${a} replied by email to their notification` : `${a} replied`
+    case 'deleted': return `${a ?? 'Someone'} deleted this thread`
+    case 'restored': return `${a ?? 'Someone'} restored this thread`
     case 'reply_blocked': return `${a} tried to reply by email, but ${name(data.answered_by)} had already answered — reply not sent`
     default: return ev.type
   }
@@ -856,7 +858,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '84'
+export const ASSET_V = '85'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">

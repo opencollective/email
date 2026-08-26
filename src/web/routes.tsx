@@ -5,7 +5,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import type { Context } from 'hono'
 import { cfg } from '../config.js'
 import {
-  activeMembers, addTag, all, allCollectives, attachmentsByMessage, batchAll, createCollective, get, getCollective, messageFoldsQuery, popularTagsQuery, setMessageFold,
+  activeMembers, addEvent, addTag, all, allCollectives, attachmentsByMessage, batchAll, createCollective, get, getCollective, messageFoldsQuery, popularTagsQuery, setMessageFold,
   getCollectiveBySlug, getMember, getMemberIn, getThread, kvGet, kvGetMany, kvSet, lastMessageQuery, memberMap, recordThreadSeenUpTo,
   renameCollectiveSlug,
   backfillGuestAccess, canSeeThread, grantThreadAccess, markThreadSeen, membershipsByEmail, readsForMember, removeTag, run, setAssignee, setStatus, tagsByThread, threadMessages, threadReads, threadTags,
@@ -21,7 +21,7 @@ import { digestTick, receivingAddress, sendOnboarding, trialTick } from '../noti
 import { mentionLabels, noteParts } from '../mentions.js'
 import { addNote } from '../notes.js'
 import { backupTick } from '../backup.js'
-import { archiveCollective, messageCount, PURGE_AFTER, purgeArchivedTick, purgeDueAt, restoreCollective } from '../archive.js'
+import { archiveCollective, messageCount, PURGE_AFTER, purgeArchivedTick, purgeDeletedTick, purgeDueAt, restoreCollective } from '../archive.js'
 import { agentInviteUrl, createAgentInvite, mintAgentToken, openAgentInvites } from '../agents.js'
 import { CONTRIBUTE_SLUG, creditBalance, creditsLedger, creditsTick, fileContribution, mintCredits, referralUrl , PRO_MONTH_CREDITS } from '../credits.js'
 import {
@@ -252,6 +252,7 @@ app.get('/cron/digest', async (c) => {
   await creditsTick()
   await backupTick()
   await purgeArchivedTick()
+  await purgeDeletedTick()
   await domainVerifyTick()
   return c.json({ ok: true })
 })
@@ -1101,13 +1102,14 @@ app.post('/admin/collectives', async (c) => {
 // ---------- tenant: inbox ----------
 
 const FILTERS: Record<string, { label: string; where: string }> = {
-  all: { label: 'Inbox', where: "t.status != 'spam'" },
-  needs_reply: { label: 'Needs reply', where: "t.status = 'needs_reply'" },
-  mine: { label: 'Mine', where: "t.assignee_member_id = ? AND t.status IN ('needs_reply','answered')" },
-  answered: { label: 'Answered', where: "t.status = 'answered'" },
-  unassigned: { label: 'Unassigned', where: "t.assignee_member_id IS NULL AND t.status IN ('needs_reply','answered')" },
-  closed: { label: 'Closed', where: "t.status = 'closed'" },
-  spam: { label: 'Spam', where: "t.status = 'spam'" },
+  all: { label: 'Inbox', where: "t.status != 'spam' AND t.deleted_at IS NULL" },
+  needs_reply: { label: 'Needs reply', where: "t.status = 'needs_reply' AND t.deleted_at IS NULL" },
+  mine: { label: 'Mine', where: "t.assignee_member_id = ? AND t.status IN ('needs_reply','answered') AND t.deleted_at IS NULL" },
+  answered: { label: 'Answered', where: "t.status = 'answered' AND t.deleted_at IS NULL" },
+  unassigned: { label: 'Unassigned', where: "t.assignee_member_id IS NULL AND t.status IN ('needs_reply','answered') AND t.deleted_at IS NULL" },
+  closed: { label: 'Closed', where: "t.status = 'closed' AND t.deleted_at IS NULL" },
+  spam: { label: 'Spam', where: "t.status = 'spam' AND t.deleted_at IS NULL" },
+  deleted: { label: 'Deleted', where: 't.deleted_at IS NOT NULL' },
 }
 
 // FILTERS.mine uses one positional `?` (the member id); build args accordingly
@@ -1120,8 +1122,21 @@ app.get('/inbox/:addr', async (c) => {
   if (t instanceof Response) return t
   const { collective, member } = t
   const base = `/inbox/${collective.slug}`
-  // the inbox opens on what needs attention; everything else is one pill away
-  const f = FILTERS[c.req.query('f') || 'needs_reply'] ? (c.req.query('f') || 'needs_reply') : 'needs_reply'
+  // the inbox opens on the member's last-used filter (needs-reply until they
+  // pick another); prefetches and pill-warming must never count as picking
+  const askedF = c.req.query('f')
+  const isPrefetch = c.req.header('x-prefetch') === '1' || (c.req.header('sec-purpose') || '').includes('prefetch')
+  let f: string
+  if (askedF && FILTERS[askedF]) {
+    f = askedF
+    // spam and deleted are places you visit, not places you live
+    if (!isPrefetch && f !== 'spam' && f !== 'deleted') {
+      kvSet(`lastfilter:${member.id}`, f).catch(() => {})
+    }
+  } else {
+    const remembered = await kvGet(`lastfilter:${member.id}`)
+    f = remembered && FILTERS[remembered] ? remembered : 'needs_reply'
+  }
   const tag = c.req.query('tag') || ''
   const q = (c.req.query('q') || '').trim()
   // the filter modal can narrow to one member's threads, whatever the status
@@ -1178,7 +1193,7 @@ app.get('/inbox/:addr', async (c) => {
     {
       sql: `SELECT tg.name, COUNT(*) AS n FROM tags tg
             JOIN thread_tags tt ON tt.tag_id = tg.id
-            JOIN threads t ON t.id = tt.thread_id AND t.status != 'spam'
+            JOIN threads t ON t.id = tt.thread_id AND t.status != 'spam' AND t.deleted_at IS NULL
             WHERE tg.collective_id = ?
             GROUP BY tg.id ORDER BY n DESC, tg.name LIMIT 20`,
       args: [collective.id],
@@ -1256,6 +1271,11 @@ app.get('/inbox/:addr', async (c) => {
                 {tr.name} <span class="count">{tr.n}</span>
               </a>
             ))}
+            {counts.deleted ? (
+              <a class={`chip tag-chip deleted-chip ${f === 'deleted' ? 'on' : ''}`} href={`${base}?f=deleted${keep}`}>
+                deleted <span class="count">{counts.deleted}</span>
+              </a>
+            ) : null}
           </div>
         )
       })()}
@@ -1311,6 +1331,10 @@ app.get('/inbox/:addr', async (c) => {
         </form>
       </dialog>
       <div class="rows" data-live={`${base}/ping`} data-live-v={liveV}>
+        {/* inside .rows so a pill-cache swap carries it along */}
+        {f === 'deleted' ? (
+          <div class="deleted-note">Deleted threads stay here for <b>30 days</b>, then are removed permanently — open one to restore it.</div>
+        ) : null}
         {threads.length === 0 ? (
           <div class="empty-state">
             {f === 'needs_reply'
@@ -1370,7 +1394,7 @@ function involves(collectiveId: number, email: string, excludeId: number) {
   const like = `%"${email}"%`
   return {
     from: 'threads t LEFT JOIN messages m ON m.thread_id = t.id',
-    where: `t.collective_id = ? AND t.status != 'spam' AND t.id != ?
+    where: `t.collective_id = ? AND t.status != 'spam' AND t.deleted_at IS NULL AND t.id != ?
        AND (lower(t.counterpart_email) = ? OR lower(m.from_email) = ?
             OR lower(m.to_json) LIKE ? OR lower(m.cc_json) LIKE ? OR lower(m.bcc_json) LIKE ?)`,
     args: [collectiveId, excludeId, email, email, like, like, like] as (string | number)[],
@@ -1432,7 +1456,7 @@ const threadVersion = (r: { m: number; n: number; e: number; d: number }) => `${
 
 const listVersionQuery = (collectiveId: number) => ({
   sql: `SELECT COUNT(*) AS c, COALESCE(MAX(updated_at), 0) AS u, COALESCE(MAX(last_message_at), 0) AS l
-        FROM threads WHERE collective_id = ? AND status != 'spam'`,
+        FROM threads WHERE collective_id = ? AND status != 'spam' AND deleted_at IS NULL`,
   args: [collectiveId] as (string | number)[],
 })
 const listVersion = (r: { c: number; u: number; l: number }) => `${r.c}-${r.u}-${r.l}`
@@ -1519,8 +1543,10 @@ const ThreadRow: FC<{
         {excerpt(p.lastMsg?.body_text || '', 110)}
       </span>
       <span class="r-meta1">
-        <AssigneeChip thread={th} members={p.members} />
-        <StatusChip status={th.status} />
+        {th.deleted_at ? <span class="chip deleted-tag">deleted</span> : <>
+          <AssigneeChip thread={th} members={p.members} />
+          <StatusChip status={th.status} />
+        </>}
       </span>
       <span class="r-meta2">
         {p.noteCount ? <span class="r-notes"><Icon name="note" /> {p.noteCount} note{p.noteCount === 1 ? '' : 's'}</span> : null}
@@ -1542,7 +1568,7 @@ app.get('/inbox/:addr/contacts', async (c) => {
   const base = `/inbox/${collective.slug}`
   // one cheap scan, aggregated here: most recent name wins, spam stays out
   const rows = await all<{ counterpart_email: string; counterpart_name: string | null; status: string; last_message_at: number | null }>(
-    "SELECT counterpart_email, counterpart_name, status, last_message_at FROM threads WHERE collective_id = ? AND status != 'spam' AND counterpart_email IS NOT NULL ORDER BY last_message_at DESC",
+    "SELECT counterpart_email, counterpart_name, status, last_message_at FROM threads WHERE collective_id = ? AND status != 'spam' AND deleted_at IS NULL AND counterpart_email IS NOT NULL ORDER BY last_message_at DESC",
     [collective.id])
   const contacts = new Map<string, { email: string; name: string; threads: number; open: number; last: number }>()
   for (const r of rows) {
@@ -1951,7 +1977,18 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               ) : null}
             </div>
           ) : null}
+          {thread.deleted_at ? (
+            <div class="deleted-note thread-deleted">
+              This thread is deleted — it will be removed permanently on <b>{fmtDate(thread.deleted_at + 30 * 86400)}</b>.
+              {member.role !== 'reader' ? (
+                <form method="post" action={`${base}/thread/${thread.id}/restore`} class="inline">
+                  <button class="btn small" type="submit" data-busy="Restoring…">Restore thread</button>
+                </form>
+              ) : null}
+            </div>
+          ) : null}
           <div class="thread-sub">
+            {thread.deleted_at ? <span class="chip deleted-tag">deleted</span> : null}
             <StatusChip status={thread.status} />
             {rule?.close && !thread.assignee_member_id ? (
               <span class="chip" title={`Filed by ${rule.tag ? `the #${rule.tag}` : 'a'} rule — no assignment needed`}>⚡ auto-filed</span>
@@ -2374,6 +2411,12 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                 <button class="linkish spam-link" type="submit" data-confirm="Mark this thread as spam?">mark as spam</button>
               </form>
             </>)}
+            {/* deleting is for any state — pruning old closed threads most of all */}
+            {!thread.deleted_at ? (
+              <form method="post" action={`${base}/thread/${thread.id}/delete`}>
+                <button class="linkish danger" type="submit" data-confirm="Delete this thread? It moves to Deleted for 30 days, then is removed permanently.">delete</button>
+              </form>
+            ) : null}
           </div>
 
           {member.role !== 'reader' ? (
@@ -2977,6 +3020,32 @@ app.post('/inbox/:addr/thread/:id/seen', async (c) => {
   const upTo = Number(body.up_to) || 0
   if (upTo > 0) await recordThreadSeenUpTo(thread.id, t.member.id, upTo, 'web')
   return c.body(null, 204)
+})
+
+// Soft delete: the thread leaves every list for the Deleted view, where it
+// waits 30 days for second thoughts before the purge makes it permanent.
+app.post('/inbox/:addr/thread/:id/delete', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const blocked = readerBlock(c, t)
+  if (blocked) return blocked
+  const thread = await threadOf(c, t)
+  if (!thread) return c.notFound()
+  await run('UPDATE threads SET deleted_at = ?, updated_at = ? WHERE id = ?', [now(), now(), thread.id])
+  await addEvent(thread.id, t.member.id, 'deleted', {})
+  return c.redirect(`/inbox/${t.collective.slug}?m=` + encodeURIComponent('Thread deleted — it stays under Deleted for 30 days, then is removed for good.'))
+})
+
+app.post('/inbox/:addr/thread/:id/restore', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const blocked = readerBlock(c, t)
+  if (blocked) return blocked
+  const thread = await threadOf(c, t)
+  if (!thread) return c.notFound()
+  await run('UPDATE threads SET deleted_at = NULL, updated_at = ? WHERE id = ?', [now(), thread.id])
+  await addEvent(thread.id, t.member.id, 'restored', {})
+  return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}?m=` + encodeURIComponent('Thread restored.'))
 })
 
 // Folding a message is a per-member view preference, not a thread change:

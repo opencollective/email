@@ -79,6 +79,37 @@ export async function purgeArchivedTick(): Promise<void> {
   }
 }
 
+/** Threads deleted more than 30 days ago go for good — blobs first, then
+ *  every row that hangs off the thread, then the thread itself. */
+const DELETED_KEEP = 30 * 86400
+export async function purgeDeletedTick(): Promise<void> {
+  const cutoff = now() - DELETED_KEEP
+  const doomed = await all<{ id: number }>('SELECT id FROM threads WHERE deleted_at IS NOT NULL AND deleted_at < ?', [cutoff])
+  for (const t of doomed) {
+    try {
+      const blobs = await all<{ path: string }>(
+        'SELECT a.path FROM attachments a JOIN messages m ON m.id = a.message_id WHERE m.thread_id = ? AND a.path IS NOT NULL', [t.id])
+      for (const b of blobs) await deleteBlob(b.path)
+      for (const sql of [
+        'DELETE FROM attachments WHERE message_id IN (SELECT id FROM messages WHERE thread_id = ?)',
+        'DELETE FROM note_mentions WHERE note_id IN (SELECT id FROM notes WHERE thread_id = ?)',
+        'DELETE FROM notes WHERE thread_id = ?',
+        'DELETE FROM messages WHERE thread_id = ?',
+        'DELETE FROM events WHERE thread_id = ?',
+        'DELETE FROM thread_tags WHERE thread_id = ?',
+        'DELETE FROM thread_reads WHERE thread_id = ?',
+        'DELETE FROM thread_drafts WHERE thread_id = ?',
+        'DELETE FROM thread_access WHERE thread_id = ?',
+        'DELETE FROM agent_feed WHERE thread_id = ?',
+        'DELETE FROM reply_tokens WHERE thread_id = ?',
+        'DELETE FROM threads WHERE id = ?',
+      ]) await run(sql, [t.id])
+    } catch (err) {
+      console.error(`[purge] deleted-thread purge failed for thread ${t.id}:`, err)
+    }
+  }
+}
+
 /** Does this inbox still hold anything worth downloading before it goes? */
 export const messageCount = async (collectiveId: number): Promise<number> => Number((await get<{ n: number }>(
   'SELECT COUNT(*) AS n FROM messages m JOIN threads t ON t.id = m.thread_id WHERE t.collective_id = ?',

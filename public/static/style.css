@@ -1384,3 +1384,14 @@ kbd {
   border: 1.5px solid var(--line); border-bottom-width: 2.5px; border-radius: 6px;
   padding: 2px 7px; background: var(--fill);
 }
+
+/* soft-deleted threads: the holding pen and its markers */
+.deleted-note {
+  margin: 4px 20px 10px; padding: 10px 14px; border: 1.5px dashed var(--line);
+  border-radius: 10px; background: var(--fill); color: var(--muted); font-size: 13px;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+}
+.thread-deleted { margin: 12px 24px 0; border-color: var(--danger); color: var(--ink); }
+.chip.deleted-tag { color: var(--danger); border-color: var(--danger); }
+.tag-chip.deleted-chip { color: var(--danger); }
+@media (max-width: 900px) { .deleted-note { margin: 4px 14px 10px; } .thread-deleted { margin: 12px 12px 0; } }
