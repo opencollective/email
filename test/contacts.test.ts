@@ -219,3 +219,38 @@ test('contacts are listed alphabetically, accents and case folded', async () => 
   // the rows carry what the live filter matches on
   assert.match(html, /data-find="joni junes joni@beanmachine\.be"/)
 })
+
+test('contacts.json feeds the recipient picker: most-talked-with first, guests locked out, tenants apart', async () => {
+  const fx = await fixture()
+  await fx.thread('marie@example.org', 'Marie Dupont', 'Room booking', 'needs_reply', 3600)
+  await fx.thread('marie@example.org', 'Marie Dupont', 'Invoice', 'answered', 7200)
+  await fx.thread('bob@example.org', 'Bob', 'Hello', 'answered', 60)
+  await fx.thread('spammer@example.org', 'Spam', 'Buy now', 'spam', 10)
+  const other = await fixture()
+  await other.thread('zoe@example.org', 'Zoe', 'Elsewhere')
+
+  const res = await page(`/inbox/${fx.slug}/contacts.json`, fx.sid)
+  assert.equal(res.status, 200)
+  assert.match(res.headers.get('cache-control') || '', /private/)
+  const { contacts } = await res.json() as { contacts: { e: string; n: string }[] }
+  assert.deepEqual(contacts, [{ e: 'marie@example.org', n: 'Marie Dupont' }, { e: 'bob@example.org', n: 'Bob' }],
+    'ordered by how much we talk, spam out, no bleed from other collectives')
+
+  // a guest sees only threads shared with them — no address book either
+  const guestEmail = `guest-${uniq()}@example.org`
+  await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [fx.collective.id, guestEmail, 'Guest', 'guest', 'every', now()])
+  const g = await page(`/inbox/${fx.slug}/contacts.json`, await createSession(guestEmail))
+  assert.equal(g.status, 403)
+  assert.deepEqual(await g.json(), { contacts: [] })
+})
+
+test('every To/Cc/Bcc field opts into the recipient picker', async () => {
+  const fx = await fixture()
+  const id = await fx.thread('marie@example.org', 'Marie Dupont', 'Room booking')
+  const compose = await (await page(`/inbox/${fx.slug}/compose`, fx.sid)).text()
+  assert.equal((compose.match(/data-rcpt="list"/g) || []).length, 3, 'compose: to, cc, bcc')
+  const thread = await (await page(`/inbox/${fx.slug}/thread/${id}`, fx.sid)).text()
+  assert.equal((thread.match(/data-rcpt="list"/g) || []).length, 2, 'reply: cc, bcc')
+  assert.ok(thread.includes('data-rcpt="one"'), 'forward takes a single address')
+})

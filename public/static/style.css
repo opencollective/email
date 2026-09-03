@@ -830,6 +830,7 @@ iframe.msg-frame {
    inline, Cc/Bcc folded away until asked for */
 .compose-form { display: grid; gap: 0; padding: 0; overflow: hidden; }
 .c-row {
+  position: relative; /* anchors the recipient suggestions */
   display: flex; align-items: center; gap: 10px;
   padding: 7px 14px; border-bottom: 1.5px solid var(--line-soft);
 }
@@ -952,6 +953,25 @@ iframe.msg-frame {
 }
 .tag-sug:hover, .tag-sug.on { background: var(--fill); color: var(--ink); }
 .tag-sug.on { border-color: var(--accent); }
+
+/* recipient suggestions under a To/Cc/Bcc line — same rows as the tag
+   picker, built client-side from the collective's contacts */
+.rcpt-sugs {
+  position: absolute; left: 76px; right: 14px; top: 100%; z-index: 40;
+  display: flex; flex-direction: column; gap: 1px; padding: 4px;
+  max-height: 240px; overflow-y: auto;
+  background: var(--card); border: 1.5px solid var(--line); border-radius: 10px; box-shadow: var(--shadow);
+}
+.fwd-form .rcpt-sugs { position: static; } /* sits in the popover's column */
+.rcpt-sug {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; width: 100%;
+  cursor: pointer; font: inherit; font-size: 13.5px; text-align: left; color: var(--ink);
+  background: none; border: 1.5px solid transparent; border-radius: 8px; padding: 6px 10px;
+}
+.rcpt-sug span { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.rcpt-sug:hover, .rcpt-sug.on { background: var(--fill); }
+.rcpt-sug.on { border-color: var(--accent); }
+@media (max-width: 560px) { .rcpt-sugs { left: 8px; right: 8px; } }
 
 /* one-click assignment picker: modal on desktop, sheet on mobile */
 .assign-list { display: flex; flex-direction: column; gap: 2px; margin-bottom: 10px; }

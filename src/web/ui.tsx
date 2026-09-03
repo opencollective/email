@@ -434,9 +434,103 @@ document.addEventListener('click', (e) => {
   document.querySelectorAll('[data-person].open').forEach((o) => o.classList.remove('open'));
 });
 
+// The address book behind To/Cc/Bcc: fetched once per visit and kept in
+// sessionStorage for five minutes, so suggestions never wait on the network.
+let bookP = null;
+function contactBook() {
+  if (bookP) return bookP;
+  const base = '/inbox/' + location.pathname.split('/')[2];
+  const key = 'contacts:' + base;
+  try {
+    const c = JSON.parse(sessionStorage.getItem(key) || 'null');
+    if (c && c.at > Date.now() - 300000) return (bookP = Promise.resolve(c.list));
+  } catch (e) {}
+  bookP = fetch(base + '/contacts.json', { credentials: 'same-origin' })
+    .then((r) => (r.ok ? r.json() : { contacts: [] }))
+    .then((j) => {
+      const list = j.contacts || [];
+      try { sessionStorage.setItem(key, JSON.stringify({ at: Date.now(), list })); } catch (e) {}
+      return list;
+    })
+    .catch(() => []);
+  return bookP;
+}
+
 // Everything bound per-element inside regions the live poller may replace
 // lives here, so a swap can rebind just the fresh nodes.
 function wireLive(root) {
+// Recipient autocomplete on every To/Cc/Bcc: the term after the last comma is
+// matched against everyone this inbox has talked with; up/down move, Enter or
+// Tab take the highlighted one, Escape closes. Fields marked "one" hold a
+// single address (forward), the rest a comma-separated list.
+root.querySelectorAll('input[data-rcpt]').forEach((input) => {
+  const single = input.getAttribute('data-rcpt') === 'one';
+  const box = document.createElement('div');
+  box.className = 'rcpt-sugs';
+  box.hidden = true;
+  input.insertAdjacentElement('afterend', box);
+  let at = 0, list = [];
+  const parts = () => (single ? [input.value] : input.value.split(/[,;]/));
+  const close = () => { list = []; box.hidden = true; };
+  const pick = (p) => {
+    const ps = parts();
+    ps[ps.length - 1] = p.e;
+    const v = ps.map((s) => s.trim()).filter(Boolean).join(', ');
+    input.value = single ? p.e : v + ', ';
+    close();
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    input.focus();
+  };
+  const render = () => {
+    box.innerHTML = '';
+    list.forEach((p, i) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'rcpt-sug' + (i === at ? ' on' : '');
+      if (p.n) { const nm = document.createElement('b'); nm.textContent = p.n; b.appendChild(nm); }
+      const em = document.createElement('span'); em.textContent = p.e; b.appendChild(em);
+      b.addEventListener('mousedown', (e) => e.preventDefault()); // the input keeps focus
+      b.addEventListener('click', () => pick(p));
+      box.appendChild(b);
+    });
+    box.hidden = list.length === 0;
+    if (box.children[at] && box.children[at].scrollIntoView) box.children[at].scrollIntoView({ block: 'nearest' });
+  };
+  const refresh = () => {
+    const ps = parts();
+    const q = ps[ps.length - 1].trim().toLowerCase();
+    if (!q) { close(); return; }
+    const taken = ps.slice(0, -1).map((s) => s.trim().toLowerCase());
+    contactBook().then((book) => {
+      const cur = parts();
+      if (document.activeElement !== input || cur[cur.length - 1].trim().toLowerCase() !== q) return; // typed on since
+      const starts = [], within = [];
+      for (let i = 0; i < book.length && starts.length < 8; i++) {
+        const p = book[i], e = p.e.toLowerCase(), n = (p.n || '').toLowerCase();
+        if (taken.indexOf(e) !== -1) continue;
+        if (e.indexOf(q) === 0 || n.indexOf(q) === 0 || n.indexOf(' ' + q) !== -1) starts.push(p);
+        else if (within.length < 8 && (e.indexOf(q) !== -1 || n.indexOf(q) !== -1)) within.push(p);
+      }
+      list = starts.concat(within).slice(0, 8);
+      at = 0;
+      render();
+    });
+  };
+  input.addEventListener('input', refresh);
+  input.addEventListener('blur', close);
+  input.addEventListener('keydown', (e) => {
+    if (box.hidden) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      at = (at + (e.key === 'ArrowDown' ? 1 : list.length - 1)) % list.length;
+      render();
+    } else if (e.key === 'Enter' || e.key === 'Tab') {
+      if (list[at]) { e.preventDefault(); e.stopPropagation(); pick(list[at]); }
+    } else if (e.key === 'Escape') {
+      e.preventDefault(); e.stopPropagation(); close();
+    }
+  });
+});
 root.querySelectorAll('[data-tagpop]').forEach((form) => {
   const input = form.querySelector('input[name=name]');
   const box = form.querySelector('.tag-sugs');
@@ -858,7 +952,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '85'
+export const ASSET_V = '86'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">

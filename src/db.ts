@@ -687,6 +687,29 @@ export const popularTagsQuery = (collectiveId: number, limit = 40) => ({
   args: [collectiveId, limit] as (string | number)[],
 })
 
+export type Contact = { email: string; name: string; threads: number; open: number; last: number }
+
+/** Everyone the collective has a conversation with: one entry per address
+ *  (case-folded), the most recent name winning, spam and deleted threads out.
+ *  One cheap ordered scan aggregated here — it feeds the Contacts page and the
+ *  To/Cc/Bcc autocomplete alike. */
+export async function contactsFor(collectiveId: number): Promise<Contact[]> {
+  const rows = await all<{ counterpart_email: string; counterpart_name: string | null; status: string; last_message_at: number | null }>(
+    "SELECT counterpart_email, counterpart_name, status, last_message_at FROM threads WHERE collective_id = ? AND status != 'spam' AND deleted_at IS NULL AND counterpart_email IS NOT NULL ORDER BY last_message_at DESC",
+    [collectiveId])
+  const contacts = new Map<string, Contact>()
+  for (const r of rows) {
+    const key = r.counterpart_email.toLowerCase()
+    const entry = contacts.get(key) ?? { email: r.counterpart_email, name: '', threads: 0, open: 0, last: 0 }
+    entry.threads++
+    if (r.status === 'needs_reply') entry.open++
+    if (!entry.name && r.counterpart_name) entry.name = r.counterpart_name // rows arrive newest-first
+    entry.last = Math.max(entry.last, r.last_message_at ?? 0)
+    contacts.set(key, entry)
+  }
+  return [...contacts.values()]
+}
+
 export async function tagsByThread(threadIds: number[]): Promise<Map<number, { id: number; name: string }[]>> {
   if (threadIds.length === 0) return new Map()
   const rows = await all<{ thread_id: number; id: number; name: string }>(

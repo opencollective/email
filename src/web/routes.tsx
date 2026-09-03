@@ -5,7 +5,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import type { Context } from 'hono'
 import { cfg } from '../config.js'
 import {
-  activeMembers, addEvent, addTag, all, allCollectives, attachmentsByMessage, batchAll, createCollective, get, getCollective, messageFoldsQuery, popularTagsQuery, setMessageFold,
+  activeMembers, addEvent, addTag, all, allCollectives, attachmentsByMessage, batchAll, contactsFor, createCollective, get, getCollective, messageFoldsQuery, popularTagsQuery, setMessageFold,
   getCollectiveBySlug, getMember, getMemberIn, getThread, kvGet, kvGetMany, kvSet, lastMessageQuery, memberMap, recordThreadSeenUpTo,
   renameCollectiveSlug,
   backfillGuestAccess, canSeeThread, grantThreadAccess, markThreadSeen, membershipsByEmail, readsForMember, removeTag, run, setAssignee, setStatus, tagsByThread, threadMessages, threadReads, threadTags,
@@ -1566,26 +1566,13 @@ app.get('/inbox/:addr/contacts', async (c) => {
   if (t.member.role === 'guest') return c.redirect(`/inbox/${t.collective.slug}`)
   const { collective, member } = t
   const base = `/inbox/${collective.slug}`
-  // one cheap scan, aggregated here: most recent name wins, spam stays out
-  const rows = await all<{ counterpart_email: string; counterpart_name: string | null; status: string; last_message_at: number | null }>(
-    "SELECT counterpart_email, counterpart_name, status, last_message_at FROM threads WHERE collective_id = ? AND status != 'spam' AND deleted_at IS NULL AND counterpart_email IS NOT NULL ORDER BY last_message_at DESC",
-    [collective.id])
-  const contacts = new Map<string, { email: string; name: string; threads: number; open: number; last: number }>()
-  for (const r of rows) {
-    const key = r.counterpart_email.toLowerCase()
-    const entry = contacts.get(key) ?? { email: r.counterpart_email, name: '', threads: 0, open: 0, last: 0 }
-    entry.threads++
-    if (r.status === 'needs_reply') entry.open++
-    if (!entry.name && r.counterpart_name) entry.name = r.counterpart_name // rows arrive newest-first
-    entry.last = Math.max(entry.last, r.last_message_at ?? 0)
-    contacts.set(key, entry)
-  }
+  const contacts = await contactsFor(collective.id)
   const cq = (c.req.query('q') || '').trim()
   const needle = cq.toLowerCase()
   // alphabetical by the name you actually see; accents and case ignored so
   // "Aída" files under A and "rūta" next to "Ruta"
   const label = (x: { name: string; email: string }) => x.name || x.email
-  const list = [...contacts.values()]
+  const list = contacts
     .filter((x) => !needle || x.name.toLowerCase().includes(needle) || x.email.toLowerCase().includes(needle))
     .sort((a, b) => label(a).localeCompare(label(b), undefined, { sensitivity: 'base', numeric: true }))
 
@@ -1621,6 +1608,21 @@ app.get('/inbox/:addr/contacts', async (c) => {
       </div>
     </Shell>,
   )
+})
+
+/** What the To/Cc/Bcc autocomplete draws from: the same people as the
+ *  Contacts page, most-talked-with first, trimmed to address + name. The
+ *  client caches it for a few minutes, so this runs about once a visit. */
+app.get('/inbox/:addr/contacts.json', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  if (t.member.role === 'guest') return c.json({ contacts: [] }, 403)
+  const contacts = (await contactsFor(t.collective.id))
+    .sort((a, b) => b.threads - a.threads || b.last - a.last)
+    .slice(0, 3000)
+    .map((x) => ({ e: x.email, n: x.name }))
+  c.header('Cache-Control', 'private, max-age=120')
+  return c.json({ contacts })
 })
 
 app.get('/inbox/:addr/contact/:email', async (c) => {
@@ -2184,7 +2186,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                             <summary class="menu-item">Forward…</summary>
                             <form method="post" action={`${base}/thread/${thread.id}/forward`} class="fwd-form">
                               <input type="hidden" name="message_id" value={String(g.id)} />
-                              <input class="input small" type="email" name="to" placeholder="colleague@example.com" required />
+                              <input class="input small" type="email" name="to" placeholder="colleague@example.com" data-rcpt="one" required />
                               <input class="input small" name="note" placeholder="Add a note (optional)" />
                               <button class="btn small ghost" type="submit" data-busy="Forwarding…">Forward</button>
                             </form>
@@ -2319,7 +2321,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               <div class="to note-to">✎ Draft — nothing has been sent yet. Teammates with this link can add internal notes below.</div>
               <div class="c-row">
                 <span class="c-k">To</span>
-                <input class="c-in" name="to" value={JSON.parse(draftMsg.to_json || '[]').join(', ')} autocomplete="off" spellcheck={false} />
+                <input class="c-in" name="to" value={JSON.parse(draftMsg.to_json || '[]').join(', ')} autocomplete="off" spellcheck={false} data-rcpt="list" />
               </div>
               {(() => {
                 const dcc = JSON.parse(draftMsg.cc_json || '[]').join(', ')
@@ -2329,8 +2331,8 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                   // recipient the draft actually has would be a nasty surprise
                   <details class="ccb" open={Boolean(dcc || dbcc)}>
                     <summary>Cc/Bcc, From: {collectiveAddr}</summary>
-                    <div class="c-row"><span class="c-k">Cc</span><input class="c-in" name="cc" value={dcc} autocomplete="off" spellcheck={false} /></div>
-                    <div class="c-row"><span class="c-k">Bcc</span><input class="c-in" name="bcc" value={dbcc} autocomplete="off" spellcheck={false} /></div>
+                    <div class="c-row"><span class="c-k">Cc</span><input class="c-in" name="cc" value={dcc} autocomplete="off" spellcheck={false} data-rcpt="list" /></div>
+                    <div class="c-row"><span class="c-k">Bcc</span><input class="c-in" name="bcc" value={dbcc} autocomplete="off" spellcheck={false} data-rcpt="list" /></div>
                     <div class="c-row"><span class="c-k">From</span><span class="c-static">{collectiveAddr}</span></div>
                   </details>
                 )
@@ -2356,8 +2358,8 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                   sticky Cc — hiding a recipient that will be copied would lie */}
               <details class="ccb" open={threadCc.length > 0}>
                 <summary>Cc/Bcc, From: {collectiveAddr}</summary>
-                <div class="c-row"><span class="c-k">Cc</span><input class="c-in" name="cc" value={threadCc.join(', ')} autocomplete="off" spellcheck={false} /></div>
-                <div class="c-row"><span class="c-k">Bcc</span><input class="c-in" name="bcc" autocomplete="off" spellcheck={false} /></div>
+                <div class="c-row"><span class="c-k">Cc</span><input class="c-in" name="cc" value={threadCc.join(', ')} autocomplete="off" spellcheck={false} data-rcpt="list" /></div>
+                <div class="c-row"><span class="c-k">Bcc</span><input class="c-in" name="bcc" autocomplete="off" spellcheck={false} data-rcpt="list" /></div>
                 <div class="c-row"><span class="c-k">From</span><span class="c-static">{collectiveAddr}</span></div>
               </details>
               {/* the sign-off is in the text, so it can be edited or deleted before sending */}
@@ -2709,15 +2711,15 @@ const ComposeForm = ({ base, addr, signature, to }: { base: string; addr: string
     <form method="post" action={`${base}/compose`} class="card compose-form">
       <div class="c-row">
         <span class="c-k">To</span>
-        <input class="c-in" name="to" value={to || ''} placeholder="them@example.org — comma-separate several" autocomplete="off" spellcheck={false} autofocus={!to} />
+        <input class="c-in" name="to" value={to || ''} placeholder="them@example.org — comma-separate several" autocomplete="off" spellcheck={false} autofocus={!to} data-rcpt="list" />
       </div>
       {/* Apple-Mail style: one quiet combined line; tapping expands each onto
           its own row (a <details>, so it works without JavaScript; focusing the
           body folds it back when Cc/Bcc are still empty) */}
       <details class="ccb">
         <summary>Cc/Bcc, From: {addr}</summary>
-        <div class="c-row"><span class="c-k">Cc</span><input class="c-in" name="cc" autocomplete="off" spellcheck={false} /></div>
-        <div class="c-row"><span class="c-k">Bcc</span><input class="c-in" name="bcc" autocomplete="off" spellcheck={false} /></div>
+        <div class="c-row"><span class="c-k">Cc</span><input class="c-in" name="cc" autocomplete="off" spellcheck={false} data-rcpt="list" /></div>
+        <div class="c-row"><span class="c-k">Bcc</span><input class="c-in" name="bcc" autocomplete="off" spellcheck={false} data-rcpt="list" /></div>
         <div class="c-row"><span class="c-k">From</span><span class="c-static">{addr}</span></div>
       </details>
       <div class="c-row">
