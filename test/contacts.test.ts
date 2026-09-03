@@ -228,13 +228,24 @@ test('contacts.json feeds the recipient picker: most-talked-with first, guests l
   await fx.thread('spammer@example.org', 'Spam', 'Buy now', 'spam', 10)
   const other = await fixture()
   await other.thread('zoe@example.org', 'Zoe', 'Elsewhere')
+  // people copied in count too — but never the inbox's own address
+  const bobThread = (await get<{ id: number }>('SELECT id FROM threads WHERE counterpart_email = ? AND collective_id = ?', ['bob@example.org', fx.collective.id]))!.id
+  await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_email, to_json, cc_json, body_text, sent_at, created_at)
+    VALUES (?, ?, 'inbound', 'bob@example.org', ?, '["Carla@example.org", "marie@example.org"]', 'fyi', ?, ?)`,
+    [bobThread, `<cc-${uniq()}@x>`, JSON.stringify([`${fx.slug}@collective.email`, 'dan@example.org']), now(), now()])
 
   const res = await page(`/inbox/${fx.slug}/contacts.json`, fx.sid)
   assert.equal(res.status, 200)
   assert.match(res.headers.get('cache-control') || '', /private/)
   const { contacts } = await res.json() as { contacts: { e: string; n: string }[] }
-  assert.deepEqual(contacts, [{ e: 'marie@example.org', n: 'Marie Dupont' }, { e: 'bob@example.org', n: 'Bob' }],
-    'ordered by how much we talk, spam out, no bleed from other collectives')
+  assert.deepEqual(contacts.slice(0, 2).map((x) => x.e), ['marie@example.org', 'bob@example.org'],
+    'ordered by how much we talk (a Cc on a thread you already own counts once), spam out, no bleed from other collectives')
+  assert.deepEqual(contacts.slice(2).map((x) => x.e).sort(), ['Carla@example.org', 'dan@example.org'], 'the copied-in people follow (tied, any order)')
+  assert.deepEqual(contacts.slice(0, 2).map((x) => x.n), ['Marie Dupont', 'Bob'])
+  assert.ok(!contacts.some((x) => x.e.includes(`${fx.slug}@`)), 'the inbox is not its own contact')
+  // the Contacts page draws from the same list
+  const html = await (await page(`/inbox/${fx.slug}/contacts`, fx.sid)).text()
+  assert.match(html, /Carla@example\.org/)
 
   // a guest sees only threads shared with them — no address book either
   const guestEmail = `guest-${uniq()}@example.org`

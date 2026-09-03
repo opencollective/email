@@ -689,23 +689,48 @@ export const popularTagsQuery = (collectiveId: number, limit = 40) => ({
 
 export type Contact = { email: string; name: string; threads: number; open: number; last: number }
 
-/** Everyone the collective has a conversation with: one entry per address
- *  (case-folded), the most recent name winning, spam and deleted threads out.
- *  One cheap ordered scan aggregated here — it feeds the Contacts page and the
- *  To/Cc/Bcc autocomplete alike. */
+/** Everyone the collective has a conversation with: the counterpart of each
+ *  thread plus anyone on the To/Cc of its messages (people copied in, or whom
+ *  we copied), one entry per address (case-folded), the most recent name
+ *  winning, spam and deleted threads out, the inbox's own addresses never.
+ *  Two scans in one round-trip, aggregated here — it feeds the Contacts page
+ *  and the To/Cc/Bcc autocomplete alike. */
 export async function contactsFor(collectiveId: number): Promise<Contact[]> {
-  const rows = await all<{ counterpart_email: string; counterpart_name: string | null; status: string; last_message_at: number | null }>(
-    "SELECT counterpart_email, counterpart_name, status, last_message_at FROM threads WHERE collective_id = ? AND status != 'spam' AND deleted_at IS NULL AND counterpart_email IS NOT NULL ORDER BY last_message_at DESC",
-    [collectiveId])
+  const [own, threads, copied] = await batchAll([
+    { sql: 'SELECT slug, custom_local, custom_domain FROM collectives WHERE id = ?', args: [collectiveId] },
+    { sql: "SELECT id, counterpart_email, counterpart_name, status, last_message_at FROM threads WHERE collective_id = ? AND status != 'spam' AND deleted_at IS NULL AND counterpart_email IS NOT NULL ORDER BY last_message_at DESC", args: [collectiveId] },
+    { sql: `SELECT m.thread_id, m.to_json, m.cc_json, t.status, t.last_message_at FROM messages m JOIN threads t ON t.id = m.thread_id
+            WHERE t.collective_id = ? AND t.status != 'spam' AND t.deleted_at IS NULL
+              AND ((m.cc_json IS NOT NULL AND m.cc_json != '[]') OR (m.direction = 'inbound' AND m.to_json IS NOT NULL AND m.to_json != '[]'))`, args: [collectiveId] },
+  ]) as [
+    { slug: string; custom_local: string | null; custom_domain: string | null }[],
+    { id: number; counterpart_email: string; counterpart_name: string | null; status: string; last_message_at: number | null }[],
+    { thread_id: number; to_json: string | null; cc_json: string | null; status: string; last_message_at: number | null }[],
+  ]
+  const self = new Set<string>()
+  if (own[0]) {
+    self.add(`${own[0].slug}@${cfg.emailDomain}`.toLowerCase())
+    if (own[0].custom_local && own[0].custom_domain) self.add(`${own[0].custom_local}@${own[0].custom_domain}`.toLowerCase())
+  }
   const contacts = new Map<string, Contact>()
-  for (const r of rows) {
-    const key = r.counterpart_email.toLowerCase()
-    const entry = contacts.get(key) ?? { email: r.counterpart_email, name: '', threads: 0, open: 0, last: 0 }
+  const seen = new Set<string>() // thread:email — one thread counts once per person
+  const count = (email: string, name: string | null, threadId: number, status: string, last: number | null) => {
+    const key = email.toLowerCase()
+    if (self.has(key) || seen.has(`${threadId}:${key}`)) return
+    seen.add(`${threadId}:${key}`)
+    const entry = contacts.get(key) ?? { email, name: '', threads: 0, open: 0, last: 0 }
     entry.threads++
-    if (r.status === 'needs_reply') entry.open++
-    if (!entry.name && r.counterpart_name) entry.name = r.counterpart_name // rows arrive newest-first
-    entry.last = Math.max(entry.last, r.last_message_at ?? 0)
+    if (status === 'needs_reply') entry.open++
+    if (!entry.name && name) entry.name = name // rows arrive newest-first
+    entry.last = Math.max(entry.last, last ?? 0)
     contacts.set(key, entry)
+  }
+  for (const r of threads) count(r.counterpart_email, r.counterpart_name, r.id, r.status, r.last_message_at)
+  const parse = (json: string | null): string[] => { try { return JSON.parse(json || '[]') } catch { return [] } }
+  for (const m of copied) {
+    for (const addr of [...parse(m.to_json), ...parse(m.cc_json)]) {
+      if (typeof addr === 'string' && addr.includes('@')) count(addr.trim(), null, m.thread_id, m.status, m.last_message_at)
+    }
   }
   return [...contacts.values()]
 }
