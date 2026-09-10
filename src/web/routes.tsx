@@ -192,7 +192,11 @@ async function tenant(c: Context<Env>): Promise<{ collective: Collective; member
     WHERE c.slug = ?
     ORDER BY (m.id IS NULL), m.id LIMIT 1
   `, [...emails, slug]) : undefined
-  if (!row || (row.c_status !== 'active' && row.c_status !== 'archived')) return c.notFound()
+  if (!row) return c.notFound()
+  // a member of a still-reserved address belongs on its activation page, not
+  // on a 404 — the inbox exists the moment the address goes live
+  if ((row.c_status === 'pending' || row.c_status === 'applied') && row.id != null) return c.redirect(`/claim/${slug}`)
+  if (row.c_status !== 'active' && row.c_status !== 'archived') return c.notFound()
   const collective: Collective = {
     id: row.c_id, slug: row.c_slug, name: row.c_name, status: row.c_status, plan: row.c_plan, created_at: row.c_created_at,
     stripe_status: row.c_stripe_status, trial_ends_at: row.c_trial_ends_at, comped: row.c_comped,
@@ -5098,12 +5102,23 @@ app.get('/claim/:slug/invite', async (c) => {
         <p class="muted">Share this link with your collective. Everyone signs in with their own email — no shared password. You choose what each person can do; they join as readers by default and you can change that any time.</p>
       )}
       <p class="invite-url"><code>{url}</code></p>
+      {/* while reserved there is no inbox to open and no Members page to
+          choose roles on — every /inbox link would be a 404 */}
       <div class="btn-row">
         <button class="btn" type="button" data-copy={url}>Copy invite link</button>
-        <a class="btn ghost" href={`/inbox/${collective.slug}/members`}>Choose roles →</a>
+        {reserved ? null : <a class="btn ghost" href={`/inbox/${collective.slug}/members`}>Choose roles →</a>}
       </div>
-      <p class="fineprint">The link is valid for {String(cfg.inviteHours)} hours — you can always create a new one from Members, where you can also invite people as commenters or senders.</p>
-      <p class="fineprint"><a href={`/inbox/${collective.slug}`}>Skip — open the inbox</a></p>
+      {reserved ? (
+        <>
+          <p class="fineprint">The link is valid for {String(cfg.inviteHours)} hours; come back here for a fresh one. Whoever joins gets read access — you choose roles from Members once the inbox is live.</p>
+          <p class="fineprint">Not waiting on anyone? <a href={`/claim/${collective.slug}`}>Other ways to activate</a></p>
+        </>
+      ) : (
+        <>
+          <p class="fineprint">The link is valid for {String(cfg.inviteHours)} hours — you can always create a new one from Members, where you can also invite people as commenters or senders.</p>
+          <p class="fineprint"><a href={`/inbox/${collective.slug}`}>Skip — open the inbox</a></p>
+        </>
+      )}
     </AuthCard>,
   )
 })

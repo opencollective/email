@@ -303,3 +303,32 @@ test('claiming is two steps: address first, then the first admin (editable addre
   assert.match(ht, /id="claim-address"/, 'back on step 1')
   assert.match(ht, /already taken/)
 })
+
+test('while reserved, the invite step never links into the (not yet existing) inbox', async () => {
+  const slug = `resv${uniq()}`
+  const email = `rs-${uniq()}@t.test`
+  await verifiedClaim(slug, email)
+  const sid = await createSession(email)
+  const headers = { cookie: `requests_sid=${sid}` }
+
+  const page = await (await app.request(`/claim/${slug}/invite`, { headers })).text()
+  assert.match(page, /One teammate away/)
+  assert.doesNotMatch(page, new RegExp(`/inbox/${slug}`), 'no inbox or Members link before activation')
+  assert.match(page, new RegExp(`/claim/${slug}"`), 'points back at the activation options instead')
+
+  // and the inbox itself sends its own member to activation rather than a 404
+  for (const path of [`/inbox/${slug}`, `/inbox/${slug}/members`]) {
+    const res = await app.request(path, { headers })
+    assert.equal(res.status, 302, path)
+    assert.equal(res.headers.get('location'), `/claim/${slug}`)
+  }
+  // a stranger still learns nothing
+  const strangerSid = await createSession(`str-${uniq()}@t.test`)
+  assert.equal((await app.request(`/inbox/${slug}`, { headers: { cookie: `requests_sid=${strangerSid}` } })).status, 404)
+
+  // once live, the same step offers the inbox and Members
+  await run("UPDATE collectives SET status = 'active' WHERE slug = ?", [slug])
+  const live = await (await app.request(`/claim/${slug}/invite`, { headers })).text()
+  assert.match(live, new RegExp(`/inbox/${slug}/members`))
+  assert.match(live, /open the inbox/)
+})
