@@ -151,7 +151,7 @@ test('the Next block states one action and when the last message landed', async 
   const html = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
   const next = html.slice(html.indexOf('next-block'), html.indexOf('next-block') + 900)
   assert.match(next, /Reply to Miriam/)
-  assert.match(next, /Last message today/)
+  assert.match(next, /Last message (today|yesterday)/) // the fixture is 2h old — run just after midnight, that is yesterday
   assert.match(next, /mark as closed/)
   assert.doesNotMatch(next, /waiting|Waiting|⚠/, 'no countdown, no warning sign')
 

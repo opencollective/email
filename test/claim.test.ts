@@ -314,6 +314,13 @@ test('while reserved, the invite step never links into the (not yet existing) in
   const page = await (await app.request(`/claim/${slug}/invite`, { headers })).text()
   assert.match(page, /One teammate away/)
   assert.doesNotMatch(page, new RegExp(`/inbox/${slug}`), 'no inbox or Members link before activation')
+  // the first teammate is invited as a sender, not a reader
+  const col = (await get<any>('SELECT id FROM collectives WHERE slug = ?', [slug]))!
+  const inv = (await get<any>('SELECT token, role FROM invites WHERE collective_id = ? ORDER BY id DESC LIMIT 1', [col.id]))!
+  assert.equal(inv.role, 'member')
+  assert.match(page, new RegExp(`/join/${inv.token}`))
+  const joinPage = await (await app.request(`/join/${inv.token}`, { headers: { cookie: `requests_sid=${await createSession(`m-${uniq()}@t.test`)}` } })).text()
+  assert.match(joinPage, /join as a <b>sender<\/b>/)
   assert.match(page, new RegExp(`/claim/${slug}"`), 'points back at the activation options instead')
 
   // and the inbox itself sends its own member to activation rather than a 404

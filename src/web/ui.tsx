@@ -259,7 +259,7 @@ function agentNotifyText(role) {
   const noteEl = form.querySelector('[data-am-note]');
   const copyBtn = form.querySelector('[data-am-copy]');
   const sync = () => {
-    // person: reader/commenter/sender · agent: reader/commenter/guest
+    // person: reader/commenter/sender (sender preselected) · agent: reader/commenter/guest
     const agent = type.value === 'agent';
     form.querySelectorAll('[data-role-card]').forEach((card) => {
       const v = card.getAttribute('data-role-card');

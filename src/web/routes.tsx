@@ -3711,7 +3711,7 @@ app.get('/inbox/:addr/members', async (c) => {
                 <option value="agent">Agent</option>
               </select>
               <label class="lbl">Role</label>
-              <RoleCards roles={['reader', 'commenter', 'guest', 'member']} checked="commenter" />
+              <RoleCards roles={['reader', 'commenter', 'guest', 'member']} checked="member" />
               <div class="btn-row">
                 <button class="btn" type="submit" data-busy="Creating…">Create invitation link</button>
               </div>
@@ -3753,7 +3753,7 @@ app.post('/inbox/:addr/members/add', async (c) => {
     url = agentInviteUrl(t.collective, inv)
     note = `Paste this to the agent. It works once and expires in 7 days.${role === 'guest' ? ' As a guest it only sees threads shared with it or where it is @mentioned.' : ''}`
   } else {
-    const role = ['reader', 'commenter', 'member'].includes(String(body.role)) ? String(body.role) : 'reader'
+    const role = ['reader', 'commenter', 'member'].includes(String(body.role)) ? String(body.role) : 'member'
     await run('UPDATE invites SET revoked_at = ? WHERE collective_id = ? AND revoked_at IS NULL', [now(), t.collective.id])
     const token = randomToken(18)
     await run('INSERT INTO invites (collective_id, token, role, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)',
@@ -3770,7 +3770,7 @@ app.post('/inbox/:addr/members/invite', async (c) => {
   if (t instanceof Response) return t
   if (t.member.role !== 'admin') return c.redirect(`/inbox/${t.collective.slug}/members`)
   const inviteBody = await c.req.parseBody()
-  const inviteRole = ['reader', 'commenter', 'member'].includes(String(inviteBody.role)) ? String(inviteBody.role) : 'reader'
+  const inviteRole = ['reader', 'commenter', 'member'].includes(String(inviteBody.role)) ? String(inviteBody.role) : 'member'
   await run('UPDATE invites SET revoked_at = ? WHERE collective_id = ? AND revoked_at IS NULL', [now(), t.collective.id])
   await run('INSERT INTO invites (collective_id, token, role, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)',
     [t.collective.id, randomToken(18), inviteRole, t.member.id, now(), now() + cfg.inviteHours * 3600])
@@ -5080,13 +5080,15 @@ app.get('/claim/:slug/invite', async (c) => {
   const member = collective ? await memberAmongAccounts(c, collective.id) : undefined
   if (!collective || !member || member.role !== 'admin') return c.notFound()
 
+  // the first teammate joins as a sender: a collective inbox is for replying
+  // together, and a reader who cannot answer is the wrong first impression
   let invite = await get<Invite>(
-    'SELECT * FROM invites WHERE collective_id = ? AND revoked_at IS NULL AND expires_at > ? ORDER BY id DESC LIMIT 1',
+    "SELECT * FROM invites WHERE collective_id = ? AND role = 'member' AND revoked_at IS NULL AND expires_at > ? ORDER BY id DESC LIMIT 1",
     [collective.id, now()])
   if (!invite) {
     const token = randomToken(18)
     await run('INSERT INTO invites (collective_id, token, role, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)',
-      [collective.id, token, 'reader', member.id, now(), now() + cfg.inviteHours * 3600])
+      [collective.id, token, 'member', member.id, now(), now() + cfg.inviteHours * 3600])
     invite = (await get<Invite>('SELECT * FROM invites WHERE token = ?', [token]))!
   }
   const url = `${cfg.baseUrl}/join/${invite.token}`
@@ -5099,7 +5101,7 @@ app.get('/claim/:slug/invite', async (c) => {
       {reserved ? (
         <p class="muted"><b>{addr}</b> is reserved. Share this link — the moment someone accepts, the address goes live with a month's free trial. Everyone signs in with their own email; no shared password.</p>
       ) : (
-        <p class="muted">Share this link with your collective. Everyone signs in with their own email — no shared password. You choose what each person can do; they join as readers by default and you can change that any time.</p>
+        <p class="muted">Share this link with your collective. Everyone signs in with their own email — no shared password. Whoever joins can reply as the collective; you can change anyone's role from Members at any time.</p>
       )}
       <p class="invite-url"><code>{url}</code></p>
       {/* while reserved there is no inbox to open and no Members page to
@@ -5110,7 +5112,7 @@ app.get('/claim/:slug/invite', async (c) => {
       </div>
       {reserved ? (
         <>
-          <p class="fineprint">The link is valid for {String(cfg.inviteHours)} hours; come back here for a fresh one. Whoever joins gets read access — you choose roles from Members once the inbox is live.</p>
+          <p class="fineprint">The link is valid for {String(cfg.inviteHours)} hours; come back here for a fresh one. Whoever joins can reply as the collective — you can change roles from Members once the inbox is live.</p>
           <p class="fineprint">Not waiting on anyone? <a href={`/claim/${collective.slug}`}>Other ways to activate</a></p>
         </>
       ) : (
