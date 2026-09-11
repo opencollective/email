@@ -432,15 +432,7 @@ app.post('/verify', async (c) => {
     if (unavailable) {
       return c.redirect('/claim?m=' + encodeURIComponent(unavailable))
     }
-    const collective = await createCollective(slug, res.row.join_name ? `${res.row.join_name}'s collective` : slug, 'collective', { status: 'pending', trial: false })
-    if (res.row.claim_ref) {
-      const referrer = await getCollectiveBySlug(res.row.claim_ref)
-      if (referrer && referrer.status === 'active' && referrer.id !== collective.id) {
-        await run('UPDATE collectives SET referred_by = ? WHERE id = ?', [referrer.id, collective.id])
-      }
-    }
-    await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-      [collective.id, email, res.row.join_name || email.split('@')[0], 'admin', 'every', now()])
+    await reserveAddress(slug, email, res.row.join_name || '', res.row.claim_ref ?? undefined)
     redirect = `/claim/${slug}`
   } else if (res.row.purpose === 'join' && res.row.invite_token) {
     const joined = await applyInviteJoin(res.row.invite_token, email, res.row.join_name || '', res.row.join_level || '')
@@ -4610,18 +4602,59 @@ app.post('/inbox/:addr/billing/portal', async (c) => {
  *  a contactable/uncontactable collective. */
 /** Where you are in claiming an address: pick it, say who you are, invite the
  *  rest. Shown on every step so the end is always in sight. */
-const Steps = ({ current }: { current: 1 | 2 | 3 }) => (
+/** `me`: the visitor is signed in, so "who is the first admin" is already
+ *  answered — that step shows as done from the start. */
+const Steps = ({ current, me }: { current: 1 | 2 | 3; me?: boolean }) => (
   <ol class="flow-steps" aria-label={`Step ${current} of 3`}>
     {['Claim address', 'Set first admin', 'Invite others'].map((label, i) => {
       const n = i + 1
+      const done = n < current || (me && n === 2)
       return (
-        <li class={n === current ? 'on' : n < current ? 'done' : ''}>
-          <span class="n">{n < current ? '✓' : String(n)}</span>
+        <li class={n === current && !done ? 'on' : done ? 'done' : ''}>
+          <span class="n">{done ? '✓' : String(n)}</span>
           <span class="t">{label}</span>
         </li>
       )
     })}
   </ol>
+)
+
+/** Several accounts in the session: which one becomes the admin. */
+const AccountPick = ({ accounts }: { accounts: Account[] }) => (
+  <>
+    <label class="lbl">First admin</label>
+    <div class="role-cards">
+      {accounts.map((a, i) => (
+        <label class={`level-card${i === 0 ? ' rc-first' : ''}${i === accounts.length - 1 ? ' rc-last' : ''}`}>
+          <input type="radio" name="account" value={a.email} checked={i === 0} />
+          <span><b>{a.email}</b></span>
+        </label>
+      ))}
+    </div>
+  </>
+)
+
+/** The settled address reached while signed in (homepage "Claim it", or the
+ *  Open Collective proof coming back): nothing to ask, one click reserves it. */
+const ReserveForm = (p: { address: string; accounts: Account[]; refSlug?: string; proof?: string; error?: string }) => (
+  <AuthCard title="Reserve your address" flash={p.error}>
+    <Steps current={2} me />
+    <p class="claimed-addr">
+      <span class="tick" aria-hidden="true">✓</span>
+      <b>{p.address}@{cfg.emailDomain}</b>
+      <a class="edit-link" href={`/claim?address=${encodeURIComponent(p.address)}&edit=1`}>edit</a>
+    </p>
+    <h1>Reserve it</h1>
+    <p class="muted">You're signed in, so you'll be the first admin: you receive everything sent to this address and invite the rest of the collective.</p>
+    <form method="post" action="/claim">
+      <input type="hidden" name="address" value={p.address} />
+      {p.refSlug ? <input type="hidden" name="ref" value={p.refSlug} /> : null}
+      {p.proof ? <input type="hidden" name="proof" value={p.proof} /> : null}
+      {p.accounts.length > 1 ? <AccountPick accounts={p.accounts} /> : <input type="hidden" name="account" value={p.accounts[0].email} />}
+      <button class="btn" type="submit" data-busy="Reserving…">Reserve {p.address}@{cfg.emailDomain} →</button>
+      {p.accounts.length === 1 ? <p class="fineprint">As <b>{p.accounts[0].email}</b>. Someone else? <a href={`/login?next=${encodeURIComponent(`/claim?address=${p.address}`)}`}>Sign in as them</a>.</p> : null}
+    </form>
+  </AuthCard>
 )
 
 /** Step 1 — the address, checked live as it's typed.
@@ -4634,18 +4667,27 @@ const ClaimForm = (p: {
   oc?: { kind: 'contactable' | 'uncontactable'; name: string; admins?: string[] }
   /** a code is out with the collective's OC admins, waiting to be entered */
   ocCode?: { error?: string; resend?: boolean }
+  /** signed-in accounts: the first admin is one of them, so the form reserves
+   *  the address straight away instead of asking who they are */
+  me?: Account[]
 }) => {
   const gated = Boolean(p.oc)
   const ocUrl = `https://opencollective.com/${p.address}`
   const claimAddr = `${p.address}@${cfg.emailDomain}`
   const ref = p.refSlug ? `&ref=${encodeURIComponent(p.refSlug)}` : ''
+  const me = p.me && p.me.length ? p.me : undefined
   return (
     <AuthCard title="Claim your address" flash={p.error}>
-      <Steps current={1} />
+      <Steps current={1} me={Boolean(me)} />
       <h1>Claim your address</h1>
-      <p class="muted">Pick your collective's email address. You'll confirm it with a 6-digit code and it's reserved for you.</p>
-      <form method="get" action="/claim">
+      {me ? (
+        <p class="muted">Pick your collective's email address. It's reserved for you the moment you claim it — you're signed in, so you'll be its first admin.</p>
+      ) : (
+        <p class="muted">Pick your collective's email address. You'll confirm it with a 6-digit code and it's reserved for you.</p>
+      )}
+      <form method={me ? 'post' : 'get'} action="/claim">
         {p.refSlug ? <input type="hidden" name="ref" value={p.refSlug} /> : null}
+        {me && me.length === 1 ? <input type="hidden" name="account" value={me[0].email} /> : null}
         <label class="lbl">Your collective's address</label>
         <span class="wl-addr">
           <input id="claim-address" name="address" value={p.address || ''} placeholder="yourcollective" minlength={6} maxlength={40} pattern="[a-z0-9]{6,40}" autocomplete="off" spellcheck={false} autofocus={!gated} required />
@@ -4662,9 +4704,11 @@ const ClaimForm = (p: {
             <span class="fineprint">At least 6 characters — letters and numbers only.</span>
           )}
         </p>
+        {me && me.length > 1 ? <AccountPick accounts={me} /> : null}
         <button class={`btn ${gated ? 'ghost' : ''}`} id="claim-submit" type="submit">
           {gated ? 'Check this one instead' : 'Claim it →'}
         </button>
+        {me && me.length === 1 ? <p class="fineprint">First admin: <b>{me[0].email}</b>. Someone else? <a href="/login?next=%2Fclaim">Sign in as them</a>.</p> : null}
       </form>
 
       {p.ocCode ? (
@@ -4813,14 +4857,15 @@ app.get('/claim', async (c) => {
   const address = slugify(c.req.query('address') || '')
   const refSlug = slugify(c.req.query('ref') || '') || undefined
   const error = c.req.query('m')
-  if (!address || c.req.query('edit')) return c.html(<ClaimForm address={address} refSlug={refSlug} error={error} />)
+  const me = c.get('accounts')
+  if (!address || c.req.query('edit')) return c.html(<ClaimForm address={address} refSlug={refSlug} error={error} me={me} />)
 
   // the address arrived from elsewhere — re-check it before building on it
   const unavailable = await slugAvailability(address)
-  if (unavailable) return c.html(<ClaimForm address={address} refSlug={refSlug} slugError={unavailable} error={error} />)
+  if (unavailable) return c.html(<ClaimForm address={address} refSlug={refSlug} slugError={unavailable} error={error} me={me} />)
   const info = await ocCollectiveInfo(address)
   if (info.kind === 'unknown' && await ocSlugTaken(address)) {
-    return c.html(<ClaimForm address={address} refSlug={refSlug} slugError={OC_TAKEN_MSG(address)} error={error} />)
+    return c.html(<ClaimForm address={address} refSlug={refSlug} slugError={OC_TAKEN_MSG(address)} error={error} me={me} />)
   }
 
   const proof = c.req.query('p')
@@ -4828,11 +4873,13 @@ app.get('/claim', async (c) => {
   // Whether this address can be yours is step 1's question — don't ask who the
   // first admin is until it has an answer.
   if (info.kind === 'uncontactable' && !proven) {
-    return c.html(<ClaimForm address={address} refSlug={refSlug} error={error} oc={{ kind: 'uncontactable', name: info.name }} />)
+    return c.html(<ClaimForm address={address} refSlug={refSlug} error={error} oc={{ kind: 'uncontactable', name: info.name }} me={me} />)
   }
   if (info.kind === 'contactable' && !proven) {
-    return c.html(<ClaimForm address={address} refSlug={refSlug} error={error} oc={{ kind: 'contactable', name: info.name, admins: info.admins }} />)
+    return c.html(<ClaimForm address={address} refSlug={refSlug} error={error} oc={{ kind: 'contactable', name: info.name, admins: info.admins }} me={me} />)
   }
+  // signed in: the first admin is known — nothing left to ask
+  if (me.length) return c.html(<ReserveForm address={address} accounts={me} refSlug={refSlug} error={error} proof={proven ? proof! : undefined} />)
   return c.html(<AdminForm address={address} refSlug={refSlug} error={error} proof={proven ? proof! : undefined} />)
 })
 
@@ -4858,16 +4905,21 @@ const OC_TAKEN_MSG = (slug: string) =>
 
 app.post('/claim', async (c) => {
   const body = await c.req.parseBody()
-  const address = String(body.address || '').toLowerCase().trim()
+  const address = slugify(String(body.address || ''))
   const name = String(body.name || '').trim().slice(0, 60)
   const email = String(body.email || '').toLowerCase().trim()
   const refSlug = slugify(String(body.ref || ''))
+  // a signed-in account named in the form is the first admin, no code needed:
+  // the session already proved that address (anything else in the field is
+  // ignored — being signed in is the only thing that skips the code)
+  const me = c.get('accounts')
+  const account = me.find((a) => a.email === String(body.account || '').toLowerCase().trim())
   // errors keep you on step 2 with what you typed; a bad address sends you back to step 1
   const form = (extra: Partial<Parameters<typeof AdminForm>[0]>) => <AdminForm address={address} name={name} email={email} refSlug={refSlug || undefined} {...extra} />
 
   const unavailable = await slugAvailability(address)
-  if (unavailable) return c.html(<ClaimForm address={address} refSlug={refSlug || undefined} slugError={unavailable} />)
-  if (!emailLooksValid(email)) return c.html(form({ error: "That email address doesn't look right." }))
+  if (unavailable) return c.html(<ClaimForm address={address} refSlug={refSlug || undefined} slugError={unavailable} me={me} />)
+  if (!account && !emailLooksValid(email)) return c.html(form({ error: "That email address doesn't look right." }))
 
   const info = await ocCollectiveInfo(address)
   // step 1 already settled ownership — otherwise send them back to settle it,
@@ -4875,7 +4927,7 @@ app.post('/claim', async (c) => {
   if (!ocProofValid(String(body.proof || ''), address)) {
     if (info.kind === 'contactable' || info.kind === 'uncontactable') {
       return c.html(
-        <ClaimForm address={address} refSlug={refSlug || undefined}
+        <ClaimForm address={address} refSlug={refSlug || undefined} me={me}
           oc={info.kind === 'contactable'
             ? { kind: 'contactable', name: info.name, admins: info.admins }
             : { kind: 'uncontactable', name: info.name }} />)
@@ -4883,12 +4935,34 @@ app.post('/claim', async (c) => {
   }
   if (info.kind === 'unknown' && await ocSlugTaken(address)) {
     // Can't verify ownership (no OC token / API down) but the name exists there — don't let it be squatted.
-    return c.html(<ClaimForm address={address} refSlug={refSlug || undefined} slugError={OC_TAKEN_MSG(address)} />)
+    return c.html(<ClaimForm address={address} refSlug={refSlug || undefined} slugError={OC_TAKEN_MSG(address)} me={me} />)
+  }
+  if (account) {
+    // their name as the other collectives know it, if any
+    const known = await get<{ name: string }>('SELECT name FROM members WHERE email = ? AND removed_at IS NULL ORDER BY last_seen_at DESC, id DESC LIMIT 1', [account.email])
+    await reserveAddress(address, account.email, known?.name || '', refSlug || undefined)
+    return c.redirect(`/claim/${address}`)
   }
   // none, or unknown-and-free → ordinary claim to the personal email
   await issueCode(email, 'claim', { name, claimSlug: address, claimRef: refSlug || undefined })
   return c.html(<CodeForm email={email} claiming />)
 })
+
+/** Reserve an address for its first admin: the pending collective plus the
+ *  admin membership, with the referrer noted when it is a live collective.
+ *  Reached from a verified claim code, or directly from a signed-in session. */
+async function reserveAddress(slug: string, email: string, name: string, refSlug?: string) {
+  const collective = await createCollective(slug, name ? `${name}'s collective` : slug, 'collective', { status: 'pending', trial: false })
+  if (refSlug) {
+    const referrer = await getCollectiveBySlug(refSlug)
+    if (referrer && referrer.status === 'active' && referrer.id !== collective.id) {
+      await run('UPDATE collectives SET referred_by = ? WHERE id = ?', [referrer.id, collective.id])
+    }
+  }
+  await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [collective.id, email, name || email.split('@')[0], 'admin', 'every', now()])
+  return collective
+}
 
 /** The one route that messages a collective's Open Collective admins, reached
  *  only from the explicit "send a code to its admins" button. Step 1: it
@@ -4898,7 +4972,7 @@ app.post('/claim/oc-send', async (c) => {
   const address = String(body.address || '').toLowerCase().trim()
   const refSlug = slugify(String(body.ref || ''))
   const step1 = (extra: Partial<Parameters<typeof ClaimForm>[0]>) =>
-    <ClaimForm address={address} refSlug={refSlug || undefined} {...extra} />
+    <ClaimForm me={c.get('accounts')} address={address} refSlug={refSlug || undefined} {...extra} />
 
   const unavailable = await slugAvailability(address)
   if (unavailable) return c.html(step1({ slugError: unavailable }))
@@ -4927,7 +5001,7 @@ app.post('/claim/oc-code', async (c) => {
   const ref = refSlug ? `&ref=${encodeURIComponent(refSlug)}` : ''
 
   const unavailable = await slugAvailability(address)
-  if (unavailable) return c.html(<ClaimForm address={address} refSlug={refSlug || undefined} slugError={unavailable} />)
+  if (unavailable) return c.html(<ClaimForm me={c.get('accounts')} address={address} refSlug={refSlug || undefined} slugError={unavailable} />)
 
   const info = await ocCollectiveInfo(address)
   const oc = info.kind === 'contactable'
@@ -4935,7 +5009,7 @@ app.post('/claim/oc-code', async (c) => {
     : undefined
   const result = await checkOcOwnershipCode(address, code)
   if (!result.ok) {
-    return c.html(<ClaimForm address={address} refSlug={refSlug || undefined} oc={oc} ocCode={{ error: result.error, resend: result.resend }} />)
+    return c.html(<ClaimForm me={c.get('accounts')} address={address} refSlug={refSlug || undefined} oc={oc} ocCode={{ error: result.error, resend: result.resend }} />)
   }
   return c.redirect(`/claim?address=${encodeURIComponent(address)}&p=${encodeURIComponent(ocProof(address))}${ref}`)
 })
@@ -4949,7 +5023,7 @@ app.post('/claim/oc-verify', async (c) => {
   const refSlug = slugify(String(body.ref || ''))
   const ref = refSlug ? `&ref=${encodeURIComponent(refSlug)}` : ''
   const step1 = (extra: Partial<Parameters<typeof ClaimForm>[0]>) =>
-    <ClaimForm address={address} refSlug={refSlug || undefined} {...extra} />
+    <ClaimForm me={c.get('accounts')} address={address} refSlug={refSlug || undefined} {...extra} />
 
   const unavailable = await slugAvailability(address)
   if (unavailable) return c.html(step1({ slugError: unavailable }))

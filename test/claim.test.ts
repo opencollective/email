@@ -339,3 +339,58 @@ test('while reserved, the invite step never links into the (not yet existing) in
   assert.match(live, new RegExp(`/inbox/${slug}/members`))
   assert.match(live, /open the inbox/)
 })
+
+test('signed in, the first admin is you: no name, no email, no code', async () => {
+  const email = `me-${uniq()}@t.test`
+  // they already belong somewhere, under a name — the new collective reuses it
+  const home = await createCollective(`home${uniq()}`, 'Home Co')
+  await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [home.id, email, 'Nadia', 'member', 'every', now()])
+  const sid = await createSession(email)
+  const headers = { cookie: `requests_sid=${sid}` }
+  const slug = `mine${uniq()}`
+
+  // step 1 posts straight through, carrying the account
+  const h1 = await (await app.request('/claim', { headers })).text()
+  assert.match(h1, /<form method="post" action="\/claim">/)
+  assert.match(h1, new RegExp(`name="account" value="${email}"`))
+  assert.doesNotMatch(h1, /6-digit code/)
+
+  // an address arriving settled (homepage, OC proof) gets one button, not a form about who you are
+  const h2 = await (await app.request(`/claim?address=${slug}`, { headers })).text()
+  assert.match(h2, /Reserve it/)
+  assert.doesNotMatch(h2, /name="email"/)
+  assert.doesNotMatch(h2, /the first admin\?/)
+  assert.match(h2, /Set first admin/, 'the step is still listed — as done')
+
+  // reserving is immediate: pending collective, you as admin, on to activation
+  const res = await app.request('/claim', {
+    method: 'POST', headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ address: slug, account: email }),
+  })
+  assert.equal(res.status, 302)
+  assert.equal(res.headers.get('location'), `/claim/${slug}`)
+  const col = (await get<any>('SELECT * FROM collectives WHERE slug = ?', [slug]))!
+  assert.equal(col.status, 'pending')
+  assert.equal(col.name, "Nadia's collective")
+  const admin = (await get<any>('SELECT * FROM members WHERE collective_id = ?', [col.id]))!
+  assert.equal(admin.email, email)
+  assert.equal(admin.role, 'admin')
+  assert.equal(admin.name, 'Nadia')
+  assert.equal((await get<any>('SELECT COUNT(*) AS n FROM login_codes WHERE claim_slug = ?', [slug]))!.n, 0, 'no code was issued')
+
+  // an account the session does not hold buys nothing — back to needing an email
+  const other = `other${uniq()}`
+  const forged = await app.request('/claim', {
+    method: 'POST', headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ address: other, account: 'someone@else.test' }),
+  })
+  assert.equal(forged.status, 200)
+  assert.match(await forged.text(), /doesn.{0,6}t look right/)
+  assert.equal(await get<any>('SELECT id FROM collectives WHERE slug = ?', [other]), undefined)
+
+  // signed out, nothing changes: the address leads to the first-admin form
+  const out = await (await app.request(`/claim?address=${slug}x`)).text()
+  assert.match(out, /the first admin\?/)
+  assert.match(out, /name="email"/)
+})
