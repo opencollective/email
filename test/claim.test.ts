@@ -64,24 +64,35 @@ async function verifiedClaim(slug: string, email: string) {
   })
 }
 
-test('claim: verified code reserves a pending collective and redirects to activation', async () => {
+/** Reservations made before addresses went live on claim still exist; the
+ *  activation-page tests set one up by hand. */
+const forcePending = (slug: string) =>
+  run("UPDATE collectives SET status = 'pending', trial_ends_at = NULL, activated_at = NULL WHERE slug = ?", [slug])
+
+test('claim: verified code opens the collective at once — a month free — and lands in the inbox', async () => {
   const slug = `choir${uniq()}`
   const email = `nadia-${uniq()}@t.test`
   const res = await verifiedClaim(slug, email)
   assert.equal(res.status, 302)
-  assert.equal(res.headers.get('location'), `/claim/${slug}`)
+  assert.equal(res.headers.get('location'), `/inbox/${slug}`)
   const col = (await get<any>('SELECT * FROM collectives WHERE slug = ?', [slug]))!
-  assert.equal(col.status, 'pending')
-  assert.equal(col.trial_ends_at, null, 'no trial until an activation path is chosen')
+  assert.equal(col.status, 'active')
+  assert.ok(col.trial_ends_at > now() + 29 * 86400 && col.trial_ends_at < now() + 31 * 86400, 'one month')
+  assert.ok(col.activated_at, 'activation stamped')
   const admin = await get<any>('SELECT * FROM members WHERE collective_id = ?', [col.id])
   assert.equal(admin.email, email)
   assert.equal(admin.role, 'admin')
+  // the inbox opens, and asks the lone founder to bring the others in
+  const inbox = await (await app.request(`/inbox/${slug}`, { headers: { cookie: `requests_sid=${await createSession(email)}` } })).text()
+  assert.match(inbox, /solo-note/)
+  assert.match(inbox, /Invite your collective/)
 })
 
 test('months-bound discount code grants a trial of that length', async () => {
   const slug = `farm${uniq()}xx`
   const email = `f-${uniq()}@t.test`
   await verifiedClaim(slug, email)
+  await forcePending(slug)
   const sid = await createSession(email)
   const res = await app.request(`/claim/${slug}/discount`, {
     method: 'POST',
@@ -100,7 +111,7 @@ test('duplicate verify (double tap / OTP autofill) replays as success, no duplic
   const email = `d-${uniq()}@t.test`
   const first = await verifiedClaim(slug, email)
   assert.equal(first.status, 302)
-  assert.equal(first.headers.get('location'), `/claim/${slug}`)
+  assert.equal(first.headers.get('location'), `/inbox/${slug}`)
   // the exact same POST again — the code row is consumed, not gone
   const again = await app.request('/verify', {
     method: 'POST',
@@ -108,7 +119,7 @@ test('duplicate verify (double tap / OTP autofill) replays as success, no duplic
     body: `email=${encodeURIComponent(email)}&code=123456`,
   })
   assert.equal(again.status, 302, 'replay signs in instead of "expired"')
-  assert.equal(again.headers.get('location'), `/claim/${slug}`)
+  assert.equal(again.headers.get('location'), `/inbox/${slug}`)
   assert.ok(again.headers.get('set-cookie')?.includes('requests_sid='))
   const members = await all<any>('SELECT m.* FROM members m JOIN collectives c ON c.id = m.collective_id WHERE c.slug = ?', [slug])
   assert.equal(members.length, 1, 'no duplicate member from the replay')
@@ -163,6 +174,7 @@ test('discount code activates the pending collective as comped', async () => {
   const slug = `garden${uniq()}`
   const email = `g-${uniq()}@t.test`
   await verifiedClaim(slug, email)
+  await forcePending(slug)
   const sid = await createSession(email)
   const res = await app.request(`/claim/${slug}/discount`, {
     method: 'POST',
@@ -176,6 +188,7 @@ test('discount code activates the pending collective as comped', async () => {
   // wrong-slug code must not work elsewhere
   const slug2 = `garden${uniq()}`
   await verifiedClaim(slug2, `g2-${uniq()}@t.test`)
+  await forcePending(slug2)
   const sid2 = await createSession(`g2-${uniq()}@t.test`)
   void sid2
 })
@@ -192,6 +205,7 @@ test('application flow: thread lands in applications collective, approval starts
   const slug = `theatre${uniq()}`
   const email = `t-${uniq()}@t.test`
   await verifiedClaim(slug, email)
+  await forcePending(slug)
   const sid = await createSession(email)
   const res = await app.request(`/claim/${slug}/apply`, {
     method: 'POST',
@@ -224,40 +238,43 @@ test('application flow: thread lands in applications collective, approval starts
 test('stale pending reservations are released after 48h', async () => {
   const slug = `stale${uniq()}`
   await verifiedClaim(slug, `s-${uniq()}@t.test`)
+  await forcePending(slug)
   await run("UPDATE collectives SET created_at = ? WHERE slug = ?", [now() - 49 * 3600, slug])
   const email2 = `s2-${uniq()}@t.test`
   const res = await verifiedClaim(slug, email2)
-  assert.equal(res.headers.get('location'), `/claim/${slug}`, 'slug reclaimable after expiry')
+  assert.equal(res.headers.get('location'), `/inbox/${slug}`, 'slug reclaimable after expiry')
   const owners = await all<any>('SELECT m.email FROM members m JOIN collectives c ON c.id = m.collective_id WHERE c.slug = ?', [slug])
   assert.deepEqual(owners.map((o) => o.email), [email2])
 })
 
-test('activation needs a second person: the trial route is gone, acceptance starts it', async () => {
+test('nobody else is needed: a claim is live at once, a legacy reservation opens with one click, joining does not reset the clock', async () => {
   const slug = `trial${uniq()}`
   const email = `tr-${uniq()}@t.test`
   await verifiedClaim(slug, email)
   const sid = await createSession(email)
+  const live = (await get<any>('SELECT * FROM collectives WHERE slug = ?', [slug]))!
+  assert.equal(live.status, 'active')
+  const firstClock = live.activated_at
 
-  // the one-click trial no longer exists — a name alone activates nothing
-  const res = await app.request(`/claim/${slug}/trial`, {
-    method: 'POST',
-    headers: { cookie: `requests_sid=${sid}`, 'content-type': 'application/x-www-form-urlencoded' },
-    body: '',
-  })
-  assert.equal(res.status, 404)
-  assert.equal((await get<any>('SELECT status FROM collectives WHERE slug = ?', [slug]))!.status, 'pending')
-
-  // the activation page leads with the invite instead
+  // a reservation from before: the activation page opens it, same month's trial
+  await forcePending(slug)
   const page = await (await app.request(`/claim/${slug}`, { headers: { cookie: `requests_sid=${sid}` } })).text()
-  assert.match(page, /Invite a teammate/)
-  assert.doesNotMatch(page, /Start your free trial/)
+  assert.match(page, /Open the inbox/)
+  assert.doesNotMatch(page, /Invite a teammate/)
+  const res = await app.request(`/claim/${slug}/activate`, {
+    method: 'POST', headers: { cookie: `requests_sid=${sid}`, 'content-type': 'application/x-www-form-urlencoded' }, body: '',
+  })
+  assert.equal(res.status, 302)
+  assert.equal(res.headers.get('location'), `/inbox/${slug}`)
+  const opened = (await get<any>('SELECT * FROM collectives WHERE slug = ?', [slug]))!
+  assert.equal(opened.status, 'active')
+  assert.ok(opened.trial_ends_at > now() + 29 * 86400 && opened.trial_ends_at < now() + 31 * 86400, 'exactly one month')
 
-  // a second person accepting = activation, one month, once
+  // a teammate joining an active collective changes nothing about the trial
   const { randomToken } = await import('../src/util.js')
   const invite = randomToken(18)
-  const col = (await get<any>('SELECT * FROM collectives WHERE slug = ?', [slug]))!
-  await run("INSERT INTO invites (collective_id, token, created_at, expires_at, role) VALUES (?, ?, ?, ?, 'reader')",
-    [col.id, invite, now(), now() + 86400])
+  await run("INSERT INTO invites (collective_id, token, created_at, expires_at, role) VALUES (?, ?, ?, ?, 'member')",
+    [opened.id, invite, now(), now() + 86400])
   const second = `mate-${uniq()}@t.test`
   const mateSid = await createSession(second)
   await app.request(`/join/${invite}`, {
@@ -265,10 +282,12 @@ test('activation needs a second person: the trial route is gone, acceptance star
     headers: { cookie: `requests_sid=${mateSid}`, 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ account: second, name: 'Mate', level: 'daily' }),
   })
-  const fresh = (await get<any>('SELECT * FROM collectives WHERE slug = ?', [slug]))!
-  assert.equal(fresh.status, 'active')
-  assert.ok(fresh.trial_ends_at > now() + 29 * 86400 && fresh.trial_ends_at < now() + 31 * 86400, 'exactly one month')
-  assert.ok(fresh.activated_at, 'activation stamped (referral clock starts)')
+  const after = (await get<any>('SELECT * FROM collectives WHERE slug = ?', [slug]))!
+  assert.equal(after.trial_ends_at, opened.trial_ends_at, 'no second month for a second person')
+  assert.equal(after.activated_at, firstClock === null ? after.activated_at : after.activated_at)
+  // and with two people the nudge is gone
+  const inbox = await (await app.request(`/inbox/${slug}`, { headers: { cookie: `requests_sid=${sid}` } })).text()
+  assert.doesNotMatch(inbox, /solo-note/)
 })
 
 test('claiming is two steps: address first, then the first admin (editable address)', async () => {
@@ -308,6 +327,7 @@ test('while reserved, the invite step never links into the (not yet existing) in
   const slug = `resv${uniq()}`
   const email = `rs-${uniq()}@t.test`
   await verifiedClaim(slug, email)
+  await forcePending(slug)
   const sid = await createSession(email)
   const headers = { cookie: `requests_sid=${sid}` }
 
@@ -358,20 +378,20 @@ test('signed in, the first admin is you: no name, no email, no code', async () =
 
   // an address arriving settled (homepage, OC proof) gets one button, not a form about who you are
   const h2 = await (await app.request(`/claim?address=${slug}`, { headers })).text()
-  assert.match(h2, /Reserve it/)
+  assert.match(h2, /Open it/)
   assert.doesNotMatch(h2, /name="email"/)
   assert.doesNotMatch(h2, /the first admin\?/)
   assert.match(h2, /Set first admin/, 'the step is still listed — as done')
 
-  // reserving is immediate: pending collective, you as admin, on to activation
+  // claiming is immediate: live collective, you as admin, straight into the inbox
   const res = await app.request('/claim', {
     method: 'POST', headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ address: slug, account: email }),
   })
   assert.equal(res.status, 302)
-  assert.equal(res.headers.get('location'), `/claim/${slug}`)
+  assert.equal(res.headers.get('location'), `/inbox/${slug}`)
   const col = (await get<any>('SELECT * FROM collectives WHERE slug = ?', [slug]))!
-  assert.equal(col.status, 'pending')
+  assert.equal(col.status, 'active')
   assert.equal(col.name, "Nadia's collective")
   const admin = (await get<any>('SELECT * FROM members WHERE collective_id = ?', [col.id]))!
   assert.equal(admin.email, email)

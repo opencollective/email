@@ -1411,6 +1411,12 @@ kbd {
   border-radius: 10px; background: var(--fill); color: var(--muted); font-size: 13px;
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
 }
+/* the founder alone in a live inbox: one nudge to bring the others in */
+.solo-note {
+  margin: 10px 20px 0; padding: 10px 14px; border: 1.5px solid var(--line);
+  border-radius: 10px; background: var(--card); font-size: 13.5px;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+}
 .thread-deleted { margin: 12px 24px 0; border-color: var(--danger); color: var(--ink); }
 .chip.deleted-tag { color: var(--danger); border-color: var(--danger); }
 .tag-chip.deleted-chip { color: var(--danger); }

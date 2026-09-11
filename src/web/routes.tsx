@@ -423,7 +423,7 @@ app.post('/verify', async (c) => {
   if (res.replay) {
     // Duplicate of a submit that already succeeded (double tap / OTP autofill
     // firing twice): the claim/join side effects already ran — just sign in.
-    redirect = res.row.purpose === 'claim' && res.row.claim_slug ? `/claim/${res.row.claim_slug}` : redirect
+    redirect = res.row.purpose === 'claim' && res.row.claim_slug ? `/inbox/${res.row.claim_slug}` : redirect
   } else if (res.row.purpose === 'claim' && res.row.claim_slug) {
     const slug = res.row.claim_slug
     // re-check availability at the moment of reservation (it may have been
@@ -433,7 +433,7 @@ app.post('/verify', async (c) => {
       return c.redirect('/claim?m=' + encodeURIComponent(unavailable))
     }
     await reserveAddress(slug, email, res.row.join_name || '', res.row.claim_ref ?? undefined)
-    redirect = `/claim/${slug}`
+    redirect = `/inbox/${slug}`
   } else if (res.row.purpose === 'join' && res.row.invite_token) {
     const joined = await applyInviteJoin(res.row.invite_token, email, res.row.join_name || '', res.row.join_level || '')
     if (joined) redirect = `/inbox/${joined.slug}?m=` + encodeURIComponent(`Welcome to ${joined.name}!`)
@@ -1235,6 +1235,12 @@ app.get('/inbox/:addr', async (c) => {
   return c.html(
     <Shell member={member} collective={collective} active="inbox" flash={c.req.query('m')}
       inboxCount={counts.all} inboxOn={!tag}>
+      {[...members.values()].filter((m) => !m.removed_at && m.kind !== 'agent').length === 1 ? (
+        <div class="solo-note">
+          <span>🎉 <b>{collective.slug}@{cfg.emailDomain}</b> is live and receiving. You're the only member so far.</span>
+          <a class="btn small" href={`${base}/members`}>Invite your collective →</a>
+        </div>
+      ) : null}
       <div class="topbar">
         <form method="get" action={base} class="search-form">
           <input type="hidden" name="f" value={f} />
@@ -4637,21 +4643,21 @@ const AccountPick = ({ accounts }: { accounts: Account[] }) => (
 /** The settled address reached while signed in (homepage "Claim it", or the
  *  Open Collective proof coming back): nothing to ask, one click reserves it. */
 const ReserveForm = (p: { address: string; accounts: Account[]; refSlug?: string; proof?: string; error?: string }) => (
-  <AuthCard title="Reserve your address" flash={p.error}>
+  <AuthCard title="Open your inbox" flash={p.error}>
     <Steps current={2} me />
     <p class="claimed-addr">
       <span class="tick" aria-hidden="true">✓</span>
       <b>{p.address}@{cfg.emailDomain}</b>
       <a class="edit-link" href={`/claim?address=${encodeURIComponent(p.address)}&edit=1`}>edit</a>
     </p>
-    <h1>Reserve it</h1>
-    <p class="muted">You're signed in, so you'll be the first admin: you receive everything sent to this address and invite the rest of the collective.</p>
+    <h1>Open it</h1>
+    <p class="muted">It goes live right now — a month free, no card. You're signed in, so you'll be the first admin: you receive everything sent to this address and invite the rest of the collective.</p>
     <form method="post" action="/claim">
       <input type="hidden" name="address" value={p.address} />
       {p.refSlug ? <input type="hidden" name="ref" value={p.refSlug} /> : null}
       {p.proof ? <input type="hidden" name="proof" value={p.proof} /> : null}
       {p.accounts.length > 1 ? <AccountPick accounts={p.accounts} /> : <input type="hidden" name="account" value={p.accounts[0].email} />}
-      <button class="btn" type="submit" data-busy="Reserving…">Reserve {p.address}@{cfg.emailDomain} →</button>
+      <button class="btn" type="submit" data-busy="Opening…">Open {p.address}@{cfg.emailDomain} →</button>
       {p.accounts.length === 1 ? <p class="fineprint">As <b>{p.accounts[0].email}</b>. Someone else? <a href={`/login?next=${encodeURIComponent(`/claim?address=${p.address}`)}`}>Sign in as them</a>.</p> : null}
     </form>
   </AuthCard>
@@ -4681,9 +4687,9 @@ const ClaimForm = (p: {
       <Steps current={1} me={Boolean(me)} />
       <h1>Claim your address</h1>
       {me ? (
-        <p class="muted">Pick your collective's email address. It's reserved for you the moment you claim it — you're signed in, so you'll be its first admin.</p>
+        <p class="muted">Pick your collective's email address. It goes live the moment you claim it — a month free, no card — and you're signed in, so you'll be its first admin.</p>
       ) : (
-        <p class="muted">Pick your collective's email address. You'll confirm it with a 6-digit code and it's reserved for you.</p>
+        <p class="muted">Pick your collective's email address. You'll confirm it with a 6-digit code and it goes live — a month free, no card.</p>
       )}
       <form method={me ? 'post' : 'get'} action="/claim">
         {p.refSlug ? <input type="hidden" name="ref" value={p.refSlug} /> : null}
@@ -4941,18 +4947,22 @@ app.post('/claim', async (c) => {
     // their name as the other collectives know it, if any
     const known = await get<{ name: string }>('SELECT name FROM members WHERE email = ? AND removed_at IS NULL ORDER BY last_seen_at DESC, id DESC LIMIT 1', [account.email])
     await reserveAddress(address, account.email, known?.name || '', refSlug || undefined)
-    return c.redirect(`/claim/${address}`)
+    return c.redirect(`/inbox/${address}`)
   }
   // none, or unknown-and-free → ordinary claim to the personal email
   await issueCode(email, 'claim', { name, claimSlug: address, claimRef: refSlug || undefined })
   return c.html(<CodeForm email={email} claiming />)
 })
 
-/** Reserve an address for its first admin: the pending collective plus the
- *  admin membership, with the referrer noted when it is a live collective.
- *  Reached from a verified claim code, or directly from a signed-in session. */
+/** Claim an address for its first admin: the collective goes live right
+ *  away with a month's trial (no card, nobody else needed — a lone founder
+ *  waiting for a teammate before they can even forward their mail was the
+ *  wrong first day), plus the admin membership, with the referrer noted when
+ *  it is a live collective. Reached from a verified claim code, or directly
+ *  from a signed-in session. */
+const TRIAL_DAYS = 30
 async function reserveAddress(slug: string, email: string, name: string, refSlug?: string) {
-  const collective = await createCollective(slug, name ? `${name}'s collective` : slug, 'collective', { status: 'pending', trial: false })
+  const collective = await createCollective(slug, name ? `${name}'s collective` : slug, 'collective', { status: 'active', trialDays: TRIAL_DAYS })
   if (refSlug) {
     const referrer = await getCollectiveBySlug(refSlug)
     if (referrer && referrer.status === 'active' && referrer.id !== collective.id) {
@@ -4961,6 +4971,7 @@ async function reserveAddress(slug: string, email: string, name: string, refSlug
   }
   await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
     [collective.id, email, name || email.split('@')[0], 'admin', 'every', now()])
+  await sendOnboarding(collective, email).catch(() => {})
   return collective
 }
 
@@ -5070,9 +5081,11 @@ app.get('/claim/:slug', async (c) => {
         : 'One last step — the reservation holds for 48 hours.'}</p>
 
       <section class="claim-option">
-        <h2>Invite a teammate — free</h2>
-        <p class="muted">A collective is at least two people. Share your invite link; the moment someone accepts, the address goes live with a month's trial — no card needed.</p>
-        <a class="btn" href={`/claim/${slug}/invite`}>Get the invite link →</a>
+        <h2>Open the inbox — free for a month</h2>
+        <p class="muted">The address goes live right away, no card needed. You can invite the rest of the collective from inside.</p>
+        <form method="post" action={`/claim/${slug}/activate`}>
+          <button class="btn" type="submit" data-busy="Opening…">Open {slug}@{cfg.emailDomain} →</button>
+        </form>
       </section>
 
       {canPay ? (
@@ -5108,6 +5121,17 @@ async function pendingClaim(c: Context<Env>): Promise<{ collective: Collective; 
   if (!collective || !member || !['pending', 'applied'].includes(collective.status)) return c.notFound()
   return { collective, member }
 }
+
+/** A reservation from before addresses went live on claim: opening it is
+ *  the same month's trial a fresh claim gets. */
+app.post('/claim/:slug/activate', async (c) => {
+  const t = await pendingClaim(c)
+  if (t instanceof Response) return t
+  await run("UPDATE collectives SET status = 'active', trial_ends_at = ?, activated_at = COALESCE(activated_at, ?) WHERE id = ? AND status IN ('pending', 'applied')",
+    [now() + TRIAL_DAYS * 86400, now(), t.collective.id])
+  await sendOnboarding((await getCollective(t.collective.id))!, t.member.email).catch(() => {})
+  return c.redirect(`/inbox/${t.collective.slug}`)
+})
 
 app.post('/claim/:slug/checkout', async (c) => {
   const t = await pendingClaim(c)

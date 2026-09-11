@@ -593,7 +593,7 @@ export async function createCollective(
   slug: string,
   name: string,
   plan = 'collective',
-  opts: { status?: Collective['status']; trial?: boolean } = {},
+  opts: { status?: Collective['status']; trial?: boolean; trialDays?: number } = {},
 ): Promise<Collective> {
   const clean = slug.toLowerCase().trim()
   if (!/^[a-z0-9][a-z0-9-]{1,39}$/.test(clean)) throw new Error('Address must be 2–40 chars: letters, numbers, dashes.')
@@ -601,7 +601,7 @@ export async function createCollective(
   if (await getCollectiveBySlug(clean)) throw new Error(`${clean}@${cfg.emailDomain} is already taken.`)
   const status = opts.status ?? 'active'
   const r = await run('INSERT INTO collectives (slug, name, status, plan, trial_ends_at, activated_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [clean, name.trim() || clean, status, plan, opts.trial === false ? null : now() + 60 * 86400, status === 'active' ? now() : null, now()])
+    [clean, name.trim() || clean, status, plan, opts.trial === false ? null : now() + (opts.trialDays ?? 60) * 86400, status === 'active' ? now() : null, now()])
   return (await getCollective(r.lastId))!
 }
 
