@@ -137,6 +137,7 @@ const SCHEMA = [
     created_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id, sent_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at)`, // digests: what arrived since
   // the inbox's ORDER BY last_message_at; the status index can't serve it
   `CREATE INDEX IF NOT EXISTS idx_threads_recent ON threads(collective_id, last_message_at)`,
   `CREATE TABLE IF NOT EXISTS attachments (

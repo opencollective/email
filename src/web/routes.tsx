@@ -84,8 +84,8 @@ const isPlatformAdmin = (email: string | null) => !!email && !!cfg.adminEmail &&
 
 const LEVELS: { value: Member['notify_level']; label: string; hint: string }[] = [
   { value: 'every', label: 'As they arrive', hint: 'One email per incoming request — reply to it to answer directly.' },
-  { value: 'daily', label: 'Daily digest', hint: 'At most one email a day with everything that needs a reply.' },
-  { value: 'weekly', label: 'Weekly digest', hint: 'At most one email a week. For the lightly involved.' },
+  { value: 'daily', label: 'Daily digest', hint: 'One email a day with what came in and went out since the last one. Quiet day, no email.' },
+  { value: 'weekly', label: 'Weekly digest', hint: 'One email on Monday with the past week\'s traffic. For the lightly involved.' },
 ]
 
 // EU/EEA + CH: show EUR; everyone else sees USD

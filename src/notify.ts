@@ -1,6 +1,6 @@
 import { cfg } from './config.js'
 import {
-  activeMembers, all, allCollectives, get, getMember, kvGet, kvSet, messageAttachments,
+  activeMembers, all, allCollectives, canSeeThread, get, getMember, kvGet, kvSet, messageAttachments,
   type Collective, type Member, type Message, type Thread,
 } from './db.js'
 import { sendAppEmail } from './appmail.js'
@@ -385,43 +385,86 @@ export async function sendReplyConfirmation(collective: Collective, member: Memb
 }
 
 // ---------- digests ----------
+//
+// A digest is what happened since the previous one — the emails that came in
+// and the answers that went out, thread by thread — not a standing list of
+// everything still open. A quiet day (or week) sends nothing at all.
 
-async function sendDigest(collective: Collective, member: Member, threads: Thread[], membersById: Map<number, Member>, period: 'daily' | 'weekly') {
+type DigestRow = {
+  id: number; thread_id: number; direction: string; from_name: string | null; from_email: string | null
+  body_text: string | null; created_at: number; sent_by_member_id: number | null
+  subject: string; status: string; counterpart_name: string | null; counterpart_email: string | null; assignee_member_id: number | null
+}
+
+const DIGEST_WINDOW = { daily: 86400, weekly: 7 * 86400 } as const
+
+/** Email traffic on the collective's live threads in (since, until]: unsent
+ *  drafts (no sent_at), spam and deleted threads stay out. */
+const digestRows = (collectiveId: number, since: number, until: number) => all<DigestRow>(`
+  SELECT m.id, m.thread_id, m.direction, m.from_name, m.from_email, m.body_text, m.created_at, m.sent_by_member_id,
+         t.subject, t.status, t.counterpart_name, t.counterpart_email, t.assignee_member_id
+  FROM messages m JOIN threads t ON t.id = m.thread_id
+  WHERE t.collective_id = ? AND t.status != 'spam' AND t.deleted_at IS NULL
+    AND m.sent_at IS NOT NULL AND m.created_at > ? AND m.created_at <= ?
+  ORDER BY t.last_message_at DESC, m.created_at ASC`, [collectiveId, since, until])
+
+async function sendDigest(collective: Collective, member: Member, rows: DigestRow[], membersById: Map<number, Member>,
+  period: 'daily' | 'weekly', since: number, stillOpen: number) {
+  const byThread = new Map<number, DigestRow[]>()
+  for (const r of rows) byThread.set(r.thread_id, [...(byThread.get(r.thread_id) ?? []), r])
+  const received = rows.filter((r) => r.direction === 'inbound').length
+  const sent = rows.length - received
+  const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`
+  const headline = `${n(received, 'email', 'emails')} in, ${n(sent, 'reply', 'replies')} out`
+  const who = (r: DigestRow) => r.direction === 'inbound'
+    ? (r.from_name || r.from_email || 'someone')
+    : (r.sent_by_member_id && membersById.get(r.sent_by_member_id) ? memberLabel(membersById.get(r.sent_by_member_id)!) : collective.name)
+  const state = (r: DigestRow) => r.status === 'needs_reply' ? 'needs a reply' : r.status === 'closed' ? 'closed' : 'answered'
+  const sinceLabel = `since ${fmtDateTime(since)}`
+
   const parts: string[] = []
-  for (const t of threads) {
+  const lines: string[] = []
+  for (const [threadId, msgs] of byThread) {
+    const t = msgs[0]
     const assignee = t.assignee_member_id ? membersById.get(t.assignee_member_id) : undefined
-    const lastMsg = await get<{ body_text: string }>(
-      "SELECT body_text FROM messages WHERE thread_id = ? AND direction='inbound' ORDER BY sent_at DESC LIMIT 1", [t.id])
+    const open = t.status === 'needs_reply'
     parts.push(`
       <div style="border-top:1px solid #e6e8eb;padding:12px 0">
-        <p style="margin:0 0 2px;font-size:14px"><a href="${threadUrl(collective, t.id)}" style="color:#0c2d66;font-weight:700">${escapeHtml(t.subject)}</a></p>
-        <p style="margin:0 0 6px;font-size:12px;color:#6b7280">
-          ${escapeHtml(t.counterpart_name || t.counterpart_email || '')} · waiting ${waitingFor(t.last_message_at)} ·
-          ${assignee ? `assigned to ${escapeHtml(memberLabel(assignee))}` : '<b style="color:#b45309">unassigned</b>'}
+        <p style="margin:0 0 2px;font-size:14px"><a href="${threadUrl(collective, threadId)}" style="color:#0c2d66;font-weight:700">${escapeHtml(t.subject)}</a></p>
+        <p style="margin:0 0 8px;font-size:12px;color:#6b7280">
+          ${escapeHtml(t.counterpart_name || t.counterpart_email || '')} ·
+          ${open ? '<b style="color:#b45309">needs a reply</b>' : state(t)} ·
+          ${assignee ? `assigned to ${escapeHtml(memberLabel(assignee))}` : 'unassigned'}
         </p>
-        <p style="margin:0 0 8px;font-size:13px;color:#4b5563">${escapeHtml(excerpt(lastMsg?.body_text || '', 160))}</p>
-        ${member.role === 'reader'
-          ? `<a href="${threadUrl(collective, t.id)}" style="font-size:12.5px;color:#1869f5;font-weight:600">Open thread →</a>`
-          : `<a href="${assignUrl(t.id, member.id, member.id, true)}" style="font-size:12.5px;color:#1869f5;font-weight:600">Assign to me & reply →</a>`}
+        ${msgs.map((r) => `<p style="margin:0 0 6px;font-size:13px;color:#4b5563"><span style="color:#6b7280">${r.direction === 'inbound' ? '↓' : '↑'} ${escapeHtml(who(r))}${r.direction === 'inbound' ? '' : ' replied'}</span> — ${escapeHtml(excerpt(r.body_text || '', 140))}</p>`).join('')}
+        ${open && member.role !== 'reader'
+          ? `<a href="${assignUrl(threadId, member.id, member.id, true)}" style="font-size:12.5px;color:#1869f5;font-weight:600">Assign to me & reply →</a>`
+          : `<a href="${threadUrl(collective, threadId)}" style="font-size:12.5px;color:#1869f5;font-weight:600">Open thread →</a>`}
       </div>`)
+    lines.push(`- ${t.subject} (${state(t)}) ${threadUrl(collective, threadId)}`)
+    for (const r of msgs) lines.push(`    ${r.direction === 'inbound' ? '<-' : '->'} ${who(r)}: ${excerpt(r.body_text || '', 100)}`)
   }
 
+  const openLine = stillOpen ? `${n(stillOpen, 'conversation', 'conversations')} still need${stillOpen === 1 ? 's' : ''} a reply.` : 'Nothing is waiting for a reply.'
   const html = shell(collective.name, `
-    <p style="margin:0 0 12px;font-size:16px;font-weight:700;color:#0c2d66">${threads.length} request${threads.length === 1 ? '' : 's'} need${threads.length === 1 ? 's' : ''} a reply</p>
+    <p style="margin:0 0 2px;font-size:16px;font-weight:700;color:#0c2d66">${headline}</p>
+    <p style="margin:0 0 12px;font-size:12px;color:#6b7280">${escapeHtml(sinceLabel)}</p>
     ${parts.join('')}
+    <p style="margin:14px 0 0;font-size:13px;color:#4b5563">${openLine}</p>
     <div style="margin-top:16px">${btn(inboxUrl(collective), 'Open the inbox')}</div>`)
 
   const text = [
-    `[${collective.name}] ${threads.length} request(s) need a reply:`,
+    `[${collective.name}] ${headline} (${sinceLabel})`,
     '',
-    ...threads.map((t) => `- ${t.subject} (waiting ${waitingFor(t.last_message_at)}) ${threadUrl(collective, t.id)}`),
+    ...lines,
     '',
+    openLine,
     `Open the inbox: ${inboxUrl(collective)}`,
   ].join('\n')
 
   await sendAppEmail({
     to: member.email,
-    subject: `${threads.length} unanswered request${threads.length === 1 ? '' : 's'} — ${period} digest`,
+    subject: `${headline} — ${period} digest`,
     from: notifyFrom(collective),
     html,
     text,
@@ -429,30 +472,46 @@ async function sendDigest(collective: Collective, member: Member, threads: Threa
 }
 
 /** Called by the local interval or the Vercel cron. Sends daily digests at
- *  DIGEST_HOUR (local TZ), weekly digests on Monday. Max one per period per member. */
-export async function digestTick() {
-  const d = new Date()
-  if (d.getHours() !== cfg.digestHour) return
-  const nowTs = Math.floor(Date.now() / 1000)
+ *  DIGEST_HOUR (local TZ), weekly digests on Monday, at most one per period
+ *  per member, each covering what arrived or went out since that member's
+ *  previous digest (the last day or week, for a first one). Nothing happened
+ *  → nothing sent, and the window simply keeps growing until something does.
+ *  `at` is the clock, injectable for tests. */
+export async function digestTick(at: Date = new Date()) {
+  if (at.getHours() !== cfg.digestHour) return
+  const nowTs = Math.floor(at.getTime() / 1000)
 
   for (const collective of await allCollectives()) {
     if (collective.status !== 'active') continue
-    const threads = await all<Thread>(
-      "SELECT * FROM threads WHERE collective_id = ? AND status = 'needs_reply' AND deleted_at IS NULL ORDER BY last_message_at ASC", [collective.id])
-    if (threads.length === 0) continue
-    const members = await activeMembers(collective.id)
+    const members = (await activeMembers(collective.id)).filter((m) => m.kind !== 'agent')
     const membersById = new Map(members.map((m) => [m.id, m]))
+    const due: { member: Member; since: number }[] = []
     for (const m of members) {
       if (m.notify_level !== 'daily' && m.notify_level !== 'weekly') continue
-      if (m.notify_level === 'weekly' && d.getDay() !== 1) continue
+      if (m.notify_level === 'weekly' && at.getDay() !== 1) continue
       const last = Number((await kvGet(`digest:${m.id}`)) || 0)
       const minGap = m.notify_level === 'daily' ? 20 * 3600 : 6 * 86400
       if (nowTs - last < minGap) continue
+      due.push({ member: m, since: last || nowTs - DIGEST_WINDOW[m.notify_level] })
+    }
+    if (due.length === 0) continue
+    // one scan for the widest window, narrowed per member below
+    const rows = await digestRows(collective.id, Math.min(...due.map((d) => d.since)), nowTs)
+    if (rows.length === 0) continue
+    const stillOpen = (await get<{ n: number }>("SELECT COUNT(*) AS n FROM threads WHERE collective_id = ? AND status = 'needs_reply' AND deleted_at IS NULL", [collective.id]))?.n ?? 0
+    for (const { member, since } of due) {
+      let mine = rows.filter((r) => r.created_at > since)
+      if (member.role === 'guest') {
+        const visible = new Set<number>()
+        for (const id of new Set(mine.map((r) => r.thread_id))) if (await canSeeThread(member, id)) visible.add(id)
+        mine = mine.filter((r) => visible.has(r.thread_id))
+      }
+      if (mine.length === 0) continue
       try {
-        await sendDigest(collective, m, threads, membersById, m.notify_level)
-        await kvSet(`digest:${m.id}`, String(nowTs))
+        await sendDigest(collective, member, mine, membersById, member.notify_level as 'daily' | 'weekly', since, stillOpen)
+        await kvSet(`digest:${member.id}`, String(nowTs))
       } catch (err) {
-        console.error(`[digest] failed for ${m.email}:`, err)
+        console.error(`[digest] failed for ${member.email}:`, err)
       }
     }
   }
