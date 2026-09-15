@@ -1237,8 +1237,8 @@ app.get('/inbox/:addr', async (c) => {
       inboxCount={counts.all} inboxOn={!tag}>
       {[...members.values()].filter((m) => !m.removed_at && m.kind !== 'agent').length === 1 ? (
         <div class="solo-note">
-          <span>🎉 <b>{collective.slug}@{cfg.emailDomain}</b> is live and receiving. You're the only member so far.</span>
-          <a class="btn small" href={`${base}/members`}>Invite your collective →</a>
+          <span>You are the only member of this collective at the moment.</span>
+          <a class="btn small ghost" href={`${base}/members`}>Invite other members</a>
         </div>
       ) : null}
       <div class="topbar">

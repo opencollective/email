@@ -85,7 +85,7 @@ test('claim: verified code opens the collective at once — a month free — and
   // the inbox opens, and asks the lone founder to bring the others in
   const inbox = await (await app.request(`/inbox/${slug}`, { headers: { cookie: `requests_sid=${await createSession(email)}` } })).text()
   assert.match(inbox, /solo-note/)
-  assert.match(inbox, /Invite your collective/)
+  assert.match(inbox, /Invite other members/)
 })
 
 test('months-bound discount code grants a trial of that length', async () => {
