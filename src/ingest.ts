@@ -38,11 +38,21 @@ const ownAddressesOf = (collective: Collective): string[] => [
   collective.custom_domain && collective.custom_local ? `${collective.custom_local}@${collective.custom_domain}`.toLowerCase() : '',
 ].filter(Boolean)
 
+/** Another collective's receiving address on the same custom domain: when
+ *  hello@ and social@ are different inboxes, one writing to the other is a
+ *  conversation between two teams, not one team talking to itself. */
+async function siblingAddress(collective: Collective, address: string): Promise<boolean> {
+  const [local, domain] = address.split('@')
+  if (!domain || domain !== collective.custom_domain?.toLowerCase()) return false
+  return !!(await get('SELECT 1 FROM collectives WHERE custom_domain = ? AND custom_local = ? AND id != ?', [domain, local, collective.id]))
+}
+
 /** Resolve a sender to the team. Exact member email first; otherwise anyone
  *  on the collective's own custom domain writes as the team (people use
  *  aliases like inge@domain while their member record says another address) —
  *  matched to a member by local part when possible. The collective's own
- *  receiving address is NOT a team sender (website tools send as it). */
+ *  receiving address is NOT a team sender (website tools send as it), and
+ *  neither is a sibling inbox's address on the same domain. */
 export async function teamSender(collective: Collective, address: string): Promise<{ team: boolean; member?: Member }> {
   if (!address || ownAddressesOf(collective).includes(address)) return { team: false }
   const exact = await getMemberIn(collective.id, address)
@@ -55,6 +65,7 @@ export async function teamSender(collective: Collective, address: string): Promi
   }
   const domain = collective.custom_domain?.toLowerCase()
   if (domain && address.endsWith(`@${domain}`)) {
+    if (await siblingAddress(collective, address)) return { team: false }
     const local = address.split('@')[0]
     const members = await all<Member>('SELECT * FROM members WHERE collective_id = ? AND removed_at IS NULL', [collective.id])
     return { team: true, member: members.find((m) => m.email.split('@')[0].toLowerCase() === local) }
@@ -74,9 +85,13 @@ export async function externalRecipient(
     ...(await all<{ email: string }>('SELECT email FROM members WHERE collective_id = ? AND removed_at IS NULL', [collective.id])).map((r) => r.email),
     ...(await all<{ email: string }>('SELECT email FROM member_aliases WHERE collective_id = ?', [collective.id])).map((r) => r.email),
   ])
+  const siblings = domain
+    ? new Set((await all<{ custom_local: string }>('SELECT custom_local FROM collectives WHERE custom_domain = ? AND id != ?', [domain, collective.id]))
+        .map((r) => `${r.custom_local}@${domain}`))
+    : new Set<string>()
   return addrs.find((a) =>
     a.address && !a.address.endsWith(`@${cfg.emailDomain}`) && !own.has(a.address)
-    && !memberEmails.has(a.address) && !(domain && a.address.endsWith(`@${domain}`)))
+    && !memberEmails.has(a.address) && (siblings.has(a.address) || !(domain && a.address.endsWith(`@${domain}`))))
 }
 
 /** Who the email is really from. Mail relayed through a group or list (e.g. a

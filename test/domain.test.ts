@@ -219,3 +219,63 @@ test('the hourly tick reads before it re-triggers, so a finished check is never 
     __setResendDomainStub(null)
   }
 })
+
+test('one domain, several inboxes: an admin of the holder can add another address; a stranger cannot', async () => {
+  const { getCollectiveByCustomAddress, siblingsOnDomain } = await import('../src/db.js')
+  const { teamSender, externalRecipient } = await import('../src/ingest.js')
+  const d = `shared${uniq()}.org`
+  const a = await createCollective(`sh-a${uniq()}`, 'Hello Co')
+  const b = await createCollective(`sh-b${uniq()}`, 'Social Co')
+  const c = await createCollective(`sh-c${uniq()}`, 'Stranger Co')
+  await run("UPDATE collectives SET plan = 'pro' WHERE id IN (?, ?, ?)", [a.id, b.id, c.id])
+  // one person administers A and B; someone else administers C
+  const me = `me-${uniq()}@t.test`
+  for (const col of [a, b]) {
+    await run("INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, 'Me', 'admin', 'every', ?)", [col.id, me, now()])
+  }
+  const sid = await createSession(me)
+  const sidC = await adminSid(c.id)
+
+  await post(`/inbox/${a.slug}/domain`, sid, `local=hello&domain=${d}`)
+  await run("UPDATE collectives SET receive_mode = 'mx' WHERE id = ?", [a.id]) // A receives the domain's MX
+  // a stranger is refused, with nothing written
+  const refused = await post(`/inbox/${c.slug}/domain`, sidC, `local=social&domain=${d}`)
+  assert.match(decodeURIComponent(refused.headers.get('location')!), /already connected to another collective/)
+  assert.equal((await get<any>('SELECT custom_domain FROM collectives WHERE id = ?', [c.id]))!.custom_domain, null)
+  // the holder's admin may add a second address — but not the same one twice
+  const clash = await post(`/inbox/${b.slug}/domain`, sid, `local=hello&domain=${d}`)
+  assert.match(decodeURIComponent(clash.headers.get('location')!), /already the address of Hello Co/)
+  const ok = await post(`/inbox/${b.slug}/domain`, sid, `local=social&domain=${d}`)
+  assert.match(decodeURIComponent(ok.headers.get('location')!), /social@.* is set up — the domain's mail already comes here/)
+  const A = (await get<any>('SELECT * FROM collectives WHERE id = ?', [a.id]))!
+  const B = (await get<any>('SELECT * FROM collectives WHERE id = ?', [b.id]))!
+  assert.equal(B.custom_domain, d)
+  assert.equal(B.custom_local, 'social')
+  assert.equal(B.resend_domain_id, A.resend_domain_id, 'one Resend domain record, no new DNS')
+  assert.equal(B.receive_mode, 'mx', 'inherits the MX path the domain is already on')
+  assert.equal((await siblingsOnDomain(d, a.id)).map((x) => x.id).join(), String(b.id))
+
+  // inbound routing: the exact address wins, anything else goes to the MX holder
+  assert.equal((await getCollectiveByCustomAddress('social', d))!.id, b.id)
+  assert.equal((await getCollectiveByCustomAddress('hello', d))!.id, a.id)
+  assert.equal((await getCollectiveByCustomDomain(d))!.id, a.id, 'catch-all = the collective on MX')
+  assert.equal(await getCollectiveByCustomAddress('nobody', d), undefined)
+
+  // the sibling's address is a counterpart of A, not A's own team
+  assert.equal((await teamSender(A, `social@${d}`)).team, false)
+  assert.equal((await teamSender(A, `inge@${d}`)).team, true, 'other people on the domain still write as the team')
+  const ext = await externalRecipient(A, [{ address: `hello@${d}`, name: '' }, { address: `social@${d}`, name: 'Social' }])
+  assert.equal(ext?.address, `social@${d}`)
+
+  // disconnecting B leaves A's domain record alone
+  await post(`/inbox/${b.slug}/domain/remove`, sid, '')
+  assert.equal((await get<any>('SELECT custom_domain FROM collectives WHERE id = ?', [b.id]))!.custom_domain, null)
+  assert.equal((await get<any>('SELECT resend_domain_id FROM collectives WHERE id = ?', [a.id]))!.resend_domain_id, A.resend_domain_id)
+  // the domain page tells the holder who else is on the domain
+  await post(`/inbox/${b.slug}/domain`, sid, `local=social&domain=${d}`)
+  const pageA = await (await app.request(`/inbox/${a.slug}/domain`, { headers: { cookie: `requests_sid=${sid}` } })).text()
+  assert.match(pageA, /also serves social@ \(Social Co\)/)
+  assert.match(pageA, /anything else at the domain lands here/)
+  const pageB = await (await app.request(`/inbox/${b.slug}/domain`, { headers: { cookie: `requests_sid=${sid}` } })).text()
+  assert.match(pageB, /anything else at the domain goes to Hello Co/)
+})

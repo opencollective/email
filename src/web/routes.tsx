@@ -5,7 +5,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import type { Context } from 'hono'
 import { cfg } from '../config.js'
 import {
-  activeMembers, addEvent, addTag, all, allCollectives, attachmentsByMessage, batchAll, contactsFor, createCollective, get, getCollective, messageFoldsQuery, popularTagsQuery, setMessageFold,
+  activeMembers, addEvent, addTag, all, allCollectives, attachmentsByMessage, batchAll, contactsFor, createCollective, get, getCollective, getCollectiveByCustomDomain, siblingsOnDomain, messageFoldsQuery, popularTagsQuery, setMessageFold,
   getCollectiveBySlug, getMember, getMemberIn, getThread, kvGet, kvGetMany, kvSet, lastMessageQuery, memberMap, recordThreadSeenUpTo,
   renameCollectiveSlug,
   backfillGuestAccess, canSeeThread, grantThreadAccess, markThreadSeen, membershipsByEmail, readsForMember, removeTag, run, setAssignee, setStatus, tagsByThread, threadMessages, threadReads, threadTags,
@@ -4322,6 +4322,8 @@ app.get('/inbox/:addr/domain', async (c) => {
 
   const domain = collective.resend_domain_id ? await getResendDomain(collective.resend_domain_id) : null
   const customAddr = collective.custom_domain ? `${collective.custom_local}@${collective.custom_domain}` : null
+  const siblings = collective.custom_domain ? (await siblingsOnDomain(collective.custom_domain, collective.id)).filter((x) => x.status === 'active') : []
+  const catchAll = collective.custom_domain ? await getCollectiveByCustomDomain(collective.custom_domain) : null
   let verified = collective.domain_status === 'verified'
   if (!verified && domain?.status === 'verified') {
     // Resend finished its (asynchronous) check since we last looked — bank it
@@ -4338,6 +4340,7 @@ app.get('/inbox/:addr/domain', async (c) => {
           <section class="card">
             <h2>Which address should reach this inbox?</h2>
             <p class="muted">Usually <b>hello@</b> your collective's domain. Everything sent there will land here, and once your domain is verified, replies go out from it too.</p>
+            <p class="fineprint">Already using this domain on another inbox you administer? Add a second address here (say <b>social@</b>) — same domain, no new DNS records.</p>
             <form method="post" action={`${base}/domain`} class="btn-row" style="flex-wrap:wrap">
               <input class="input" name="local" placeholder="hello" style="max-width:130px" required />
               <span style="align-self:center">@</span>
@@ -4347,12 +4350,16 @@ app.get('/inbox/:addr/domain', async (c) => {
           </section>
         ) : (<>
           <p class="muted">Connecting <b>{customAddr}</b> to this inbox.</p>
+          {siblings.length ? (
+            <p class="fineprint">{collective.custom_domain} also serves {siblings.map((x) => `${x.custom_local}@ (${x.name})`).join(', ')} — each address goes to its own inbox
+              {catchAll && catchAll.id !== collective.id ? `; anything else at the domain goes to ${catchAll.name}` : '; anything else at the domain lands here'}.</p>
+          ) : null}
 
           <section class="card">
             <h2>1 · Receiving {collective.receive_mode === 'mx' ? '' : '— forward your mail here'}</h2>
             {collective.receive_mode === 'mx' ? (
               <>
-                <p class="muted">Your domain's mail (MX) points at us — every address at <b>{collective.custom_domain}</b> lands in this inbox. The MX record is in the table below with the sending records.</p>
+                <p class="muted">Your domain's mail (MX) points at us — {siblings.length ? <>mail to <b>{customAddr}</b> lands in this inbox</> : <>every address at <b>{collective.custom_domain}</b> lands in this inbox</>}. The MX record is in the table below with the sending records.</p>
                 <p class="fineprint">⚠ MX takeover means personal mailboxes at this domain stop working. If anyone has one, switch to forwarding instead.</p>
               </>
             ) : (
@@ -4425,18 +4432,38 @@ app.post('/inbox/:addr/domain', async (c) => {
   if (!validLocalPart(local) || !validDomainName(domainName)) {
     return c.redirect(`${base}/domain?m=` + encodeURIComponent('That does not look like a valid address — check the local part and the domain.'))
   }
-  const taken = await get<Collective>('SELECT * FROM collectives WHERE custom_domain = ? AND id != ?', [domainName, collective.id])
-  if (taken) {
-    return c.redirect(`${base}/domain?m=` + encodeURIComponent(`${domainName} is already connected to another collective on collective.email. If that's yours and shouldn't be, email hello@collective.email.`))
+  // A domain can carry several inboxes (hello@ here, social@ there) — but only
+  // for someone who already administers one of them: the DNS records were
+  // that collective's proof of ownership, and a stranger must not ride on it.
+  const siblings = await siblingsOnDomain(domainName, collective.id)
+  if (siblings.length) {
+    const mine = c.get('accounts').map((a) => a.email)
+    const holder = await get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM members WHERE collective_id IN (${siblings.map(() => '?').join(',')}) AND role = 'admin' AND removed_at IS NULL AND email IN (${mine.map(() => '?').join(',')})`,
+      [...siblings.map((x) => x.id), ...mine])
+    if (!holder?.n) {
+      return c.redirect(`${base}/domain?m=` + encodeURIComponent(`${domainName} is already connected to another collective on collective.email. If that's yours and shouldn't be, email hello@collective.email.`))
+    }
+    const clash = siblings.find((x) => x.custom_local === local)
+    if (clash) {
+      return c.redirect(`${base}/domain?m=` + encodeURIComponent(`${local}@${domainName} is already the address of ${clash.name} (${clash.slug}@${cfg.emailDomain}). Pick another local part.`))
+    }
   }
   try {
-    const created = await createResendDomain(domainName)
+    // the domain record (and its DNS) is shared: nothing new to verify when
+    // a sibling already brought the domain in
+    const shared = siblings.find((x) => x.resend_domain_id)
+    const created = (shared?.resend_domain_id ? await getResendDomain(shared.resend_domain_id) : null) ?? await createResendDomain(domainName)
     const status = created.status === 'verified' ? 'verified' : 'pending'
-    await run("UPDATE collectives SET custom_domain = ?, custom_local = ?, resend_domain_id = ?, domain_status = ?, receive_mode = 'forwarding' WHERE id = ?",
-      [domainName, local, created.id, status, collective.id])
-    return c.redirect(`${base}/domain?m=` + encodeURIComponent(status === 'verified'
-      ? `${local}@${domainName} is set up — the domain was already verified, so replies go out as it right away. Just add the forward.`
-      : `${local}@${domainName} is set up — add the forward and the DNS records.`))
+    const mode = siblings.some((x) => x.receive_mode === 'mx') ? 'mx' : 'forwarding'
+    await run('UPDATE collectives SET custom_domain = ?, custom_local = ?, resend_domain_id = ?, domain_status = ?, receive_mode = ? WHERE id = ?',
+      [domainName, local, created.id, status, mode, collective.id])
+    return c.redirect(`${base}/domain?m=` + encodeURIComponent(
+      mode === 'mx'
+        ? `${local}@${domainName} is set up — the domain's mail already comes here, so email to that address lands in this inbox from now on.`
+        : status === 'verified'
+          ? `${local}@${domainName} is set up — the domain was already verified, so replies go out as it right away. Just add the forward.`
+          : `${local}@${domainName} is set up — add the forward and the DNS records.`))
   } catch (err) {
     return c.redirect(`${base}/domain?m=` + encodeURIComponent(err instanceof Error ? err.message : 'Could not create the domain.'))
   }
@@ -4512,7 +4539,8 @@ app.post('/inbox/:addr/domain/remove', async (c) => {
   const base = `/inbox/${t.collective.slug}`
   if (t.member.role !== 'admin') return c.redirect(base)
   const collective = (await getCollective(t.collective.id))!
-  if (collective.resend_domain_id) await deleteResendDomain(collective.resend_domain_id).catch(() => {})
+  const stillUsed = collective.custom_domain ? (await siblingsOnDomain(collective.custom_domain, collective.id)).length > 0 : false
+  if (collective.resend_domain_id && !stillUsed) await deleteResendDomain(collective.resend_domain_id).catch(() => {})
   await run('UPDATE collectives SET custom_domain = NULL, custom_local = NULL, resend_domain_id = NULL, domain_status = NULL, receive_mode = NULL WHERE id = ?', [collective.id])
   return c.redirect(`${base}/domain?m=` + encodeURIComponent('Domain disconnected.'))
 })

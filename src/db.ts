@@ -660,8 +660,22 @@ export function addEvent(threadId: number, actorMemberId: number | null, type: s
 
 // ---------- threads ----------
 
+/** The collective behind one exact address on a custom domain. */
+export const getCollectiveByCustomAddress = (local: string, domain: string) =>
+  get<Collective>("SELECT * FROM collectives WHERE custom_domain = ? AND custom_local = ? AND status = 'active'",
+    [domain.toLowerCase(), local.toLowerCase()])
+
+/** The catch-all for a custom domain: several collectives can share one
+ *  domain (hello@ here, social@ there), and mail to any other address at it
+ *  goes to the one that receives the domain's MX, else the first to connect. */
 export const getCollectiveByCustomDomain = (domain: string) =>
-  get<Collective>("SELECT * FROM collectives WHERE custom_domain = ? AND status = 'active'", [domain.toLowerCase()])
+  get<Collective>("SELECT * FROM collectives WHERE custom_domain = ? AND status = 'active' ORDER BY (receive_mode = 'mx') DESC, id ASC",
+    [domain.toLowerCase()])
+
+/** Every other collective sharing this domain (any status — a parked one
+ *  still owns its address). */
+export const siblingsOnDomain = (domain: string, exceptId: number) =>
+  all<Collective>('SELECT * FROM collectives WHERE custom_domain = ? AND id != ? ORDER BY id', [domain.toLowerCase(), exceptId])
 
 export const getThread = (id: number) =>
   get<Thread>('SELECT * FROM threads WHERE id = ?', [id])

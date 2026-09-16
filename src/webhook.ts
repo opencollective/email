@@ -2,7 +2,7 @@ import crypto from 'node:crypto'
 import { Hono } from 'hono'
 import { simpleParser, type ParsedMail } from 'mailparser'
 import { cfg } from './config.js'
-import { getCollectiveBySlug, getCollectiveByCustomDomain, run } from './db.js'
+import { getCollectiveBySlug, getCollectiveByCustomAddress, getCollectiveByCustomDomain, run } from './db.js'
 import { resolveReplyAddress, viaSlug } from './reply-tokens.js'
 import { handleEmailNote, handleEmailReply, ingestInbound } from './ingest.js'
 import { verifyStripeSignature } from './stripe.js'
@@ -159,12 +159,13 @@ webhooks.post('/webhooks/resend', async (c) => {
     routed++
   }
 
-  // 3. Pro custom domains on the MX path: catch-all per domain (once MX points
+  // 3. Pro custom domains on the MX path: the exact address first (a domain
+  // can carry several inboxes), else the domain's catch-all (once MX points
   // at us, unrouted locals would otherwise black-hole)
   for (const addr of allAddrs) {
-    const domain = addr.split('@')[1]
+    const [local, domain] = addr.split('@')
     if (!domain || domain === cfg.emailDomain) continue
-    const collective = await getCollectiveByCustomDomain(domain)
+    const collective = (await getCollectiveByCustomAddress(local.split('+')[0], domain)) ?? (await getCollectiveByCustomDomain(domain))
     if (!collective || collective.plan !== 'pro' || seen.has(collective.id)) continue
     if (collective.status !== 'active') continue // archived: bounce, like the slug route
     if (!canReceive(billingState(collective))) continue
