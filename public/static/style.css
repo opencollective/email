@@ -183,14 +183,36 @@ small { color: var(--muted); }
 .chooser-new small { font-family: inherit; font-size: 12.5px; }
 
 /* platform admin */
-.admin-h { margin-top: 26px; }
-.admin-list { display: flex; flex-direction: column; }
-.admin-row {
-  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
-  padding: 9px 0; border-bottom: 1.5px solid var(--line-soft); font-size: 14px;
+/* platform dashboard: numbers, one action, one row per collective */
+.admin-page { margin: 0 auto; }
+.admin-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+.admin-stats .stat {
+  background: var(--card); border: 1.5px solid var(--line); border-radius: 10px; padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 2px;
 }
-.admin-row small { font-size: 12px; }
-.admin-row a { margin-left: auto; font-size: 13px; color: var(--accent); }
+.admin-stats .stat b { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
+.admin-stats .stat small { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+.admin-code h2 { margin: 0 0 4px; font-size: 16px; }
+.admin-code .assign-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+.admin-code .assign-form .wl-addr { flex: 1 1 240px; }
+.admin-code .assign-form .input { width: auto; }
+.admin-code .invite-row { margin-top: 12px; }
+.tbl-wrap { overflow-x: auto; }
+.admin-table { width: 100%; border-collapse: collapse; font-size: 13.5px; white-space: nowrap; }
+.admin-table th {
+  text-align: left; font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: 1px;
+  color: var(--muted); font-weight: 500; padding: 6px 10px; border-bottom: 1.5px solid var(--line);
+}
+.admin-table td { padding: 9px 10px; border-bottom: 1.5px solid var(--line-soft); vertical-align: top; }
+.admin-table td small { display: block; color: var(--muted); font-size: 12px; white-space: normal; }
+.admin-table tr.dim td { color: var(--muted); }
+.state {
+  display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px; border: 1.5px solid var(--line);
+  font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+}
+.state-subscribed { border-color: var(--accent); color: var(--accent); }
+.state-trial { border-color: #2f855a; color: #2f855a; }
+.state-grace, .state-expired { border-color: var(--danger); color: var(--danger); }
 .wl-addr {
   display: flex; flex-wrap: wrap; align-items: baseline; border: 1.5px solid var(--line);
   border-radius: 8px; background: var(--card); font-family: var(--mono); padding: 0 12px;

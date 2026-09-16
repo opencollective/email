@@ -34,9 +34,9 @@ import { emailHtmlDocument } from '../sanitize.js'
 import { sendAppEmail } from '../appmail.js'
 import { readBlob, saveBlob } from '../storage.js'
 import { createCheckoutSession, createPortalSession, stripeUsable } from '../stripe.js'
-import { billingState, canSend, planLimits, recipientLimit, repliesThisMonth, trialDaysLeft, GRACE_DAYS } from '../billing.js'
+import { billingState, canSend, GRACE_DAYS, planLimits, recipientLimit, repliesThisMonth, trialDaysLeft } from '../billing.js'
 import { dayPhrase, escapeHtml, excerpt, fmtDate, fmtDateTime, initials, now, randomToken, relTime, signToken, slugify, splitQuotedTail, verifyToken } from '../util.js'
-import { AssigneeChip, AuthCard, Avatar, eventText, Icon, Shell, StatusChip, TimeAgo } from './ui.js'
+import { AssigneeChip, AuthCard, Avatar, eventText, Icon, Shell, StatusChip, TimeAgo, Page } from './ui.js'
 import { HomePage } from './home.js'
 import { AboutPage, DocsPage, FaqPage } from './pages.js'
 import {
@@ -80,7 +80,7 @@ const senderBlock = (c: Context<Env>, t: { collective: Collective; member: Membe
     ? c.redirect(`/inbox/${t.collective.slug}?m=` + encodeURIComponent('Your role can comment but not send email — ask an admin for sending rights.'))
     : null)
 const memberName = (m?: Member | null) => (m ? m.name || m.email.split('@')[0] : 'someone')
-const isPlatformAdmin = (email: string | null) => !!email && !!cfg.adminEmail && email === cfg.adminEmail
+const isPlatformAdmin = (email: string | null) => !!email && cfg.adminEmails.includes(email)
 
 const LEVELS: { value: Member['notify_level']; label: string; hint: string }[] = [
   { value: 'every', label: 'As they arrive', hint: 'One email per incoming request — reply to it to answer directly.' },
@@ -318,10 +318,10 @@ app.post('/waitlist', async (c) => {
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return c.redirect('/#waitlist')
   await run('INSERT OR IGNORE INTO waitlist (email, collective_name, plan, created_at) VALUES (?, ?, ?, ?)',
     [email, name || null, plan, now()])
-  if (cfg.adminEmail) {
+  for (const adminEmail of cfg.adminEmails) {
     const total = (await get<{ n: number }>('SELECT COUNT(*) AS n FROM waitlist'))!.n
     await sendAppEmail({
-      to: cfg.adminEmail,
+      to: adminEmail,
       subject: `[collective.email] waitlist #${total}: ${name || '(no name)'} (${plan})`,
       html: `<p><b>${name || '(no name)'}@${cfg.emailDomain}</b> · ${plan} · ${email}</p><p><a href="${cfg.baseUrl}/admin">Open admin</a> · ${total} signups so far.</p>`,
       text: `${name || '(no name)'}@${cfg.emailDomain} · ${plan} · ${email}\n${cfg.baseUrl}/admin · ${total} signups so far.`,
@@ -934,111 +934,125 @@ app.get('/attachment/:id', async (c) => {
 
 // ---------- platform admin ----------
 
+type AdminRow = Collective & { members: number; threads: number; last_sent: number | null; last_received: number | null }
+
+/** What "days left" means for each billing situation, for the dashboard. */
+function planClock(col: Collective): { state: string; left: string } {
+  if (col.status === 'archived') return { state: 'archived', left: '—' }
+  if (col.status !== 'active') return { state: col.status, left: '—' }
+  const state = billingState(col)
+  if (state === 'subscribed') return { state, left: 'renews' }
+  if (state === 'comped') return { state, left: '∞' }
+  const left = trialDaysLeft(col) ?? 0
+  if (state === 'trial') return { state, left: `${left} d` }
+  const grace = Math.max(0, Math.ceil(((col.trial_ends_at ?? 0) + GRACE_DAYS * 86400 - now()) / 86400))
+  if (state === 'grace') return { state, left: `grace · ${grace} d` }
+  return { state, left: 'expired' }
+}
+
+const day = (ts: number | null | undefined) => ts ? new Date(ts * 1000).toISOString().slice(0, 10) : '—'
+
+/** Platform dashboard: the numbers, one row per collective, and the one
+ *  action that is ever needed by hand — a discount code for an address. */
 app.get('/admin', async (c) => {
-  if (c.get('accounts').length === 0) return c.redirect('/login')
-  const email = platformAdminAccount(c)
-  if (!email) return c.notFound()
-  const waitlist = await all<{ id: number; email: string; collective_name: string | null; plan: string | null; created_at: number }>(
-    'SELECT * FROM waitlist ORDER BY created_at DESC LIMIT 200')
-  const collectives = []
-  for (const col of await allCollectives()) {
-    collectives.push({
-      ...col,
-      members: (await get<{ n: number }>('SELECT COUNT(*) AS n FROM members WHERE collective_id = ? AND removed_at IS NULL', [col.id]))!.n,
-      threads: (await get<{ n: number }>('SELECT COUNT(*) AS n FROM threads WHERE collective_id = ?', [col.id]))!.n,
-    })
-  }
-  const taken = new Set(collectives.map((col) => col.slug))
-  const prefillSlug = c.req.query('slug') || ''
-  const prefillEmail = c.req.query('email') || ''
-  const prefillPlan = c.req.query('plan') || 'collective'
+  if (c.get('accounts').length === 0) return c.redirect('/login?next=%2Fadmin')
+  if (!platformAdminAccount(c)) return c.notFound()
+  const monthAgo = now() - 30 * 86400
+  const [rows, traffic] = await batchAll([
+    { sql: `SELECT c.*,
+        (SELECT COUNT(*) FROM members m WHERE m.collective_id = c.id AND m.removed_at IS NULL AND m.kind != 'agent') AS members,
+        (SELECT COUNT(*) FROM threads t WHERE t.collective_id = c.id AND t.deleted_at IS NULL) AS threads,
+        (SELECT MAX(m.sent_at) FROM messages m JOIN threads t ON t.id = m.thread_id WHERE t.collective_id = c.id AND m.direction = 'outbound' AND m.sent_at IS NOT NULL) AS last_sent,
+        (SELECT MAX(m.created_at) FROM messages m JOIN threads t ON t.id = m.thread_id WHERE t.collective_id = c.id AND m.direction = 'inbound') AS last_received
+      FROM collectives c ORDER BY c.created_at DESC` },
+    { sql: `SELECT
+        SUM(CASE WHEN direction = 'outbound' AND sent_at > ? THEN 1 ELSE 0 END) AS sent30,
+        SUM(CASE WHEN direction = 'inbound' AND created_at > ? THEN 1 ELSE 0 END) AS received30
+      FROM messages WHERE created_at > ?`, args: [monthAgo, monthAgo, monthAgo] },
+  ]) as [AdminRow[], { sent30: number | null; received30: number | null }[]]
+  const clocks = new Map(rows.map((r) => [r.id, planClock(r)]))
+  const live = rows.filter((r) => r.status === 'active')
+  const by = (state: string) => live.filter((r) => clocks.get(r.id)!.state === state).length
+  const stats: [string, string | number][] = [
+    ['collectives', rows.length],
+    ['live', live.length],
+    ['subscribed', by('subscribed')],
+    ['on trial', by('trial')],
+    ['comped', by('comped')],
+    ['grace / expired', by('grace') + by('expired')],
+    ['members', rows.reduce((n, r) => n + r.members, 0)],
+    ['threads', rows.reduce((n, r) => n + r.threads, 0)],
+    ['sent · 30 d', traffic[0]?.sent30 ?? 0],
+    ['received · 30 d', traffic[0]?.received30 ?? 0],
+  ]
+  // the discount code: a GET so the result is right here on the page
+  const dslug = slugify(c.req.query('dslug') || '')
+  const dmonths = c.req.query('dmonths') || '2'
+  const dplan = c.req.query('dplan') === 'pro' ? 'pro' as const : 'collective' as const
+  const code = dslug
+    ? discountCodeFor(dslug, dmonths === 'forever' ? undefined : Math.min(24, Math.max(1, Number(dmonths) || 2)), dplan)
+    : null
   return c.html(
-    <AuthCard title="Platform admin" flash={c.req.query('m')}>
-      <h1>Platform admin</h1>
+    <Page title="Admin" flash={c.req.query('m')}>
+      <div class="page wide admin-page">
+        <h1>collective.email</h1>
 
-      <h2 class="admin-h">Set a plan</h2>
-      <form method="post" action="/admin/plan">
-        <label class="lbl">Address</label>
-        <span class="wl-addr"><input name="slug" placeholder="commonshub" required /><span class="domain">@{cfg.emailDomain}</span></span>
-        <label class="lbl">Plan</label>
-        <select class="input" name="plan">
-          <option value="collective">Collective — 20 recipients per email</option>
-          <option value="pro">Pro — 50 recipients per email, custom domain</option>
-        </select>
-        <label class="check-row"><input type="checkbox" name="comped" value="1" /> Comped — free forever, no trial clock</label>
-        <div class="btn-row"><button class="btn small" type="submit">Apply</button></div>
-      </form>
-
-      <h2 class="admin-h">Create a collective</h2>
-      <form method="post" action="/admin/collectives">
-        <label class="lbl">Address</label>
-        <span class="wl-addr"><input name="slug" value={prefillSlug} placeholder="lacooperative" required /><span class="domain">@{cfg.emailDomain}</span></span>
-        <label class="lbl">Display name</label>
-        <input class="input" name="name" placeholder="La Coopérative" />
-        <label class="lbl">Admin's email (gets the onboarding email)</label>
-        <input class="input" type="email" name="admin_email" value={prefillEmail} required />
-        <label class="lbl">Plan</label>
-        <select class="input" name="plan">
-          <option value="duo" selected={prefillPlan === 'duo'}>Duo</option>
-          <option value="collective" selected={prefillPlan === 'collective'}>Collective</option>
-          <option value="pro" selected={prefillPlan === 'pro'}>Pro</option>
-        </select>
-        <button class="btn" type="submit">Create &amp; send onboarding email</button>
-      </form>
-
-      <h2 class="admin-h">Issue credits</h2>
-      <form method="post" action="/admin/credits" class="me-form">
-        <div class="btn-row">
-          <input class="input" name="slug" placeholder="collective slug" required />
-          <input class="input" name="amount" type="number" min="-12" max="24" value="1" style="max-width:90px" required />
+        <div class="admin-stats">
+          {stats.map(([label, value]) => (
+            <div class="stat"><b>{String(value)}</b><small>{label}</small></div>
+          ))}
         </div>
-        <input class="input" name="reason" placeholder="reason (shown in their ledger)" required />
-        <button class="btn small" type="submit" data-busy="Issuing…">Issue</button>
-      </form>
 
-      <h2 class="admin-h">Discount code generator</h2>
-      <form method="get" action="/admin" class="assign-form">
-        <input class="input" name="dslug" placeholder="collective slug" value={c.req.query('dslug') || ''} />
-        <select class="input" name="dmonths" style="max-width:140px">
-          {['1', '2', '3', '6', '12'].map((m) => <option value={m} selected={(c.req.query('dmonths') || '2') === m}>{m} months</option>)}
-          <option value="forever" selected={c.req.query('dmonths') === 'forever'}>free forever</option>
-        </select>
-        <select class="input" name="dplan" style="max-width:130px">
-          <option value="collective" selected={c.req.query('dplan') !== 'pro'}>Collective</option>
-          <option value="pro" selected={c.req.query('dplan') === 'pro'}>Pro</option>
-        </select>
-        <button class="btn small ghost" type="submit">Generate</button>
-      </form>
-      {c.req.query('dslug') ? (() => {
-        const ds = slugify(c.req.query('dslug')!)
-        const dm = c.req.query('dmonths') === 'forever' ? undefined : Math.min(24, Math.max(1, Number(c.req.query('dmonths')) || 2))
-        const dplan = c.req.query('dplan') === 'pro' ? 'pro' as const : 'collective' as const
-        return <p class="fineprint">Code for <b>{ds}</b> ({dplan}): <code>{discountCodeFor(ds, dm, dplan)}</code> — {dm ? `${dm}-month free trial` : 'free forever (comped)'} on the {dplan} plan, for exactly that address.</p>
-      })() : null}
+        <section class="card admin-code">
+          <h2>Discount code</h2>
+          <p class="muted">Redeemed by that collective's admin in Settings. Months of the plan, or free forever.</p>
+          <form method="get" action="/admin" class="assign-form">
+            <span class="wl-addr"><input name="dslug" placeholder="commonshub" value={dslug} autocomplete="off" spellcheck={false} required /><span class="domain">@{cfg.emailDomain}</span></span>
+            <select class="input" name="dmonths">
+              {['1', '2', '3', '6', '12'].map((m) => <option value={m} selected={dmonths === m}>{m} month{m === '1' ? '' : 's'}</option>)}
+              <option value="forever" selected={dmonths === 'forever'}>free forever</option>
+            </select>
+            <select class="input" name="dplan">
+              <option value="collective" selected={dplan === 'collective'}>Collective</option>
+              <option value="pro" selected={dplan === 'pro'}>Pro</option>
+            </select>
+            <button class="btn small" type="submit">Generate</button>
+          </form>
+          {code ? (
+            <div class="invite-row">
+              <code class="invite-url">{code}</code>
+              <button class="icon-btn" type="button" data-copy={code} title="Copy code" aria-label="Copy code"><Icon name="copy" /></button>
+              <small class="muted">{dmonths === 'forever' ? 'free forever' : `${dmonths} month${dmonths === '1' ? '' : 's'}`} · {dplan} · only for {dslug}@{cfg.emailDomain}</small>
+            </div>
+          ) : null}
+        </section>
 
-      <h2 class="admin-h">Collectives ({collectives.length})</h2>
-      <div class="admin-list">
-        {collectives.map((col) => (
-          <div class="admin-row">
-            <b>{col.slug}@{cfg.emailDomain}</b>
-            <small>{col.name} · {col.plan} · {col.members} members · {col.threads} threads · {relTime(col.created_at)}</small>
-          </div>
-        ))}
+        <div class="tbl-wrap">
+          <table class="admin-table">
+            <thead>
+              <tr><th>Collective</th><th>Plan</th><th>Started</th><th>Members</th><th>Threads</th><th>Last sent</th><th>Last received</th><th>Days left</th></tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => {
+                const clock = clocks.get(r.id)!
+                return (
+                  <tr class={r.status === 'active' ? '' : 'dim'}>
+                    <td><b>{r.slug}</b><small>{r.name}</small></td>
+                    <td>{r.plan} <span class={`state state-${clock.state}`}>{clock.state}</span></td>
+                    <td>{day(r.activated_at ?? r.created_at)}</td>
+                    <td>{String(r.members)}</td>
+                    <td>{String(r.threads)}</td>
+                    <td>{day(r.last_sent)}</td>
+                    <td>{day(r.last_received)}</td>
+                    <td>{clock.left}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
-
-      <h2 class="admin-h">Waiting list ({waitlist.length})</h2>
-      <div class="admin-list">
-        {waitlist.map((w) => (
-          <div class="admin-row">
-            <b>{w.collective_name || '(no name)'}</b>
-            <small>{w.email} · {w.plan} · {relTime(w.created_at)}</small>
-            {w.collective_name && taken.has(w.collective_name)
-              ? <small>✓ created</small>
-              : <a href={`/admin?slug=${encodeURIComponent(w.collective_name || '')}&email=${encodeURIComponent(w.email)}&plan=${w.plan || 'collective'}`}>create ↑</a>}
-          </div>
-        ))}
-      </div>
-    </AuthCard>,
+    </Page>,
   )
 })
 

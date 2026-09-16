@@ -7,7 +7,7 @@ import path from 'node:path'
 
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ce-test-'))
 process.env.EMAIL_DOMAIN = 'collective.email'
-process.env.ADMIN_EMAIL = 'admin@test.local'
+process.env.ADMIN_EMAIL = 'admin@test.local, second-admin@test.local'
 process.env.BASE_URL = 'http://test.local'
 process.env.SECRET = 'test-secret-000000000000000000000000000000000000'
 delete process.env.RESEND_API_KEY

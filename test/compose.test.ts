@@ -175,7 +175,7 @@ test('the platform admin can put a collective on Pro', async () => {
   const { createSession } = await import('../src/auth.js')
   const slug = `plan${uniq()}`
   const col = await createCollective(slug, 'Plan Co')
-  const adminEmail = process.env.ADMIN_EMAIL || 'admin@collective.email'
+  const adminEmail = (process.env.ADMIN_EMAIL || 'admin@collective.email').split(',')[0].trim()
   const sid = await createSession(adminEmail)
 
   const res = await app.request('/admin/plan', {
