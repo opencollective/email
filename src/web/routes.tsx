@@ -80,6 +80,17 @@ const senderBlock = (c: Context<Env>, t: { collective: Collective; member: Membe
     ? c.redirect(`/inbox/${t.collective.slug}?m=` + encodeURIComponent('Your role can comment but not send email — ask an admin for sending rights.'))
     : null)
 const memberName = (m?: Member | null) => (m ? m.name || m.email.split('@')[0] : 'someone')
+
+/** "Lieve Poulis" ~ "Lieve", "lieve poulis", "Liève" — same person as far as a
+ *  name can tell: whole names equal, or the first words equal, accents and
+ *  case aside. */
+function sameName(a: string | null | undefined, b: string | null | undefined): boolean {
+  const norm = (x: string) => x.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').trim().split(/\s+/)
+  if (!a || !b) return false
+  const [wa, wb] = [norm(a), norm(b)]
+  if (!wa[0] || !wb[0]) return false
+  return wa.join(' ') === wb.join(' ') || wa[0] === wb[0]
+}
 const isPlatformAdmin = (email: string | null) => !!email && cfg.adminEmails.includes(email)
 
 const LEVELS: { value: Member['notify_level']; label: string; hint: string }[] = [
@@ -2135,6 +2146,10 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                         // anyone — the admin can say who it was, here
                         const unlinked = !inbound && !g.sent_by_member_id && !!g.from_email
                           && g.from_email !== collectiveAddr && g.from_email !== `${collective.slug}@${cfg.emailDomain}`
+                        // only worth asking when the name rings a bell: a member
+                        // whose name (or first name) is the sender's — a stranger's
+                        // name offers nobody to link, so no prompt
+                        const lookalikes = unlinked ? activeList.filter((m) => sameName(g.from_name, m.name)) : []
                         return (
                           <div class="person-card">
                             <div class="pc-top">
@@ -2169,13 +2184,15 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                                 <noscript><button class="btn small ghost" type="submit">Save</button></noscript>
                               </form>
                             ) : null}
-                            {unlinked && member.role === 'admin' ? (
+                            {lookalikes.length && member.role === 'admin' ? (
                               <form class="pc-form" method="post" action={`${base}/thread/${thread.id}/sender`}>
                                 <input type="hidden" name="email" value={g.from_email!} />
-                                <label class="pc-label">Not linked to any member yet</label>
-                                <select class="input small" name="member_id">
-                                  {activeList.map((m) => <option value={String(m.id)}>{memberName(m)}</option>)}
-                                </select>
+                                <label class="pc-label">Is this {memberName(lookalikes[0])}?</label>
+                                {lookalikes.length > 1 ? (
+                                  <select class="input small" name="member_id">
+                                    {lookalikes.map((m) => <option value={String(m.id)}>{memberName(m)}</option>)}
+                                  </select>
+                                ) : <input type="hidden" name="member_id" value={String(lookalikes[0].id)} />}
                                 <div class="pc-btns">
                                   <button class="btn small" name="act" value="link" type="submit" data-busy="Linking…">It's them</button>
                                   <button class="btn small ghost" name="act" value="external" type="submit" data-busy="Saving…">Not a teammate</button>
