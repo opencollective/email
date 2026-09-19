@@ -1,9 +1,6 @@
 import crypto from 'node:crypto'
 import { cfg } from './config.js'
-import {
-  addEvent, all, get, getThread, lastInboundMessage, messageAttachments, run, setStatus, storeAttachment,
-  type Collective, type Member, type Message,
-} from './db.js'
+import { addEvent, all, get, getThread, lastInboundMessage, messageAttachments, run, setStatus, storeAttachment, type Collective, type Member, type Message, type Thread } from './db.js'
 import { readBlob } from './storage.js'
 import { escapeHtml, now, splitQuotedTail } from './util.js'
 import { assertCanSend, assertRecipientCap } from './billing.js'
@@ -41,6 +38,35 @@ const quotedHtml = (history: string) => history
   ? `<blockquote style="margin:16px 0 0;padding-left:12px;border-left:2px solid #d5d7da;color:#6b7280;white-space:pre-wrap;font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:13px">${escapeHtml(history.trim())}</blockquote>`
   : ''
 
+/** Who a reply copies by default — reply-all, the way any mail client would:
+ *  everyone on the thread's sticky Cc plus everyone the last inbound message
+ *  was addressed or copied to, minus the people who are "us" (the inbox's
+ *  own addresses, anything at our domain such as reply tokens, the team and
+ *  its aliases) and minus the counterpart, who is the To. */
+export async function replyAllCc(collective: Collective, thread: Thread, lastIn?: Message | null): Promise<string[]> {
+  const last = lastIn === undefined ? await lastInboundMessage(thread.id) : lastIn
+  const parse = (json: string | null | undefined): string[] => {
+    try { return (JSON.parse(json || '[]') as unknown[]).filter((x): x is string => typeof x === 'string') } catch { return [] }
+  }
+  const [members, aliases] = await Promise.all([
+    all<{ email: string }>('SELECT email FROM members WHERE collective_id = ? AND removed_at IS NULL', [collective.id]),
+    all<{ email: string }>('SELECT email FROM member_aliases WHERE collective_id = ?', [collective.id]),
+  ])
+  const us = new Set<string>([
+    `${collective.slug}@${cfg.emailDomain}`,
+    collective.custom_domain && collective.custom_local ? `${collective.custom_local}@${collective.custom_domain}` : '',
+    ...members.map((m) => m.email), ...aliases.map((a) => a.email),
+    thread.counterpart_email || '', last?.from_email || '',
+  ].map((e) => e.toLowerCase()).filter(Boolean))
+  const out: string[] = []
+  for (const raw of [...parse(thread.cc_json), ...parse(last?.to_json), ...parse(last?.cc_json)]) {
+    const e = raw.trim().toLowerCase()
+    if (!e.includes('@') || us.has(e) || e.endsWith(`@${cfg.emailDomain}`) || out.includes(e)) continue
+    out.push(e)
+  }
+  return out
+}
+
 export async function sendCollectiveReply(
   collective: Collective,
   threadId: number,
@@ -48,7 +74,8 @@ export async function sendCollectiveReply(
   member: Member,
   via: 'web' | 'email',
   attachments: OutAttachment[] = [],
-  cc: string[] = [],
+  /** Omit for reply-all (see replyAllCc); the web form passes what it showed. */
+  ccIn?: string[],
   bcc: string[] = [],
   /** People already holding a copy — a member's own Cc from their mail client.
    *  Stored on the message so the archive is honest about who is in the
@@ -61,6 +88,8 @@ export async function sendCollectiveReply(
   const lastIn = await lastInboundMessage(threadId)
   const to = thread.counterpart_email || lastIn?.from_email
   if (!to) throw new Error('This thread has no external sender to reply to.')
+  const copied = new Set(alreadyCopied.map((e) => e.toLowerCase()))
+  const cc = (ccIn ?? await replyAllCc(collective, thread, lastIn)).filter((e) => !copied.has(e.toLowerCase()))
   assertRecipientCap(collective, 1 + cc.length + bcc.length)
 
   let body = text.trim()

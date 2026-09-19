@@ -814,6 +814,21 @@ if (typingEl) {
   setInterval(poll, 12000);
 }
 
+// "copying …" under Send mirrors the Cc line, so what the footer promises is
+// always what the field holds — edited, emptied or added to.
+document.querySelectorAll('form[data-pane=reply] input[name="cc"]').forEach((cc) => {
+  const form = cc.closest('form');
+  const echo = form && form.querySelector('[data-cc-echo]');
+  if (!echo) return;
+  const sync = () => {
+    const list = cc.value.split(/[,;]/).map((s) => s.trim()).filter(Boolean);
+    echo.textContent = list.join(', ');
+    echo.parentElement.hidden = list.length === 0;
+  };
+  cc.addEventListener('input', sync);
+  cc.addEventListener('change', sync);
+});
+
 // Apple-Mail Cc/Bcc line: the expanded rows fold back as soon as attention
 // moves on — to the body, the To line or the subject — unless a Cc/Bcc was
 // actually typed, in which case hiding it would hide a real recipient.
@@ -952,7 +967,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '88'
+export const ASSET_V = '89'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">

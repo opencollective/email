@@ -16,7 +16,7 @@ import {
   accountsFromCookie, checkCode, createSession, destroySession, issueCode,
   type Account, type LoginCodeRow,
 } from '../auth.js'
-import { forwardMessage, outboundFrom, sendCollectiveReply, sendComposed, signatureFor } from '../outbound.js'
+import { forwardMessage, outboundFrom, replyAllCc, sendCollectiveReply, sendComposed, signatureFor } from '../outbound.js'
 import { digestTick, receivingAddress, sendOnboarding, trialTick } from '../notify.js'
 import { mentionLabels, noteParts } from '../mentions.js'
 import { addNote } from '../notes.js'
@@ -1906,8 +1906,9 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   const collectiveAddr = outboundFrom(collective).fromAddress
   // matching rule for this thread (newsletters & co.) — drives HTML display
   const rule = findMatchingRule(rulesAll, thread.counterpart_email, thread.subject)
-  // Cc sticks to the thread (everyone keeps being copied) but stays editable
-  const threadCc: string[] = JSON.parse(thread.cc_json || '[]')
+  // reply-all by default: the thread's sticky Cc plus whoever the last
+  // inbound email was sent or copied to, minus us — editable before sending
+  const threadCc = await replyAllCc(collective, thread, [...msgs].reverse().find((m) => m.direction === 'inbound') ?? null)
   const signature = signatureFor(collective, member)
 
   // cross-references: sibling threads that started (or closed) after this
@@ -2384,10 +2385,10 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                 <label class="file-label"><Icon name="clip" /><span class="file-text" data-idle="Attach">Attach</span><input type="file" name="files" multiple class="file-input" /></label>
                 <span class="send-stack">
                   <button class="btn send-btn" type="submit" data-busy="Sending…">Send</button>
-                  <span class="fineprint send-note">
+                  <span class="fineprint send-note" data-send-note>
                     <span>Sending to <b>{thread.counterpart_email || 'unknown'}</b></span>
+                    {threadCc.length ? <span>copying <b data-cc-echo>{threadCc.join(', ')}</b></span> : <span hidden>copying <b data-cc-echo></b></span>}
                     <span>as <b>{collectiveAddr}</b></span>
-                    {threadCc.length ? <span>copying <b>{threadCc.join(', ')}</b></span> : null}
                   </span>
                 </span>
               </div>

@@ -485,7 +485,7 @@ export async function handleEmailReply(
   }
 
   try {
-    await sendCollectiveReply(collective, thread.id, draft, member, 'email', attachments, [], [], added)
+    await sendCollectiveReply(collective, thread.id, draft, member, 'email', attachments, undefined, [], added)
     const fresh = (await getThread(thread.id))!
     if (!fresh.assignee_member_id) await setAssignee(fresh, member.id, member.id, 'email_reply')
     await sendReplyConfirmation(collective, member, thread, thread.counterpart_email || 'the sender')
