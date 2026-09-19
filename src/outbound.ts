@@ -38,11 +38,19 @@ const quotedHtml = (history: string) => history
   ? `<blockquote style="margin:16px 0 0;padding-left:12px;border-left:2px solid #d5d7da;color:#6b7280;white-space:pre-wrap;font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:13px">${escapeHtml(history.trim())}</blockquote>`
   : ''
 
+/** Who a reply goes To: whoever wrote last from outside — when Vincent
+ *  starts a thread and Spencer is the last to write, the answer is to
+ *  Spencer, with Vincent copied. Falls back to the thread's counterpart. */
+export const replyTarget = (thread: Thread, lastIn?: Message | null): { email: string | null; name: string | null } =>
+  lastIn?.from_email
+    ? { email: lastIn.from_email, name: lastIn.from_name || (lastIn.from_email === thread.counterpart_email ? thread.counterpart_name : null) }
+    : { email: thread.counterpart_email, name: thread.counterpart_name }
+
 /** Who a reply copies by default — reply-all, the way any mail client would:
- *  everyone on the thread's sticky Cc plus everyone the last inbound message
- *  was addressed or copied to, minus the people who are "us" (the inbox's
- *  own addresses, anything at our domain such as reply tokens, the team and
- *  its aliases) and minus the counterpart, who is the To. */
+ *  the thread's counterpart, everyone on its sticky Cc and everyone the last
+ *  inbound message was addressed or copied to, minus the people who are "us"
+ *  (the inbox's own addresses, anything at our domain such as reply tokens,
+ *  the team and its aliases) and minus the To. */
 export async function replyAllCc(collective: Collective, thread: Thread, lastIn?: Message | null): Promise<string[]> {
   const last = lastIn === undefined ? await lastInboundMessage(thread.id) : lastIn
   const parse = (json: string | null | undefined): string[] => {
@@ -56,10 +64,10 @@ export async function replyAllCc(collective: Collective, thread: Thread, lastIn?
     `${collective.slug}@${cfg.emailDomain}`,
     collective.custom_domain && collective.custom_local ? `${collective.custom_local}@${collective.custom_domain}` : '',
     ...members.map((m) => m.email), ...aliases.map((a) => a.email),
-    thread.counterpart_email || '', last?.from_email || '',
+    replyTarget(thread, last).email || '',
   ].map((e) => e.toLowerCase()).filter(Boolean))
   const out: string[] = []
-  for (const raw of [...parse(thread.cc_json), ...parse(last?.to_json), ...parse(last?.cc_json)]) {
+  for (const raw of [thread.counterpart_email || '', ...parse(thread.cc_json), ...parse(last?.to_json), ...parse(last?.cc_json)]) {
     const e = raw.trim().toLowerCase()
     if (!e.includes('@') || us.has(e) || e.endsWith(`@${cfg.emailDomain}`) || out.includes(e)) continue
     out.push(e)
@@ -86,7 +94,7 @@ export async function sendCollectiveReply(
   if (!thread || thread.collective_id !== collective.id) throw new Error('Thread not found')
   await assertCanSend(collective)
   const lastIn = await lastInboundMessage(threadId)
-  const to = thread.counterpart_email || lastIn?.from_email
+  const to = replyTarget(thread, lastIn).email
   if (!to) throw new Error('This thread has no external sender to reply to.')
   const copied = new Set(alreadyCopied.map((e) => e.toLowerCase()))
   const cc = (ccIn ?? await replyAllCc(collective, thread, lastIn)).filter((e) => !copied.has(e.toLowerCase()))

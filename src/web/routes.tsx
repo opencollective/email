@@ -16,7 +16,7 @@ import {
   accountsFromCookie, checkCode, createSession, destroySession, issueCode,
   type Account, type LoginCodeRow,
 } from '../auth.js'
-import { forwardMessage, outboundFrom, replyAllCc, sendCollectiveReply, sendComposed, signatureFor } from '../outbound.js'
+import { forwardMessage, outboundFrom, replyAllCc, replyTarget, sendCollectiveReply, sendComposed, signatureFor } from '../outbound.js'
 import { digestTick, receivingAddress, sendOnboarding, trialTick } from '../notify.js'
 import { mentionLabels, noteParts } from '../mentions.js'
 import { addNote } from '../notes.js'
@@ -1917,9 +1917,21 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   const collectiveAddr = outboundFrom(collective).fromAddress
   // matching rule for this thread (newsletters & co.) — drives HTML display
   const rule = findMatchingRule(rulesAll, thread.counterpart_email, thread.subject)
-  // reply-all by default: the thread's sticky Cc plus whoever the last
-  // inbound email was sent or copied to, minus us — editable before sending
-  const threadCc = await replyAllCc(collective, thread, [...msgs].reverse().find((m) => m.direction === 'inbound') ?? null)
+  // reply-all by default: To whoever wrote last from outside, Cc the thread's
+  // counterpart, its sticky Cc and whoever that last email was sent or copied
+  // to, minus us — all editable before sending
+  const lastInbound = [...msgs].reverse().find((m) => m.direction === 'inbound') ?? null
+  const replyTo = replyTarget(thread, lastInbound)
+  const replyFirst = (replyTo.name || replyTo.email || 'the sender').split(' ')[0]
+  const threadCc = await replyAllCc(collective, thread, lastInbound)
+  // everyone from outside who is in this conversation, in order of appearance:
+  // each inbound sender (with their name), then anyone only ever copied
+  const people: { email: string; name: string | null }[] = []
+  for (const m of msgs) {
+    if (m.direction !== 'inbound' || !m.from_email || people.some((p) => p.email === m.from_email!.toLowerCase())) continue
+    people.push({ email: m.from_email.toLowerCase(), name: m.from_name || (m.from_email === thread.counterpart_email ? thread.counterpart_name : null) })
+  }
+  for (const e of [replyTo.email || '', ...threadCc]) if (e && !people.some((p) => p.email === e)) people.push({ email: e, name: e === thread.counterpart_email ? thread.counterpart_name : null })
   const signature = signatureFor(collective, member)
 
   // cross-references: sibling threads that started (or closed) after this
@@ -1987,7 +1999,9 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               <h1>{thread.subject}</h1>
               <p class="thread-meta">
                 {shortDate(thread.first_message_at)}
-                {thread.counterpart_email ? <> · <a class="sender-link" href={contactUrl(base, thread.counterpart_email, `${base}/thread/${thread.id}`)}>{thread.counterpart_name || thread.counterpart_email}</a>{thread.counterpart_name ? <span class="tm-mail"> · {thread.counterpart_email}</span> : null}</> : null}
+                {people.length ? <> · {people.map((p, i) => (
+                  <>{i ? ', ' : ''}<a class="sender-link" href={contactUrl(base, p.email, `${base}/thread/${thread.id}`)} title={p.email}>{p.name || p.email}</a></>
+                ))}</> : null}
               </p>
             </div>
           </div>
@@ -2346,7 +2360,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
           <div class="composer" id="composer">
             {canSendRole(member.role) ? (
               <div class="tabs">
-                <button class="tab on" data-tab="reply" type="button"><Icon name="mail" /> {draftMsg ? 'Edit draft' : `Reply to ${counterpartFirst}`}</button>
+                <button class="tab on" data-tab="reply" type="button"><Icon name="mail" /> {draftMsg ? 'Edit draft' : `Reply to ${replyFirst}`}</button>
                 <button class="tab" data-tab="note" type="button"><Icon name="note" /> Internal note</button>
               </div>
             ) : null}
@@ -2387,7 +2401,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             ) : null}
             {canSendRole(member.role) && !draftMsg ? (
             <form method="post" action={`${base}/thread/${thread.id}/reply`} data-pane="reply" enctype="multipart/form-data">
-              <div class="c-row"><span class="c-k">To</span><span class="c-static c-to">{thread.counterpart_email || 'unknown'}</span></div>
+              <div class="c-row"><span class="c-k">To</span><span class="c-static c-to" title={replyTo.name || undefined}>{replyTo.email || 'unknown'}</span></div>
               {/* same quiet line as compose; open when the thread carries a
                   sticky Cc — hiding a recipient that will be copied would lie */}
               <details class="ccb" open={threadCc.length > 0}>
@@ -2397,13 +2411,13 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                 <div class="c-row"><span class="c-k">From</span><span class="c-static">{collectiveAddr}</span></div>
               </details>
               {/* the sign-off is in the text, so it can be edited or deleted before sending */}
-              <textarea name="body" rows={6} placeholder={`Write to ${counterpartFirst}…`} data-draft="reply" data-signature={signature} required>{`\n\n${signature}`}</textarea>
+              <textarea name="body" rows={6} placeholder={`Write to ${replyFirst}…`} data-draft="reply" data-signature={signature} required>{`\n\n${signature}`}</textarea>
               <div class="actions">
                 <label class="file-label"><Icon name="clip" /><span class="file-text" data-idle="Attach">Attach</span><input type="file" name="files" multiple class="file-input" /></label>
                 <span class="send-stack">
                   <button class="btn send-btn" type="submit" data-busy="Sending…">Send</button>
                   <span class="fineprint send-note" data-send-note>
-                    <span>Sending to <b>{thread.counterpart_email || 'unknown'}</b></span>
+                    <span>Sending to <b>{replyTo.email || 'unknown'}</b></span>
                     {threadCc.length ? <span>copying <b data-cc-echo>{threadCc.join(', ')}</b></span> : <span hidden>copying <b data-cc-echo></b></span>}
                     <span>as <b>{collectiveAddr}</b></span>
                   </span>
@@ -2566,7 +2580,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               return (
                 <>
                   {canSendRole(member.role)
-                    ? <a class="next-link" href="#composer">Reply to {counterpartFirst} →</a>
+                    ? <a class="next-link" href="#composer">Reply to {replyFirst} →</a>
                     : null}
                   <p class="next-when">
                     Last message {when}

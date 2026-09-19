@@ -863,9 +863,9 @@ iframe.msg-frame {
   font-family: var(--mono); font-size: 10.5px; text-transform: uppercase;
   letter-spacing: 1px; color: var(--muted); width: 52px; flex: none;
 }
-.c-in { border: none; background: none; padding: 3px 0; flex: 1; min-width: 0; font: inherit; font-size: 14.5px; color: var(--ink); }
+.c-in { border: none; background: none; padding: 3px 0; flex: 1; min-width: 0; font: inherit; font-family: var(--mono); font-size: 13px; color: var(--ink); }
 .c-in:focus { outline: none; }
-@media (max-width: 560px) { .c-in { font-size: 16px; } } /* iOS zoom guard */
+@media (max-width: 560px) { .c-in { font-size: 16px; } .c-static { font-size: 16px; } } /* iOS zoom guard — and the To line keeps pace */
 .ccb summary {
   list-style: none; cursor: pointer; font-size: 12px; color: var(--muted);
   padding: 5px 14px; border-bottom: 1.5px solid var(--line-soft);

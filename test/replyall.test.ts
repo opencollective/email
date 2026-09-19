@@ -32,7 +32,41 @@ test('reply-all: everyone on the last inbound email, minus us, minus the sender'
   await inbound(fx.threadId, ['hello@chb.test', 'Fellow@sma.test'], ['cedric@chb.test', 'leen.private@gmail.test', 'anna@sma.test', `${fx.slug}@collective.email`, 'reply-abc@collective.email', 'vincent@gmail.test'])
   const thread = (await get<any>('SELECT * FROM threads WHERE id = ?', [fx.threadId]))!
   assert.deepEqual(await replyAllCc(fx.collective, thread), ['fellow@sma.test', 'anna@sma.test'],
-    'external people only: not the inbox, not our domain, not the team or its aliases, not the counterpart')
+    'external people only: not the inbox, not our domain, not the team or its aliases, not the sender (who is the To)')
+})
+
+test('the last outside writer is the To; the thread starter and everyone else are Cc', async () => {
+  const fx = await fixture()
+  await inbound(fx.threadId, ['hello@chb.test'], ['spencer@sma.test', 'lieve@sma.test'], now() - 100)
+  await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_email, from_name, to_json, cc_json, body_text, sent_at, created_at)
+    VALUES (?, ?, 'inbound', 'spencer@sma.test', 'Spencer Heijnen', '["hello@chb.test"]', '["vincent@gmail.test","lieve@sma.test"]', 'me again', ?, ?)`,
+    [fx.threadId, `<ra-${uniq()}@x>`, now(), now()])
+  const thread = (await get<any>('SELECT * FROM threads WHERE id = ?', [fx.threadId]))!
+  const { replyTarget } = await import('../src/outbound.js')
+  assert.deepEqual(replyTarget(thread, await (await import('../src/db.js')).lastInboundMessage(fx.threadId)), { email: 'spencer@sma.test', name: 'Spencer Heijnen' })
+  assert.deepEqual(await replyAllCc(fx.collective, thread), ['vincent@gmail.test', 'lieve@sma.test'])
+
+  const html = await (await app.request(`/inbox/${fx.slug}/thread/${fx.threadId}`, { headers: { cookie: `requests_sid=${fx.sid}` } })).text()
+  const form = html.slice(html.indexOf('id="composer"'), html.indexOf('data-pane="note"'))
+  assert.match(form, /Reply to Spencer</)
+  assert.match(form, /class="c-static c-to" title="Spencer Heijnen">spencer@sma.test</)
+  assert.match(form, /name="cc" value="vincent@gmail.test, lieve@sma.test"/)
+  assert.match(form, /Sending to <b>spencer@sma.test<\/b>/)
+  // the header lists everyone in the conversation, names where we have them
+  const meta = html.slice(html.indexOf('class="thread-meta"'), html.indexOf('</p>', html.indexOf('class="thread-meta"')))
+  assert.match(meta, /title="vincent@gmail.test">Vincent</)
+  assert.match(meta, /title="spencer@sma.test">Spencer Heijnen</)
+  assert.match(meta, /title="lieve@sma.test">lieve@sma.test</)
+  assert.doesNotMatch(meta, /tm-mail/)
+
+  // and the email really goes to Spencer
+  await app.request(`/inbox/${fx.slug}/thread/${fx.threadId}/reply`, {
+    method: 'POST', headers: { cookie: `requests_sid=${fx.sid}`, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ body: 'Dag Spencer', cc: 'vincent@gmail.test, lieve@sma.test', bcc: '' }),
+  })
+  const sent = (await get<any>("SELECT * FROM messages WHERE thread_id = ? AND direction = 'outbound' ORDER BY id DESC LIMIT 1", [fx.threadId]))!
+  assert.deepEqual(JSON.parse(sent.to_json), ['spencer@sma.test'])
+  assert.deepEqual(JSON.parse(sent.cc_json), ['vincent@gmail.test', 'lieve@sma.test'])
 })
 
 test('the reply form is reply-all: Cc prefilled and open, the footer names everyone, sending honours it', async () => {
