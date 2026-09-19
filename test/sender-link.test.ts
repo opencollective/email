@@ -23,7 +23,8 @@ test('linking an unattributed answer to a member is only offered when the name m
   await msg('someone@elsewhere.test', 'Someone Else')  // nobody by that name here
 
   const html = await (await app.request(`/inbox/${slug}/thread/${t.lastId}`, { headers: { cookie: `requests_sid=${await createSession(admin)}` } })).text()
-  const cards = html.split('class="person-card"').slice(1)
+  // each card ends at its message body — the page after it is not the card
+  const cards = html.split('class="person-card"').slice(1).map((c) => c.slice(0, c.indexOf('class="msg-body"')))
   const lieve = cards.find((c) => c.includes('lieve@moralambition.test'))!
   const other = cards.find((c) => c.includes('someone@elsewhere.test'))!
   assert.match(lieve, /Is this Liève Poulis\?/, 'the lookalike is named, accents and all')
