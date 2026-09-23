@@ -250,6 +250,9 @@ section h2 { font-size: clamp(25px, 3.6vw, 36px); letter-spacing: -0.8px; margin
 .roles-table th, .roles-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .roles-table th { color: var(--navy); white-space: nowrap; }
 .about-sig { margin-top: 28px; color: var(--muted); }
+.about-links { color: var(--muted); }
+.facts-table th { width: 34%; font-weight: 600; }
+.facts-table td { color: var(--body); }
 
 /* footer */
 .footer {

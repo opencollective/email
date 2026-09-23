@@ -129,3 +129,15 @@ test('the collectives page lists addresses and offers claiming another', async (
   assert.match(html, /href="\/claim"/)
   assert.doesNotMatch(html, /#waitlist/, 'the dead waitlist anchor is gone')
 })
+
+test('the About page follows the crawlable structure: value prop, sections, key facts table, FAQ, Organization JSON-LD', async () => {
+  const html = await (await app.request('/about', { headers: { cookie: 'cur=EUR' } })).text()
+  assert.match(html, /<p class="lede"><b>collective\.email<\/b> is a shared email inbox/)
+  for (const id of ['what', 'why', 'who', 'founder', 'how', 'facts', 'faq']) assert.match(html, new RegExp(`<section id="${id}"`), id)
+  assert.match(html, /<th scope="row">Founder<\/th>/)
+  assert.match(html, /<th scope="row">Pricing<\/th><td>Collective/)
+  assert.match(html, /<h3>Is collective\.email free\?<\/h3>/)
+  const ld = JSON.parse(html.match(/<script type="application\/ld\+json">(.*?)<\/script>/s)![1])
+  assert.equal(ld['@type'], 'Organization')
+  assert.equal(ld.founder.name, 'Xavier Damman')
+})
