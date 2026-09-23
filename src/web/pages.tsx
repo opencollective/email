@@ -1,6 +1,7 @@
 /** @jsxImportSource hono/jsx */
 import type { FC } from 'hono/jsx'
 import { MarketingPage } from './home.js'
+import { aboutContent, aboutJsonLd } from './about-content.js'
 
 const Q: FC<{ q: string; children?: unknown }> = (p) => (
   <details class="faq-item">
@@ -176,128 +177,56 @@ export const DocsPage: FC<{ currency?: 'USD' | 'EUR' }> = ({ currency = 'USD' })
   )
 }
 
-export const AboutPage: FC<{ currency?: 'USD' | 'EUR' }> = ({ currency = 'USD' }) => {
-  const s = currency === 'EUR' ? '€' : '$'
-  const facts: [string, unknown][] = [
-    ['Name', 'collective.email'],
-    ['What it is', 'A shared email inbox for collectives, communities and citizen initiatives'],
-    ['Founded', 'July 2026, Brussels, Belgium'],
-    ['Founder', <a href="https://x.com/xdamman" target="_blank" rel="noopener">Xavier Damman</a>],
-    ['Headquarters', 'Brussels, Belgium (remote team)'],
-    ['Pricing', `Collective ${s}10/month or ${s}100/year · Pro ${s}20/month or ${s}200/year · one month free, no card`],
-    ['Free tier', 'Unlimited readers on every plan — you pay only for the people who answer'],
-    ['Plan limits', 'Collective: 10 senders, 1,000 replies a month · Pro: unlimited senders, 10,000 replies a month, your own domain'],
-    ['Alternatives', 'A shared Gmail password, Google Groups, Front, Missive, Help Scout'],
-    ['Email infrastructure', 'Resend (EU region); addresses live at collective.email or your own domain'],
-    ['Data location', 'European Union'],
-    ['Support', <a href="mailto:hello@collective.email">hello@collective.email</a>],
-    ['Docs for people', <a href="/docs">collective.email/docs</a>],
-    ['Docs for AI agents', <a href="/llms.txt">collective.email/llms.txt</a>],
-  ]
-  const ld = {
-    '@context': 'https://schema.org',
-    '@type': 'Organization',
-    name: 'collective.email',
-    url: 'https://collective.email',
-    description: 'A shared email inbox for collectives: one address the whole community can read and answer, with assignments, internal notes and @mentions.',
-    foundingDate: '2026-07',
-    founder: { '@type': 'Person', name: 'Xavier Damman', sameAs: ['https://x.com/xdamman', 'https://github.com/xdamman'] },
-    address: { '@type': 'PostalAddress', addressLocality: 'Brussels', addressCountry: 'BE' },
-    email: 'hello@collective.email',
+/** The tiny Markdown subset the About content is written in — **bold**,
+ *  `code`, [text](url) — rendered to JSX. Anything else is plain text. */
+const Md: FC<{ t: string }> = ({ t }) => {
+  const out: unknown[] = []
+  const re = /\*\*(.+?)\*\*|`([^`]+)`|\[([^\]]+)\]\(([^)]+)\)/g
+  let i = 0
+  for (const m of t.matchAll(re)) {
+    if (m.index! > i) out.push(t.slice(i, m.index))
+    if (m[1]) out.push(<b>{m[1]}</b>)
+    else if (m[2]) out.push(<code>{m[2]}</code>)
+    else out.push(<a href={m[4]} target={m[4].startsWith('http') ? '_blank' : undefined} rel={m[4].startsWith('http') ? 'noopener' : undefined}><Md t={m[3]} /></a>)
+    i = m.index! + m[0].length
   }
+  if (i < t.length) out.push(t.slice(i))
+  return <>{out}</>
+}
+
+export const AboutPage: FC<{ currency?: 'USD' | 'EUR' }> = ({ currency = 'USD' }) => {
+  const a = aboutContent(currency)
   return (
   <MarketingPage
     title="About — collective.email"
     og="about"
     description="collective.email is a shared email inbox for collectives: one address the whole community can read and answer, no password to share. What it does, who it is for, who is behind it, and the key facts."
+    alternateMarkdown="/about.md"
   >
-    <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(ld) }} />
-    <h1>About collective.email</h1>
-    <p class="lede"><b>collective.email</b> is a shared email inbox that gives a collective — a community, a citizen initiative, an open source project, a coworking space — one address the whole group can read and answer, without sharing a password.</p>
-
-    <section id="what">
-      <h2>What it does</h2>
-      <h3>One address, everyone signed in as themselves</h3>
-      <p>You claim <code>yourcollective@collective.email</code> (or connect <code>hello@yourdomain.org</code>). Every member signs in with their own email. There is no shared password to paste in a group chat, and nobody gets locked out when someone else turns on two-factor.</p>
-      <h3>Every conversation is visibly handled</h3>
-      <p>A thread is assigned to one person in a click, and everyone can see who has it. Nothing falls through because "someone" was going to answer.</p>
-      <h3>The internal discussion lives next to the email</h3>
-      <p>"Who knows this person?", "Can you take this one?" — internal notes and @mentions sit right under the message, invisible to the sender.</p>
-      <h3>It works from your own mailbox</h3>
-      <p>Members get notified by email and can answer by replying to the notification. The inbox works without anyone opening the web app.</p>
-      <h3>AI agents can join as members</h3>
-      <p>Invite an agent with a link, give it a role, and it reads the inbox, leaves notes and drafts replies through <a href="/llms.txt">a plain API</a> — never sending on its own.</p>
-    </section>
-
-    <section id="why">
-      <h2>How it is different</h2>
-      <ul>
-        <li><b>Built for collectives, not support teams.</b> Front, Missive and Help Scout are priced per agent seat for companies. Here your whole community reads for free, forever; you pay only for the handful of people who answer.</li>
-        <li><b>The inbox belongs to the group.</b> Unlike a shared Gmail account, no single person owns the login, the phone number or the recovery. Members come and go; the address stays.</li>
-        <li><b>Conversations, not tickets.</b> No ticket numbers, no SLAs, no "your request has been received". People write to a collective and get a human answer, signed by a person, sent from the collective.</li>
-        <li><b>No ads, no investors.</b> Sustained by the collectives that use it, at a price a neighbourhood project can afford. Referring another collective earns you a month of service.</li>
-        <li><b>Open to agents on equal terms.</b> An AI agent joins with the same invitation link and the same roles as a person, with strict limits: it can never send email as the collective.</li>
-      </ul>
-    </section>
-
-    <section id="who">
-      <h2>Who it is for</h2>
-      <ul>
-        <li><b>Citizen initiatives and associations</b> that need a public address on day one and have three people who will actually answer this month.</li>
-        <li><b>Coworking spaces and third places</b> handling room bookings, memberships and event requests as a team.</li>
-        <li><b>Open source projects and tech communities</b> where "email the maintainers" should reach more than one maintainer.</li>
-        <li><b>Neighbourhood, school and parent groups</b> where the person who created the Gmail account has since moved on.</li>
-        <li><b>Small collectives on <a href="https://opencollective.com" target="_blank" rel="noopener">Open Collective</a></b> — your existing name is verified and reserved for you.</li>
-      </ul>
-    </section>
-
-    <section id="founder">
-      <h2>Who is behind it</h2>
-      <p>collective.email is made by <b>Xavier Damman</b>, who co-founded <a href="https://opencollective.com" target="_blank" rel="noopener">Open Collective</a>, where collectives share their money the way they share their inbox here. It started as the shared inbox of the <a href="https://commonshub.brussels" target="_blank" rel="noopener">Commons Hub</a> in Brussels and is shaped daily by the first collectives using it.</p>
-      <p>The backstory: twenty years of starting citizen initiatives and joining other people's, and the exact same week-one problem every time. Someone creates <code>hello@ourcollective</code> on Gmail, it feels solved, and then the real questions arrive. How do we share the password? Who actually checks it? In practice always the same person, who becomes the inbox — and when they are on holiday, or burned out, messages from real people go unanswered and the collective looks dead from the outside. The helpdesks that fix this are built for companies with agents and tickets. A citizen initiative has fifteen people who care and no budget line for "customer support software". This is the small tool he wished existed each of those times.</p>
-      <p class="about-links">
-        <a href="https://x.com/xdamman" target="_blank" rel="noopener">@xdamman on X</a> ·{' '}
-        <a href="https://github.com/xdamman" target="_blank" rel="noopener">GitHub</a> ·{' '}
-        <a href="mailto:hello@collective.email">hello@collective.email</a>
-      </p>
-    </section>
-
-    <section id="how">
-      <h2>How we work</h2>
-      <ul>
-        <li><b>Getting started takes a minute.</b> Claim an address, and it is live and receiving immediately with a month free, no card. Invite the rest of the collective from inside the inbox.</li>
-        <li><b>Support is the product.</b> Write to <a href="mailto:hello@collective.email">hello@collective.email</a> — a shared inbox, of course — and a human answers, usually the same day on weekdays.</li>
-        <li><b>Your data is yours.</b> Every collective can download its full archive as a zip at any time. Closing an inbox is reversible for 30 days, then everything is deleted.</li>
-        <li><b>Shipped with its users.</b> Improvements come from the collectives using it; if something is missing, say so and it is often live within days.</li>
-      </ul>
-    </section>
-
+    <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(aboutJsonLd()) }} />
+    <h1>{a.title}</h1>
+    <p class="lede"><Md t={a.lede} /></p>
+    {a.sections.map((sec) => (
+      <section id={sec.id}>
+        <h2>{sec.title}</h2>
+        {sec.blocks.map((b) =>
+          'h3' in b ? <><h3>{b.h3}</h3><p><Md t={b.p} /></p></>
+          : 'li' in b ? <ul>{b.li.map((l) => <li><Md t={l} /></li>)}</ul>
+          : <p class={sec.id === 'founder' && b.p.startsWith('[') ? 'about-links' : undefined}><Md t={b.p} /></p>)}
+      </section>
+    ))}
     <section id="facts">
       <h2>Key facts</h2>
       <table class="roles-table facts-table">
         <tbody>
-          {facts.map(([k, v]) => <tr><th scope="row">{k}</th><td>{v}</td></tr>)}
+          {a.facts.map(([k, v]) => <tr><th scope="row">{k}</th><td><Md t={v} /></td></tr>)}
         </tbody>
       </table>
     </section>
-
     <section id="faq">
       <h2>Frequently asked questions</h2>
-      <h3>Is collective.email free?</h3>
-      <p>Reading is free for everyone, forever. Answering as the collective costs {s}10 a month on the Collective plan (up to 10 senders) or {s}20 on Pro (unlimited senders, your own domain). Every address starts with a month free, no card needed.</p>
-      <h3>Do we need to share a password?</h3>
-      <p>No. Everyone signs in with their own email address and a one-time code. Access is per person and can be removed per person.</p>
-      <h3>Can we use our own domain?</h3>
-      <p>Yes, on the Pro plan: connect <code>hello@yourdomain.org</code>, add a few DNS records, and replies go out from it. One domain can serve several inboxes.</p>
-      <h3>Can people answer from their own mail client?</h3>
-      <p>Yes. Reply to the notification email and the answer goes out as the collective; the thread in the inbox stays complete.</p>
-      <h3>How is this different from a Google Group?</h3>
-      <p>A group forwards mail to everyone and then nobody knows who answered. Here a thread is assigned, its state is visible, the internal discussion stays internal, and the reply is sent by the collective rather than from a personal address.</p>
-      <h3>Where is our data stored?</h3>
-      <p>In the European Union. You can export the whole archive at any time.</p>
-      <h3>Can an AI agent help with the inbox?</h3>
-      <p>Yes. An admin invites an agent with a link; it can read, leave internal notes and prepare drafts according to its role, and it can never send email on its own. Details are at <a href="/llms.txt">/llms.txt</a>.</p>
-      <p class="about-sig">More questions? See the <a href="/faq">full FAQ</a> or write to <a href="mailto:hello@collective.email">hello@collective.email</a>.</p>
+      {a.faq.map((f) => <><h3>{f.q}</h3><p><Md t={f.a} /></p></>)}
+      <p class="about-sig">More questions? See the <a href="/faq">full FAQ</a> or write to <a href="mailto:hello@collective.email">hello@collective.email</a>. Prefer plain text? This page is also served as <a href="/about.md">Markdown</a>.</p>
     </section>
   </MarketingPage>
   )

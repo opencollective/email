@@ -141,3 +141,31 @@ test('the About page follows the crawlable structure: value prop, sections, key 
   assert.equal(ld['@type'], 'Organization')
   assert.equal(ld.founder.name, 'Xavier Damman')
 })
+
+test('/about.md: the same page as Markdown, linked from the HTML, and served on /about when asked for text/markdown', async () => {
+  const md = await app.request('/about.md')
+  assert.equal(md.status, 200)
+  assert.match(md.headers.get('content-type') || '', /^text\/markdown/)
+  const text = await md.text()
+  assert.match(text, /^# About collective\.email\n\n\*\*collective\.email\*\* is a shared email inbox/)
+  assert.match(text, /\n## What it does\n\n### One address, everyone signed in as themselves\n/)
+  assert.match(text, /\n\| Founder \| \[Xavier Damman\]\(https:\/\/x\.com\/xdamman\) \|\n/)
+  assert.match(text, /\n### Is collective\.email free\?\n/)
+  assert.doesNotMatch(text, /\]\(\//, 'links are absolute so the file stands alone')
+  assert.match(text, /\]\(http:\/\/test\.local\/llms\.txt\)/)
+
+  // the HTML page points at it, both in the head and in a Link header
+  const html = await app.request('/about')
+  assert.match(html.headers.get('link') || '', /about\.md>; rel="alternate"; type="text\/markdown"/)
+  assert.match(await html.text(), /<link rel="alternate" type="text\/markdown" href="\/about\.md"/)
+
+  // content negotiation: an LLM crawler asking for markdown gets markdown at /about itself
+  const neg = await app.request('/about', { headers: { accept: 'text/markdown' } })
+  assert.match(neg.headers.get('content-type') || '', /^text\/markdown/)
+  assert.match(neg.headers.get('link') || '', /about>; rel="alternate"; type="text\/html"/)
+  // a browser that lists html first still gets html, even if markdown is in its Accept list
+  const browser = await app.request('/about', { headers: { accept: 'text/html,application/xhtml+xml,text/markdown;q=0.5' } })
+  assert.match(browser.headers.get('content-type') || '', /^text\/html/)
+  // and the HTML still says what the Markdown says
+  assert.match(await (await app.request('/about')).text(), /Reading is free for everyone, forever/)
+})

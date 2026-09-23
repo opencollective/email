@@ -39,6 +39,7 @@ import { dayPhrase, escapeHtml, excerpt, fmtDate, fmtDateTime, initials, now, ra
 import { AssigneeChip, AuthCard, Avatar, eventText, Icon, Shell, StatusChip, TimeAgo, Page } from './ui.js'
 import { HomePage } from './home.js'
 import { AboutPage, DocsPage, FaqPage } from './pages.js'
+import { aboutMarkdown } from './about-content.js'
 import {
   createResendDomain, deleteResendDomain, domainVerifyTick, enableDomainReceiving, getResendDomain,
   validDomainName, validLocalPart, verifyResendDomain,
@@ -382,7 +383,23 @@ const CodeForm = (p: { email: string; error?: string; next?: string | null; sent
 app.get('/homepage', (c) => c.html(<HomePage currency={visitorCurrency(c)} />))
 app.get('/faq', (c) => c.html(<FaqPage currency={visitorCurrency(c)} />))
 app.get('/docs', (c) => c.html(<DocsPage currency={visitorCurrency(c)} />))
-app.get('/about', (c) => c.html(<AboutPage currency={visitorCurrency(c)} />))
+/** /about is also served as Markdown: at /about.md, or from /about itself
+ *  when the client asks for text/markdown (LLM crawlers and agents do). */
+const aboutMd = (c: Context) => {
+  c.header('Content-Type', 'text/markdown; charset=utf-8')
+  c.header('Link', `<${cfg.baseUrl}/about>; rel="alternate"; type="text/html"`)
+  c.header('Vary', 'Accept')
+  return c.body(aboutMarkdown(visitorCurrency(c), cfg.baseUrl))
+}
+app.get('/about.md', aboutMd)
+app.get('/about', (c) => {
+  const accept = c.req.header('accept') || ''
+  const wantsMd = accept.includes('text/markdown') && !accept.split(',')[0].includes('text/html')
+  if (wantsMd) return aboutMd(c)
+  c.header('Link', `<${cfg.baseUrl}/about.md>; rel="alternate"; type="text/markdown"`)
+  c.header('Vary', 'Accept')
+  return c.html(<AboutPage currency={visitorCurrency(c)} />)
+})
 
 app.get('/login', (c) => {
   const next = safeNext(c.req.query('next'))
@@ -5391,6 +5408,7 @@ Docs:         ${base}/docs   Pricing & FAQ:   ${base}/faq
 app.get('/robots.txt', (c) => c.text(`User-agent: *
 Allow: /
 
+# About the company (Markdown): ${cfg.baseUrl}/about.md
 # Machine-readable guide for AI agents: ${cfg.baseUrl}/llms.txt
 # Agents can JOIN a collective (read threads, add internal notes, propose
 # draft replies) via a one-time invitation URL — full skill: ${cfg.baseUrl}/skill.md

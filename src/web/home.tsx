@@ -359,7 +359,7 @@ const Foot: FC = () => (
 )
 
 /** Shell for the marketing/content pages — same head, nav and footer as the homepage. */
-export const MarketingPage: FC<{ title: string; description: string; og?: string; children?: unknown }> = (p) => (
+export const MarketingPage: FC<{ title: string; description: string; og?: string; alternateMarkdown?: string; children?: unknown }> = (p) => (
   <html lang="en">
     <head>
       <meta charset="utf-8" />
@@ -375,6 +375,7 @@ export const MarketingPage: FC<{ title: string; description: string; og?: string
       <meta property="og:image:width" content="1200" />
       <meta property="og:image:height" content="630" />
       <meta name="twitter:card" content="summary_large_image" />
+      {p.alternateMarkdown ? <link rel="alternate" type="text/markdown" href={p.alternateMarkdown} title="This page as Markdown" /> : null}
       <link rel="icon" href="/static/icon-192.png" type="image/png" />
       <link rel="manifest" href="/manifest.webmanifest" />
       <link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
