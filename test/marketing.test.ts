@@ -168,4 +168,7 @@ test('/about.md: the same page as Markdown, linked from the HTML, and served on 
   assert.match(browser.headers.get('content-type') || '', /^text\/html/)
   // and the HTML still says what the Markdown says
   assert.match(await (await app.request('/about')).text(), /Reading is free for everyone, forever/)
+  const rendered = await (await app.request('/about')).text()
+  assert.match(rendered, /<b>Small collectives on <a href="https:\/\/opencollective\.com"[^>]*>Open Collective<\/a><\/b>/, 'a link inside bold renders, not raw markdown')
+  assert.doesNotMatch(rendered, /\]\(https?:/, 'no raw markdown links anywhere on the page')
 })

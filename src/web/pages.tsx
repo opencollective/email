@@ -185,7 +185,7 @@ const Md: FC<{ t: string }> = ({ t }) => {
   let i = 0
   for (const m of t.matchAll(re)) {
     if (m.index! > i) out.push(t.slice(i, m.index))
-    if (m[1]) out.push(<b>{m[1]}</b>)
+    if (m[1]) out.push(<b><Md t={m[1]} /></b>) // links can sit inside bold
     else if (m[2]) out.push(<code>{m[2]}</code>)
     else out.push(<a href={m[4]} target={m[4].startsWith('http') ? '_blank' : undefined} rel={m[4].startsWith('http') ? 'noopener' : undefined}><Md t={m[3]} /></a>)
     i = m.index! + m[0].length
