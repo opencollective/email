@@ -1447,3 +1447,7 @@ kbd {
 .chip.deleted-tag { color: var(--danger); border-color: var(--danger); }
 .tag-chip.deleted-chip { color: var(--danger); }
 @media (max-width: 900px) { .deleted-note { margin: 4px 14px 10px; } .thread-deleted { margin: 12px 12px 0; } }
+
+/* domain page: provider-specific forwarding steps */
+.receive-card .how { font-size: 14px; background: var(--fill); border-radius: 8px; padding: 10px 12px; margin: 0 0 10px; }
+.receive-card code { font-size: 12px; }

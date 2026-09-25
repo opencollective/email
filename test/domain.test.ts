@@ -279,3 +279,49 @@ test('one domain, several inboxes: an admin of the holder can add another addres
   const pageB = await (await app.request(`/inbox/${b.slug}/domain`, { headers: { cookie: `requests_sid=${sid}` } })).text()
   assert.match(pageB, /anything else at the domain goes to Hello Co/)
 })
+
+test('the receiving card reads the domain\'s MX and says exactly what to do', async () => {
+  const { __setMxStub } = await import('../src/mx.js')
+  const col = await createCollective(`mx${uniq()}`, 'MX Co')
+  await run("UPDATE collectives SET plan = 'pro', custom_domain = 'mxcase.org', custom_local = 'hello', resend_domain_id = 'dev-domain', domain_status = 'verified', receive_mode = 'forwarding' WHERE id = ?", [col.id])
+  const sid = await adminSid(col.id)
+  const card = async () => {
+    const html = await (await app.request(`/inbox/${col.slug}/domain`, { headers: { cookie: `requests_sid=${sid}` } })).text()
+    return html.slice(html.indexOf('receive-card'), html.indexOf('2 · Sending'))
+  }
+  try {
+    __setMxStub(async () => [])
+    let c = await card()
+    assert.match(c, /nothing receives mxcase\.org&#39;s mail yet|nothing receives mxcase\.org's mail yet/)
+    assert.match(c, /Receive mxcase\.org here/)
+
+    __setMxStub(async () => ['aspmx.l.google.com', 'alt1.aspmx.l.google.com'])
+    c = await card()
+    assert.match(c, /mail is at Google Workspace/)
+    assert.match(c, /Forwarding and POP\/IMAP → Add a forwarding address → mx\d+@collective\.email/)
+    assert.match(c, /Send a test email to hello@mxcase\.org/)
+    assert.match(c, /Move all of mxcase\.org/, 'MX takeover offered as the secondary path, with a confirmation')
+
+    __setMxStub(async () => ['mx1.mail.ovh.net'])
+    assert.match(await card(), /OVHcloud control panel: Web Cloud → Emails/)
+
+    __setMxStub(async () => ['mail.some-isp.example'])
+    c = await card()
+    assert.match(c, /another provider/)
+    assert.match(c, /<b>Keep your provider<\/b>/)
+    assert.match(c, /<b>Move the domain&#39;s mail here<\/b>|<b>Move the domain's mail here<\/b>/)
+
+    __setMxStub(async () => ['inbound-smtp.eu-west-1.amazonaws.com'])
+    assert.match(await card(), /already point at us/)
+
+    __setMxStub(async () => { throw Object.assign(new Error('x'), { code: 'ESERVFAIL' }) })
+    assert.match(await card(), /couldn.{0,6}t read mxcase\.org/)
+
+    // MX mode but DNS still at Google: warn and name it
+    await run("UPDATE collectives SET receive_mode = 'mx' WHERE id = ?", [col.id])
+    __setMxStub(async () => ['aspmx.l.google.com'])
+    assert.match(await card(), /still points at <b>Google Workspace<\/b>/)
+  } finally {
+    __setMxStub(async () => [])
+  }
+})

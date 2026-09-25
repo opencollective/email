@@ -28,3 +28,7 @@ console.log = (...args: unknown[]) => {
   if (typeof args[0] === 'string' && (args[0].includes('[appmail:dev]') || args[0].includes('[outbound:dev]') || args[0].includes('[ingest]'))) return
   origLog(...args)
 }
+
+// no real DNS in tests: domains have no MX unless a test says otherwise
+import { __setMxStub } from '../src/mx.js'
+__setMxStub(async () => [])

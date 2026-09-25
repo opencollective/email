@@ -40,6 +40,7 @@ import { AssigneeChip, AuthCard, Avatar, eventText, Icon, Shell, StatusChip, Tim
 import { HomePage } from './home.js'
 import { AboutPage, DocsPage, FaqPage } from './pages.js'
 import { aboutMarkdown } from './about-content.js'
+import { fillHow, mxState, type MxState } from '../mx.js'
 import {
   createResendDomain, deleteResendDomain, domainVerifyTick, enableDomainReceiving, getResendDomain,
   validDomainName, validLocalPart, verifyResendDomain,
@@ -4372,6 +4373,9 @@ app.get('/inbox/:addr/domain', async (c) => {
   const domain = collective.resend_domain_id ? await getResendDomain(collective.resend_domain_id) : null
   const customAddr = collective.custom_domain ? `${collective.custom_local}@${collective.custom_domain}` : null
   const siblings = collective.custom_domain ? (await siblingsOnDomain(collective.custom_domain, collective.id)).filter((x) => x.status === 'active') : []
+  // the receiving MX Resend gave us (not the sending one on the send. subdomain)
+  const receivingRecords = (domain?.records ?? []).filter((r) => r.type === 'MX' && !/^send(\.|$)/.test(r.name))
+  const mx: MxState = collective.custom_domain ? await mxState(collective.custom_domain, receivingRecords.map((r) => r.value)) : { kind: 'error' }
   const catchAll = collective.custom_domain ? await getCollectiveByCustomDomain(collective.custom_domain) : null
   let verified = collective.domain_status === 'verified'
   if (!verified && domain?.status === 'verified') {
@@ -4404,26 +4408,93 @@ app.get('/inbox/:addr/domain', async (c) => {
               {catchAll && catchAll.id !== collective.id ? `; anything else at the domain goes to ${catchAll.name}` : '; anything else at the domain lands here'}.</p>
           ) : null}
 
-          <section class="card">
-            <h2>1 · Receiving {collective.receive_mode === 'mx' ? '' : '— forward your mail here'}</h2>
-            {collective.receive_mode === 'mx' ? (
-              <>
-                <p class="muted">Your domain's mail (MX) points at us — {siblings.length ? <>mail to <b>{customAddr}</b> lands in this inbox</> : <>every address at <b>{collective.custom_domain}</b> lands in this inbox</>}. The MX record is in the table below with the sending records.</p>
-                <p class="fineprint">⚠ MX takeover means personal mailboxes at this domain stop working. If anyone has one, switch to forwarding instead.</p>
-              </>
-            ) : (
-              <>
-                <p class="muted">Keep your current mailbox and add a forward from <b>{customAddr}</b> to <b>{collective.slug}@{cfg.emailDomain}</b>:</p>
-                <ul class="muted" style="padding-left:20px;font-size:14px">
-                  <li><b>Gmail / Google Workspace</b>: Settings → Forwarding → Add a forwarding address. Google then sends a confirmation — <b>it will appear right here in this inbox</b>; any admin clicks the link and you're done.</li>
-                  <li><b>Registrar alias</b> (Gandi, OVH, Namecheap…): create a forward/alias for {collective.custom_local}@ pointing to {collective.slug}@{cfg.emailDomain}.</li>
-                </ul>
+          <section class="card receive-card">
+            {(() => {
+              const target = `${collective.slug}@${cfg.emailDomain}`
+              const dom = collective.custom_domain!
+              const hostList = (hs: string[]) => <code>{hs.slice(0, 2).join(', ')}{hs.length > 2 ? '…' : ''}</code>
+              const mxButton = (label: string, danger?: string) => (
+                <form method="post" action={`${base}/domain/mx`} class="inline">
+                  <button class={danger ? 'linkish' : 'btn small'} type="submit" data-busy="Switching…" data-confirm={danger}>{label}</button>
+                </form>
+              )
+              const ourRecords = receivingRecords.length ? (
+                <div class="admin-list">
+                  {receivingRecords.map((rec) => (
+                    <div class="admin-row" style="align-items:center">
+                      <b style="min-width:46px">{rec.type}</b>
+                      <code style="font-size:11.5px">{rec.name || '@'}</code>
+                      <code style="font-size:11.5px;overflow-wrap:anywhere;flex:1">{rec.value}</code>
+                      <button class="btn small ghost" type="button" data-copy={rec.value}>Copy</button>
+                    </div>
+                  ))}
+                </div>
+              ) : null
+              const testButton = (
                 <form method="post" action={`${base}/domain/test`} class="btn-row">
                   <button class="btn small ghost" type="submit" data-busy="Sending…">Send a test email to {customAddr}</button>
                 </form>
-                <p class="fineprint">The test should appear in this inbox within a minute — that proves the forward works. Prefer a full takeover? <form method="post" action={`${base}/domain/mx`} class="inline"><button class="linkish" type="submit" data-confirm={`Point ALL mail for ${collective.custom_domain} here? Personal mailboxes at this domain will stop receiving. Use forwarding if anyone has one.`}>Switch to MX</button></form></p>
-              </>
-            )}
+              )
+
+              if (collective.receive_mode === 'mx') {
+                return (<>
+                  <h2>1 · Receiving — all of {dom}'s mail comes here</h2>
+                  {mx.kind === 'ours' ? (
+                    <p class="muted">✓ {dom}'s MX records point at us, so {siblings.length ? <>mail to <b>{customAddr}</b> lands in this inbox</> : <>every address at <b>{dom}</b> lands in this inbox</>}.</p>
+                  ) : mx.kind === 'error' ? (
+                    <p class="muted">Mail for <b>{dom}</b> is received here once its MX record points at us{ourRecords ? ':' : '.'}</p>
+                  ) : (<>
+                    <p class="muted">⚠ {mx.kind === 'none' ? <>{dom} has no MX record yet</> : <>{dom}'s MX still points at {mx.kind === 'provider' ? <b>{mx.provider.name}</b> : 'another server'} ({hostList(mx.hosts)})</>}. Replace {mx.kind === 'none' ? 'it' : 'them'} with this record where your DNS lives:</p>
+                  </>)}
+                  {mx.kind !== 'ours' ? ourRecords : null}
+                  <p class="fineprint">MX takeover means personal mailboxes at this domain stop working. If anyone has one, go back to forwarding.</p>
+                </>)
+              }
+
+              if (mx.kind === 'none') {
+                return (<>
+                  <h2>1 · Receiving — nothing receives {dom}'s mail yet</h2>
+                  <p class="muted"><b>{dom}</b> has no MX record, so mail sent to <b>{customAddr}</b> bounces today. Let us receive it: add one DNS record and every address at {dom} lands in this inbox. No existing mailbox is affected, because there isn't one.</p>
+                  <div class="btn-row">{mxButton('Receive ' + dom + ' here')}</div>
+                  <p class="fineprint">The MX record to add appears here right after.</p>
+                </>)
+              }
+
+              if (mx.kind === 'ours') {
+                return (<>
+                  <h2>1 · Receiving ✓</h2>
+                  <p class="muted">✓ <b>{dom}</b>'s MX records already point at us, so mail to <b>{customAddr}</b> lands in this inbox. Nothing to set up.</p>
+                  <div class="btn-row">{mxButton('Confirm MX receiving')}</div>
+                </>)
+              }
+
+              if (mx.kind === 'provider') {
+                const how = mx.provider.forwardHow ? fillHow(mx.provider.forwardHow, customAddr!, target) : null
+                return (<>
+                  <h2>1 · Receiving — {dom}'s mail is at {mx.provider.name}</h2>
+                  <p class="muted">Its MX records ({hostList(mx.hosts)}) point at <b>{mx.provider.name}</b>. Keep your mailboxes there and forward <b>{customAddr}</b> to <b>{target}</b>:</p>
+                  <p class="how">{how ?? <>In {mx.provider.name}'s settings, create a forward (or alias) from <b>{customAddr}</b> to <b>{target}</b>.</>}</p>
+                  {testButton}
+                  <p class="fineprint">The test should appear in this inbox within a minute. That proves the forward works.</p>
+                  <p class="fineprint">Not using {mx.provider.name} for anything else at {dom}? {mxButton('Move all of ' + dom + "'s mail here instead", `Point ALL mail for ${dom} here? Every mailbox at ${mx.provider.name} for this domain stops receiving.`)}</p>
+                </>)
+              }
+
+              return (<>
+                <h2>1 · Receiving — {mx.kind === 'unknown' ? <>{dom}'s mail is at another provider</> : 'forward your mail here'}</h2>
+                {mx.kind === 'unknown' ? (
+                  <p class="muted">Its MX records point at {hostList(mx.hosts)}. Two ways to bring <b>{customAddr}</b> here:</p>
+                ) : (
+                  <p class="muted">We couldn't read {dom}'s MX records just now. Two ways to bring <b>{customAddr}</b> here:</p>
+                )}
+                <ol class="muted" style="padding-left:20px;font-size:14px">
+                  <li><b>Keep your provider</b> and create a forward (or alias) from <b>{customAddr}</b> to <b>{target}</b> in its settings. Your other mailboxes keep working.</li>
+                  <li><b>Move the domain's mail here</b>: replace the MX records with ours. Every address at {dom} then lands in this inbox, and mailboxes at the old provider stop receiving.</li>
+                </ol>
+                {testButton}
+                <p class="fineprint">The test should appear in this inbox within a minute. That proves the forward works. Prefer the second way? {mxButton('Switch to MX', `Point ALL mail for ${dom} here? Personal mailboxes at this domain will stop receiving.`)}</p>
+              </>)
+            })()}
           </section>
 
           <section class="card">
