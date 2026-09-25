@@ -394,3 +394,14 @@ test('the live version stamps move when the page content would', async () => {
   const inbox = await (await page(`/inbox/${fx.slug}`, fx.alice.sid)).text()
   assert.equal(inbox.match(/data-live-v="([^"]+)"/)?.[1], l1, 'the inbox embeds the current list stamp')
 })
+
+test('c / s / d shortcuts: the thread page marks its close, spam and delete buttons, and the overview lists them', async () => {
+  const fx = await fixture()
+  const html = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
+  const actions = html.slice(html.indexOf('class="thread-actions"'), html.indexOf('</div>', html.indexOf('class="thread-actions"')))
+  assert.match(actions, /data-kbd="c"[^>]*>.*Close thread/s)
+  assert.match(actions, /data-kbd="s"[^>]*data-confirm=/, 'spam still asks first')
+  assert.match(actions, /data-kbd="d"[^>]*data-confirm=/, 'delete still asks first')
+  assert.match(html, /<kbd>c<\/kbd><\/span><span>Close the open or highlighted thread/)
+  assert.match(html, /<kbd>d<\/kbd><\/span><span>Delete it/)
+})

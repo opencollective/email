@@ -118,6 +118,42 @@ document.querySelectorAll('[data-filter]').forEach((form) => {
     rs.forEach((r, i) => r.classList.toggle('kb-sel', i === sel));
     if (sel >= 0 && rs[sel]) rs[sel].scrollIntoView({ block: 'nearest' });
   };
+  // c / s / d: close, spam, delete. On a thread they press the thread's own
+  // buttons (confirmations included); in the list they act on the highlighted
+  // row through the same routes and take it out of view.
+  const toast = (msg) => {
+    const f = document.createElement('div');
+    f.className = 'flash'; f.textContent = msg;
+    document.body.appendChild(f);
+    setTimeout(() => f.remove(), 3000);
+  };
+  const ACTS = {
+    c: { path: '/status', body: 'status=closed', done: 'Closed' },
+    s: { path: '/status', body: 'status=spam', done: 'Marked as spam', ask: 'Mark this thread as spam?' },
+    d: { path: '/delete', body: '', done: 'Deleted — under Deleted for 30 days', ask: 'Delete this thread? It moves to Deleted for 30 days, then is removed permanently.' },
+  };
+  const triage = (key) => {
+    const btn = document.querySelector('[data-kbd="' + key + '"]');
+    if (btn) { btn.click(); return true; }
+    const row = liveRows()[sel];
+    if (!row) return false;
+    const act = ACTS[key];
+    if (act.ask && !confirm(act.ask)) return true;
+    const subjEl = row.querySelector('.r-subj');
+    const subject = (subjEl && subjEl.firstChild && subjEl.firstChild.textContent) || 'Thread';
+    fetch(row.getAttribute('href') + act.path, {
+      method: 'POST', redirect: 'manual', credentials: 'same-origin',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: act.body,
+    }).then((r) => {
+      if (!(r.ok || r.type === 'opaqueredirect')) throw new Error();
+      row.remove();
+      try { Object.keys(sessionStorage).filter((k) => k.indexOf('pillcache:') === 0).forEach((k) => sessionStorage.removeItem(k)); } catch (e) {}
+      sel = Math.min(sel, liveRows().length - 1);
+      mark();
+      toast(act.done + ': ' + subject.trim().slice(0, 60));
+    }).catch(() => toast('Could not update that thread — try again.'));
+    return true;
+  };
   const openPane = (pane) => {
     const tab = document.querySelector('[data-tab=' + pane + ']');
     if (tab) tab.click();
@@ -154,6 +190,8 @@ document.querySelectorAll('[data-filter]').forEach((form) => {
       if (openPane('reply')) e.preventDefault();
     } else if (e.key === 'n') {
       if (openPane('note')) e.preventDefault();
+    } else if (e.key === 'c' || e.key === 's' || e.key === 'd') {
+      if (triage(e.key)) e.preventDefault();
     } else if (e.key === '/') {
       const search = document.querySelector('input.search');
       if (search) { e.preventDefault(); search.focus(); search.select && search.select(); }
@@ -967,7 +1005,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '90'
+export const ASSET_V = '91'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">
@@ -1059,6 +1097,9 @@ const KEY_ROWS: [string[], string][] = [
   [['⌫'], 'Go back'],
   [['r'], 'Reply — jumps to the composer'],
   [['n'], 'New internal note'],
+  [['c'], 'Close the open or highlighted thread'],
+  [['s'], 'Mark it as spam'],
+  [['d'], 'Delete it (kept 30 days under Deleted)'],
   [['⌘', '↵'], 'Send what you are writing'],
   [['⌘', 'K'], 'Show or hide this overview'],
   [['esc'], 'Close dialogs like this one'],

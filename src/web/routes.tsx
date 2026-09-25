@@ -2471,17 +2471,17 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             ) : (<>
               <form method="post" action={`${base}/thread/${thread.id}/status`}>
                 <input type="hidden" name="status" value="closed" />
-                <button class="btn small ghost" type="submit"><Icon name="check" /> Close thread</button>
+                <button class="btn small ghost" type="submit" data-kbd="c" title="Close thread (c)"><Icon name="check" /> Close thread</button>
               </form>
               <form method="post" action={`${base}/thread/${thread.id}/status`}>
                 <input type="hidden" name="status" value="spam" />
-                <button class="linkish spam-link" type="submit" data-confirm="Mark this thread as spam?">mark as spam</button>
+                <button class="linkish spam-link" type="submit" data-kbd="s" title="Mark as spam (s)" data-confirm="Mark this thread as spam?">mark as spam</button>
               </form>
             </>)}
             {/* deleting is for any state — pruning old closed threads most of all */}
             {!thread.deleted_at ? (
               <form method="post" action={`${base}/thread/${thread.id}/delete`}>
-                <button class="linkish danger" type="submit" data-confirm="Delete this thread? It moves to Deleted for 30 days, then is removed permanently.">delete</button>
+                <button data-kbd="d" title="Delete thread (d)" class="linkish danger" type="submit" data-confirm="Delete this thread? It moves to Deleted for 30 days, then is removed permanently.">delete</button>
               </form>
             ) : null}
           </div>
