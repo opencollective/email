@@ -102,6 +102,7 @@ const isPlatformAdmin = (email: string | null) => !!email && cfg.adminEmails.inc
 
 const LEVELS: { value: Member['notify_level']; label: string; hint: string }[] = [
   { value: 'every', label: 'As they arrive', hint: 'One email per incoming request — reply to it to answer directly.' },
+  { value: 'assigned', label: 'Assigned to me & mentions', hint: 'Only threads assigned to you, and notes that @mention you. Everything else stays quiet.' },
   { value: 'daily', label: 'Daily digest', hint: 'One email a day with what came in and went out since the last one. Quiet day, no email.' },
   { value: 'weekly', label: 'Weekly digest', hint: 'One email on Monday with the past week\'s traffic. For the lightly involved.' },
 ]
@@ -699,7 +700,7 @@ app.post('/join/:token', async (c) => {
   if (!invite || invite.revoked_at || invite.expires_at < now()) return c.redirect(`/join/${token}`)
   const body = await c.req.parseBody()
   const name = String(body.name || '').trim().slice(0, 60)
-  const level = ['every', 'daily', 'weekly'].includes(String(body.level)) ? String(body.level) : 'every'
+  const level = ['every', 'assigned', 'daily', 'weekly'].includes(String(body.level)) ? String(body.level) : 'every'
 
   // A signed-in account is already a verified address — the session is the
   // proof, so joining with it needs no code. The cookie is checked, not the
@@ -3137,6 +3138,15 @@ app.post('/inbox/:addr/thread/:id/assign', async (c) => {
     if (tm.role === 'guest') await grantThreadAccess(tm.id, thread.id)
   }
   await setAssignee(thread, target, t.member.id, target === t.member.id ? 'claim' : 'manual')
+  // a thread handed to you is a thread for you to answer — say so, whatever
+  // your level (short of "no email"); taking it yourself needs no email
+  if (target !== null && target !== t.member.id && thread.assignee_member_id !== target) {
+    const tm = (await getMember(target))!
+    if (tm.kind !== 'agent' && tm.notify_level !== 'none') {
+      const { sendAssignedEmail } = await import('../notify.js')
+      await sendAssignedEmail(t.collective, (await getThread(thread.id))!, tm, t.member).catch(() => {})
+    }
+  }
   return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}`)
 })
 
@@ -4166,7 +4176,7 @@ app.post('/inbox/:addr/members/:id/update', async (c) => {
     }
   }
 
-  const level = ['every', 'daily', 'weekly', 'none'].includes(String(body.notify_level)) ? String(body.notify_level) : null
+  const level = ['every', 'assigned', 'daily', 'weekly', 'none'].includes(String(body.notify_level)) ? String(body.notify_level) : null
   if (level && fresh.kind !== 'agent') await run('UPDATE members SET notify_level = ? WHERE id = ?', [level, target.id])
 
   return c.redirect(back + '?m=' + encodeURIComponent(`Saved${notes.length ? ' — ' + memberName(target) + ' is ' + notes.join('; ') : ' ✓'}`))
@@ -4266,7 +4276,7 @@ app.post('/inbox/:addr/notifications', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
   const body = await c.req.parseBody()
-  const level = ['every', 'daily', 'weekly'].includes(String(body.level)) ? String(body.level) : t.member.notify_level
+  const level = ['every', 'assigned', 'daily', 'weekly'].includes(String(body.level)) ? String(body.level) : t.member.notify_level
   await run('UPDATE members SET notify_level = ? WHERE id = ?', [level, t.member.id])
   return c.redirect(`/inbox/${t.collective.slug}/notifications?m=` + encodeURIComponent('Saved.'))
 })

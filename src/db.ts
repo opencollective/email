@@ -418,7 +418,7 @@ export interface Member {
   // "email" is synthetic and who is reached through the agent API, never SMTP
   kind?: 'person' | 'agent'
   signature?: string | null
-  notify_level: 'every' | 'daily' | 'weekly' | 'none'
+  notify_level: 'every' | 'assigned' | 'daily' | 'weekly' | 'none'
   avatar_path: string | null
   created_at: number
   last_seen_at: number | null

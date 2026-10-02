@@ -520,6 +520,28 @@ export async function digestTick(at: Date = new Date()) {
 
 // ---------- credit emails ----------
 
+/** "Leen assigned you: <subject>" — the one email someone on the
+ *  "assigned to me & mentions" level most needs. */
+export async function sendAssignedEmail(collective: Collective, thread: Thread, to: Member, by: Member) {
+  const last = await get<{ from_name: string | null; from_email: string | null; body_text: string | null }>(
+    "SELECT from_name, from_email, body_text FROM messages WHERE thread_id = ? AND direction = 'inbound' ORDER BY id DESC LIMIT 1", [thread.id])
+  const who = last?.from_name || last?.from_email || thread.counterpart_name || thread.counterpart_email || 'someone'
+  const preview = excerpt(splitQuotedTail(last?.body_text || '').main, 300)
+  const html = shell(collective.name, `
+    <p style="margin:0 0 6px;font-size:15px"><b>${escapeHtml(memberLabel(by))}</b> assigned you a thread</p>
+    <p style="margin:0 0 4px;font-size:15px;font-weight:700"><a href="${threadUrl(collective, thread.id)}" style="color:#0c2d66">${escapeHtml(thread.subject)}</a></p>
+    <p style="margin:0 0 12px;font-size:13px;color:#6b7280">from ${escapeHtml(who)}</p>
+    ${preview ? `<p style="margin:0 0 16px;font-size:14px;color:#4b5563">${escapeHtml(preview)}</p>` : ''}
+    ${btn(threadUrl(collective, thread.id), 'Open the thread')}`)
+  await sendAppEmail({
+    to: to.email,
+    subject: `${memberLabel(by)} assigned you: ${thread.subject}`,
+    from: notifyFrom(collective),
+    html,
+    text: `${memberLabel(by)} assigned you a thread: ${thread.subject} (from ${who})\n\n${preview}\n\n${threadUrl(collective, thread.id)}`,
+  })
+}
+
 export async function sendCreditEmail(collective: Collective, admins: Member[], subject: string, message: string) {
   const html = shell(collective.name, `
     <p style="margin:0 0 8px;font-size:15px">${escapeHtml(message)}</p>
