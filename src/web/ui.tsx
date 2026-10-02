@@ -73,11 +73,33 @@ const code = document.querySelector('input.code-input');
 if (code) { code.focus(); code.addEventListener('input', () => { if (code.value.trim().length === 6) code.form.requestSubmit(); }); }
 // Sandboxed email frames grow to fit their content (no scripts inside the
 // frame, so the parent measures for it).
+// An email still wider than the frame after its CSS gave way (a fixed-width
+// layout that won't reflow) is scaled down to fit, like a phone mail app
+// does — never cut off at the right edge.
+const fitFrame = (f) => {
+  try {
+    const d = f.contentDocument, root = d.documentElement, body = d.body;
+    if (!body) return;
+    body.style.transform = ''; root.style.overflow = '';
+    const avail = f.clientWidth, w = root.scrollWidth, h = root.scrollHeight;
+    const s = avail && w > avail + 2 ? avail / w : 1;
+    if (s < 1) {
+      body.style.transformOrigin = '0 0';
+      body.style.transform = 'scale(' + s + ')';
+      root.style.overflow = 'hidden';
+    }
+    f.style.height = Math.min(Math.ceil(h * s) + 24, 4000) + 'px';
+  } catch (e) {}
+};
 document.querySelectorAll('iframe.msg-frame').forEach((f) => {
-  const fit = () => { try { f.style.height = Math.min(f.contentDocument.documentElement.scrollHeight + 24, 4000) + 'px'; } catch {} };
-  f.addEventListener('load', fit);
-  fit();
-  setTimeout(fit, 400); // once more after images load enough to size
+  f.addEventListener('load', () => fitFrame(f));
+  fitFrame(f);
+  setTimeout(() => fitFrame(f), 400); // once more after images load enough to size
+});
+let fitTimer;
+addEventListener('resize', () => {
+  clearTimeout(fitTimer);
+  fitTimer = setTimeout(() => document.querySelectorAll('iframe.msg-frame').forEach(fitFrame), 150);
 });
 // Filter-as-you-type lists: the form still submits (and still works without
 // JS), but typing hides non-matching rows straight away.
@@ -654,6 +676,7 @@ root.querySelectorAll('[data-msg]').forEach((msg) => {
     e.preventDefault();
     const folded = !msg.classList.contains('folded');
     msg.classList.toggle('folded', folded);
+    if (!folded) msg.querySelectorAll('iframe.msg-frame').forEach(fitFrame); // measured at zero while folded
     flag.value = folded ? '0' : '1'; // the value posted is the NEXT state
     if (btn) btn.textContent = folded ? 'Expand' : 'Collapse';
     const menu = msg.querySelector('.msg-menu');
@@ -1041,7 +1064,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '100'
+export const ASSET_V = '102'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">
@@ -1204,7 +1227,7 @@ export const Shell: FC<{
             </a>
             <div class="org-menu" hidden />
           </div>
-          {props.back ? <nav class="nav"><a class="nav-item" href={props.back.href}>← {props.back.label}</a></nav> : null}
+          {/* no "Back to inbox" here: Inbox is always in the menu below (phones keep their header arrow) */}
           <Menu base={base} active={props.active} isAdmin={isAdmin} canSend={canSend} filters={props.sidebar} inboxCount={props.inboxCount} inboxOn={props.inboxOn} draftsCount={props.draftsCount} />
           <div class="side-foot">{userBlock}</div>
         </aside>

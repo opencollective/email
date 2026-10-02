@@ -312,12 +312,15 @@ a.org:hover .org-caret { color: var(--ink); }
   position: absolute; left: 11px; width: 18px; height: 2px; border-radius: 2px;
   background: var(--ink); transform-origin: left center;
 }
-.to-burger .hl-1 { animation: hl1-back 0.35s ease both; }
+/* the resting shape of each state lives here, not only in the animation:
+   when the morph is skipped (same state as the last page) the lines must
+   still be in place — without this they piled up at the top edge */
+.to-burger .hl-1 { top: 13px; animation: hl1-back 0.35s ease both; }
 .to-burger .hl-2 { top: 19px; }
-.to-burger .hl-3 { animation: hl3-back 0.35s ease both; }
-.to-arrow .hl-1 { animation: hl1-arrow 0.35s ease both; }
+.to-burger .hl-3 { top: 25px; animation: hl3-back 0.35s ease both; }
+.to-arrow .hl-1 { top: 19px; width: 11px; transform: rotate(-45deg); animation: hl1-arrow 0.35s ease both; }
 .to-arrow .hl-2 { top: 19px; }
-.to-arrow .hl-3 { animation: hl3-arrow 0.35s ease both; }
+.to-arrow .hl-3 { top: 19px; width: 11px; transform: rotate(45deg); animation: hl3-arrow 0.35s ease both; }
 @keyframes hl1-arrow { from { top: 13px; width: 18px; transform: rotate(0); } to { top: 19px; width: 11px; transform: rotate(-45deg); } }
 @keyframes hl3-arrow { from { top: 25px; width: 18px; transform: rotate(0); } to { top: 19px; width: 11px; transform: rotate(45deg); } }
 @keyframes hl1-back { from { top: 19px; width: 11px; transform: rotate(-45deg); } to { top: 13px; width: 18px; transform: rotate(0); } }

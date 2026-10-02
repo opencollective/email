@@ -56,8 +56,15 @@ export function sanitizeEmailHtml(html: string): string {
 export function emailHtmlDocument(sanitized: string): string {
   return `<!doctype html><html><head><meta charset="utf-8"><base target="_blank"><style>
     body { margin: 10px; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #141414; word-break: break-word; }
-    img { max-width: 100%; height: auto; }
+    img { max-width: 100% !important; height: auto !important; }
     a { color: #0c2d66; }
-    table { max-width: 100%; }
+    /* newsletters are laid out for a 600px desktop pane: let fixed widths
+       give way to the screen they are actually on */
+    table, [width], div, p, center { max-width: 100% !important; }
+    table { table-layout: auto; }
+    td, th { word-break: break-word; overflow-wrap: anywhere; }
+    /* text that refuses to wrap spills out of its cell, past anything we can measure */
+    td, th, div, p, span, a, font, center { white-space: normal !important; }
+    pre { white-space: pre-wrap; }
   </style></head><body>${sanitized}</body></html>`
 }
