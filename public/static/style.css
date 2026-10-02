@@ -1469,14 +1469,14 @@ kbd {
 
 /* thread nudges: an offer above the timeline (adopt a signature, share a draft) */
 .nudge {
-  margin: 12px 0 0; padding: 10px 14px; border: 1.5px solid var(--line); border-radius: 10px; background: var(--card);
+  margin: 16px 24px 0; /* the timeline's own gutters, so it lines up with the messages below */ padding: 10px 14px; border: 1.5px solid var(--line); border-radius: 10px; background: var(--card);
   display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 14px; font-size: 13.5px;
 }
 .nudge > span:first-child { flex: 1 1 320px; min-width: 0; }
 .nudge-acts { display: inline-flex; align-items: center; gap: 12px; flex: none; }
 /* draft share: one lead line, then the link and the alternative side by side */
 .draft-share {
-  margin: 12px 0 0; padding: 12px 14px; border: 1.5px dashed var(--line); border-radius: 10px; background: var(--card);
+  margin: 16px 24px 0; padding: 12px 14px; border: 1.5px dashed var(--line); border-radius: 10px; background: var(--card);
   display: flex; flex-direction: column; gap: 10px; font-size: 13.5px;
 }
 .draft-share .ds-lead { margin: 0; }
@@ -1501,3 +1501,5 @@ kbd {
   align-items: baseline; text-align: left; line-height: 1.4; color: var(--muted);
 }
 .composer-bar .file-label { padding: 9px 14px; color: var(--ink); background: var(--card); border-radius: 8px; }
+
+@media (max-width: 900px) { .nudge, .draft-share { margin-left: 12px; margin-right: 12px; } } /* match .tl's mobile gutter */
