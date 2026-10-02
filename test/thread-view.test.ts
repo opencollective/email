@@ -304,7 +304,7 @@ test('the inbox opens on needs-reply; pills reach mine, unassigned, and tags wit
   const dflt = await (await page(`/inbox/${fx.slug}`, fx.alice.sid)).text()
   assert.match(dflt, /Room booking/, 'the open thread is there')
   assert.doesNotMatch(dflt, /Old news/, 'the answered one waits behind the All pill')
-  assert.match(dflt, /class="chip tag-chip[^>]*>Alice</, 'the mine pill carries the first name')
+  assert.match(dflt, /class="chip tag-chip[^>]*>Assigned to me</, 'the mine pill says what it is')
   assert.match(dflt, />Unassigned</, 'without a warning sign')
   assert.doesNotMatch(dflt, /⚠ Unassigned/)
 

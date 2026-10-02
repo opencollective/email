@@ -1180,11 +1180,15 @@ const FILTERS: Record<string, { label: string; where: string }> = {
   spam: { label: 'Spam', where: "t.status = 'spam' AND t.deleted_at IS NULL" },
   deleted: { label: 'Deleted', where: 't.deleted_at IS NOT NULL' },
   drafts: { label: 'Drafts', where: "t.status = 'draft' AND t.deleted_at IS NULL" },
+  drafts_mine: { label: 'Drafts assigned to me', where: "t.status = 'draft' AND t.assignee_member_id = ? AND t.deleted_at IS NULL" },
+  drafts_unassigned: { label: 'Unassigned drafts', where: "t.status = 'draft' AND t.assignee_member_id IS NULL AND t.deleted_at IS NULL" },
 }
+/** Drafts are their own place, with their own filters. */
+const isDraftsView = (f: string) => f === 'drafts' || f.startsWith('drafts_')
 
 // FILTERS.mine uses one positional `?` (the member id); build args accordingly
 function filterArgs(key: string, memberId: number): (string | number)[] {
-  return key === 'mine' ? [memberId] : []
+  return key === 'mine' || key === 'drafts_mine' ? [memberId] : []
 }
 
 app.get('/inbox/:addr', async (c) => {
@@ -1200,7 +1204,7 @@ app.get('/inbox/:addr', async (c) => {
   if (askedF && FILTERS[askedF]) {
     f = askedF
     // spam and deleted are places you visit, not places you live
-    if (!isPrefetch && f !== 'spam' && f !== 'deleted' && f !== 'drafts') {
+    if (!isPrefetch && f !== 'spam' && f !== 'deleted' && !isDraftsView(f)) {
       kvSet(`lastfilter:${member.id}`, f).catch(() => {})
     }
   } else {
@@ -1263,7 +1267,7 @@ app.get('/inbox/:addr', async (c) => {
     {
       sql: `SELECT tg.name, COUNT(*) AS n FROM tags tg
             JOIN thread_tags tt ON tt.tag_id = tg.id
-            JOIN threads t ON t.id = tt.thread_id AND t.status != 'spam' AND t.deleted_at IS NULL
+            JOIN threads t ON t.id = tt.thread_id AND ${isDraftsView(f) ? "t.status = 'draft'" : "t.status != 'spam'"} AND t.deleted_at IS NULL
             WHERE tg.collective_id = ?
             GROUP BY tg.id ORDER BY n DESC, tg.name LIMIT 20`,
       args: [collective.id],
@@ -1307,8 +1311,8 @@ app.get('/inbox/:addr', async (c) => {
   }
 
   return c.html(
-    <Shell member={member} collective={collective} active={f === 'drafts' ? 'drafts' : 'inbox'} flash={c.req.query('m')}
-      inboxCount={counts.all} inboxOn={!tag && f !== 'drafts'} draftsCount={counts.drafts}>
+    <Shell member={member} collective={collective} active={isDraftsView(f) ? 'drafts' : 'inbox'} flash={c.req.query('m')}
+      inboxCount={counts.all} inboxOn={!tag && !isDraftsView(f)} draftsCount={counts.drafts}>
       {[...members.values()].filter((m) => !m.removed_at && m.kind !== 'agent').length === 1 ? (
         <div class="solo-note">
           <span>You are the only member of this collective at the moment.</span>
@@ -1335,19 +1339,28 @@ app.get('/inbox/:addr', async (c) => {
             {label}{count ? <span class="count">{count}</span> : null}
           </a>
         )
+        // the pills always describe the list under them: in Drafts, drafts
+        // filters and only the tags some draft carries
+        const drafts = isDraftsView(f)
         return (
           <div class="tag-bar">
-            {pill('all', 'All')}
-            {pill('needs_reply', 'Needs reply', counts.needs_reply)}
-            {pill('mine', memberName(member).split(' ')[0], counts.mine)}
-            {pill('unassigned', 'Unassigned', counts.unassigned)}
+            {drafts ? <>
+              {pill('drafts', 'All', counts.drafts)}
+              {pill('drafts_mine', 'Assigned to me', counts.drafts_mine)}
+              {pill('drafts_unassigned', 'Unassigned', counts.drafts_unassigned)}
+            </> : <>
+              {pill('all', 'All')}
+              {pill('needs_reply', 'Needs reply', counts.needs_reply)}
+              {pill('mine', 'Assigned to me', counts.mine)}
+              {pill('unassigned', 'Unassigned', counts.unassigned)}
+            </>}
             {tagRows.map((tr) => (
               <a class={`chip tag-chip ${tag === tr.name ? 'on' : ''}`}
-                href={`${base}?f=all&tag=${encodeURIComponent(tr.name)}${keep}`}>
+                href={`${base}?f=${drafts ? 'drafts' : 'all'}&tag=${encodeURIComponent(tr.name)}${keep}`}>
                 {tr.name} <span class="count">{tr.n}</span>
               </a>
             ))}
-            {counts.deleted ? (
+            {!drafts && counts.deleted ? (
               <a class={`chip tag-chip deleted-chip ${f === 'deleted' ? 'on' : ''}`} href={`${base}?f=deleted${keep}`}>
                 deleted <span class="count">{counts.deleted}</span>
               </a>

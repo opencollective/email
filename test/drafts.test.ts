@@ -124,3 +124,31 @@ test('Drafts: its own menu entry and view, never the remembered inbox filter', a
   const inbox = await fx.page(`/inbox/${fx.slug}`)
   assert.doesNotMatch(inbox, new RegExp(`class="nav-item active" href="/inbox/${fx.slug}\\?f=drafts">`))
 })
+
+test('the pill bar describes the list under it: drafts filters and draft tags in Drafts, "Assigned to me" in the inbox', async () => {
+  const fx = await fixture()
+  const { threadId } = await fx.compose('Tagged draft')
+  await fx.compose('Untagged draft')
+  await fx.form(`/inbox/${fx.slug}/thread/${threadId}/tags`, { name: 'legal' })
+  // a tag only inbound mail carries must not appear among the drafts pills
+  const t = await run(`INSERT INTO threads (collective_id, subject, status, counterpart_email, first_message_at, last_message_at, last_direction, created_at, updated_at)
+    VALUES (?, 'Inbound', 'needs_reply', 'z@out.test', ?, ?, 'inbound', ?, ?)`, [fx.collective.id, now(), now(), now(), now()])
+  await fx.form(`/inbox/${fx.slug}/thread/${t.lastId}/tags`, { name: 'events' })
+
+  const drafts = await fx.page(`/inbox/${fx.slug}?f=drafts`)
+  const bar = drafts.slice(drafts.indexOf('class="tag-bar"'), drafts.indexOf('</div>', drafts.indexOf('class="tag-bar"')))
+  assert.match(bar, /href="\/inbox\/[^"]+\?f=drafts">All<span class="count">2<\/span>/)
+  assert.match(bar, /\?f=drafts_mine">Assigned to me<span class="count">2<\/span>/)
+  assert.match(bar, /\?f=drafts_unassigned">Unassigned/)
+  assert.match(bar, /\?f=drafts&amp;tag=legal">legal/)
+  assert.doesNotMatch(bar, /events|Needs reply/)
+  assert.match(drafts, new RegExp(`class="nav-item active" href="/inbox/${fx.slug}\\?f=drafts">`))
+
+  const mine = await fx.page(`/inbox/${fx.slug}?f=drafts_mine`)
+  assert.match(mine, /Tagged draft|Change of organisation name/)
+  assert.match(mine, new RegExp(`class="nav-item active" href="/inbox/${fx.slug}\\?f=drafts">`), 'still the Drafts place')
+
+  const inbox = await fx.page(`/inbox/${fx.slug}?f=needs_reply`)
+  assert.match(inbox, /\?f=mine">Assigned to me/)
+  assert.doesNotMatch(inbox, /\?f=mine">xdamman/)
+})
