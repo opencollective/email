@@ -888,6 +888,17 @@ document.querySelectorAll('form[data-pane=reply] input[name="cc"]').forEach((cc)
   cc.addEventListener('change', sync);
 });
 
+// One-shot offers (adopt a signature…) live in the URL only for the landing;
+// "Not now" removes them, and the parameter never stays in the address bar.
+try {
+  const u = new URL(location.href);
+  if (u.searchParams.has('sig')) { u.searchParams.delete('sig'); history.replaceState(history.state, '', u); }
+} catch (e) {}
+document.querySelectorAll('[data-nudge-close]').forEach((b) => b.addEventListener('click', () => {
+  const n = b.closest('[data-nudge]');
+  if (n) n.remove();
+}));
+
 // Apple-Mail Cc/Bcc line: the expanded rows fold back as soon as attention
 // moves on — to the body, the To line or the subject — unless a Cc/Bcc was
 // actually typed, in which case hiding it would hide a real recipient.
@@ -1026,7 +1037,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '93'
+export const ASSET_V = '94'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">
@@ -1089,13 +1100,18 @@ export const AuthCard: FC<{ title?: string; flash?: string; children?: Child }> 
 
 /** The one navigation. `filters` (the inbox's Needs reply / Mine / …) nests
  *  directly under Inbox, because that is what it filters. */
-const Menu: FC<{ base: string; active: string; isAdmin: boolean; canSend: boolean; filters?: Child; inboxCount?: number; inboxOn?: boolean }> = ({ base, active, isAdmin, canSend, filters, inboxCount, inboxOn }) => (
+const Menu: FC<{ base: string; active: string; isAdmin: boolean; canSend: boolean; filters?: Child; inboxCount?: number; inboxOn?: boolean; draftsCount?: number }> = ({ base, active, isAdmin, canSend, filters, inboxCount, inboxOn, draftsCount }) => (
   <nav class="nav">
     {canSend ? <a class={`nav-item ${active === 'compose' ? 'active' : ''}`} href={`${base}/compose`}><Icon name="pencil" /> New email</a> : null}
     <a class={`nav-item ${active === 'inbox' && inboxOn !== false ? 'active' : ''}`} href={base}>
       <Icon name="inbox" /> Inbox {inboxCount ? <span class="count">{inboxCount}</span> : null}
     </a>
     {filters}
+    {canSend ? (
+      <a class={`nav-item ${active === 'drafts' ? 'active' : ''}`} href={`${base}?f=drafts`}>
+        <Icon name="pencil" /> Drafts {draftsCount ? <span class="count">{draftsCount}</span> : null}
+      </a>
+    ) : null}
     <a class={`nav-item ${active === 'contacts' ? 'active' : ''}`} href={`${base}/contacts`}><Icon name="book" /> Contacts</a>
     <a class={`nav-item ${active === 'members' ? 'active' : ''}`} href={`${base}/members`}><Icon name="users" /> Collective</a>
     <a class={`nav-item ${active === 'notifications' ? 'active' : ''}`} href={`${base}/notifications`}><Icon name="bell" /> Notifications</a>
@@ -1147,6 +1163,7 @@ export const Shell: FC<{
   sidebar?: Child
   /** total in the inbox, shown on the Inbox item itself */
   inboxCount?: number
+  draftsCount?: number
   /** false when a sub-filter is the active one, so Inbox doesn't also light up */
   inboxOn?: boolean
   /** where "back" leads; on mobile the hamburger morphs into a left arrow */
@@ -1184,7 +1201,7 @@ export const Shell: FC<{
             <div class="org-menu" hidden />
           </div>
           {props.back ? <nav class="nav"><a class="nav-item" href={props.back.href}>← {props.back.label}</a></nav> : null}
-          <Menu base={base} active={props.active} isAdmin={isAdmin} canSend={canSend} filters={props.sidebar} inboxCount={props.inboxCount} inboxOn={props.inboxOn} />
+          <Menu base={base} active={props.active} isAdmin={isAdmin} canSend={canSend} filters={props.sidebar} inboxCount={props.inboxCount} inboxOn={props.inboxOn} draftsCount={props.draftsCount} />
           <div class="side-foot">{userBlock}</div>
         </aside>
 
@@ -1221,7 +1238,7 @@ export const Shell: FC<{
               </a>
               <div class="org-menu" hidden />
             </div>
-            <Menu base={base} active={props.active} isAdmin={isAdmin} canSend={canSend} filters={props.sidebar} inboxCount={props.inboxCount} inboxOn={props.inboxOn} />
+            <Menu base={base} active={props.active} isAdmin={isAdmin} canSend={canSend} filters={props.sidebar} inboxCount={props.inboxCount} inboxOn={props.inboxOn} draftsCount={props.draftsCount} />
             <div class="drawer-foot">{userBlock}</div>
           </div>
         </div>

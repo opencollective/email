@@ -311,6 +311,13 @@ function init(): Promise<void> {
       'ALTER TABLE reply_tokens ADD COLUMN author_member_id INTEGER',
       'ALTER TABLE collectives ADD COLUMN archived_at INTEGER',
       'ALTER TABLE messages ADD COLUMN bcc_json TEXT',
+      // a member's own sign-off, when it isn't the "— Name, for Collective" default
+      'ALTER TABLE members ADD COLUMN signature TEXT',
+      // drafts: how many times saved, and by whom last
+      'ALTER TABLE messages ADD COLUMN draft_rev INTEGER',
+      'ALTER TABLE messages ADD COLUMN draft_editor_member_id INTEGER',
+      // a share link for one thread: whoever joins with it is a guest on it
+      'ALTER TABLE invites ADD COLUMN thread_id INTEGER',
     ]
     ready = db.batch(SCHEMA, 'write')
       // additive migrations for pre-existing tables; ignore "duplicate column"
@@ -410,6 +417,7 @@ export interface Member {
   // an agent is a member like any other — same rows, same enforcement — whose
   // "email" is synthetic and who is reached through the agent API, never SMTP
   kind?: 'person' | 'agent'
+  signature?: string | null
   notify_level: 'every' | 'daily' | 'weekly' | 'none'
   avatar_path: string | null
   created_at: number
@@ -451,13 +459,16 @@ export interface Message {
   resend_email_id: string | null
   sent_at: number | null
   created_at: number
+  draft_rev?: number | null
+  draft_editor_member_id?: number | null
 }
 
 export interface Invite {
   id: number
   collective_id: number
   token: string
-  role: 'member' | 'commenter' | 'reader' | null
+  role: 'member' | 'commenter' | 'reader' | 'guest' | null
+  thread_id?: number | null
   created_by: number | null
   created_at: number
   expires_at: number

@@ -1468,3 +1468,13 @@ kbd {
 /* domain page: provider-specific forwarding steps */
 .receive-card .how { font-size: 14px; background: var(--fill); border-radius: 8px; padding: 10px 12px; margin: 0 0 10px; }
 .receive-card code { font-size: 12px; }
+
+/* thread nudges: an offer above the timeline (adopt a signature, share a draft) */
+.nudge {
+  margin: 12px 0 0; padding: 10px 14px; border: 1.5px solid var(--line); border-radius: 10px; background: var(--card);
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 14px; font-size: 13.5px;
+}
+.nudge > span:first-child { flex: 1 1 320px; min-width: 0; }
+.nudge-acts { display: inline-flex; align-items: center; gap: 12px; flex: none; }
+.draft-share .invite-row { flex: 1 1 100%; display: flex; align-items: center; gap: 6px; min-width: 0; }
+.draft-share .invite-url { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

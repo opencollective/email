@@ -16,7 +16,7 @@ import {
   accountsFromCookie, checkCode, createSession, destroySession, issueCode,
   type Account, type LoginCodeRow,
 } from '../auth.js'
-import { forwardMessage, outboundFrom, replyAllCc, replyTarget, sendCollectiveReply, sendComposed, signatureFor } from '../outbound.js'
+import { forwardMessage, outboundFrom, replyAllCc, replyTarget, sendCollectiveReply, sendComposed, signatureFor, signOffDrift } from '../outbound.js'
 import { digestTick, receivingAddress, sendOnboarding, trialTick } from '../notify.js'
 import { mentionLabels, noteParts } from '../mentions.js'
 import { addNote } from '../notes.js'
@@ -199,7 +199,7 @@ async function tenant(c: Context<Env>): Promise<{ collective: Collective; member
            c.stripe_status AS c_stripe_status, c.trial_ends_at AS c_trial_ends_at, c.comped AS c_comped,
            c.custom_domain AS c_custom_domain, c.custom_local AS c_custom_local, c.domain_status AS c_domain_status,
            c.archived_at AS c_archived_at,
-           m.id, m.collective_id, m.email, m.name, m.role, m.notify_level, m.avatar_path, m.created_at, m.last_seen_at, m.removed_at
+           m.id, m.collective_id, m.email, m.name, m.role, m.notify_level, m.avatar_path, m.created_at, m.last_seen_at, m.removed_at, m.signature
     FROM collectives c LEFT JOIN members m
       ON m.collective_id = c.id AND m.removed_at IS NULL AND m.email IN (${emails.map(() => '?').join(',')})
     WHERE c.slug = ?
@@ -465,7 +465,7 @@ app.post('/verify', async (c) => {
     redirect = `/inbox/${slug}`
   } else if (res.row.purpose === 'join' && res.row.invite_token) {
     const joined = await applyInviteJoin(res.row.invite_token, email, res.row.join_name || '', res.row.join_level || '')
-    if (joined) redirect = `/inbox/${joined.slug}?m=` + encodeURIComponent(`Welcome to ${joined.name}!`)
+    if (joined) redirect = (joined.landing ?? `/inbox/${joined.slug}`) + '?m=' + encodeURIComponent(`Welcome to ${joined.name}!`)
   }
 
   // Signing in adds an account rather than replacing the session: whoever was
@@ -558,14 +558,22 @@ app.get('/mailboxes', async (c) => {
  *  The caller vouches for the email: either a code was just verified, or the
  *  address belongs to a signed-in account. Returns the collective, or null
  *  when the invite is dead. */
-async function applyInviteJoin(inviteToken: string, email: string, name: string, level: string): Promise<Collective | null> {
+async function applyInviteJoin(inviteToken: string, email: string, name: string, level: string): Promise<(Collective & { landing?: string }) | null> {
   const invite = await get<Invite>('SELECT * FROM invites WHERE token = ?', [inviteToken])
   const collective = invite ? await getCollective(invite.collective_id) : undefined
   if (!invite || !collective || invite.revoked_at || invite.expires_at < now()) return null
+  const shared = invite.thread_id ? await getThread(invite.thread_id) : undefined
+  if (invite.thread_id && (!shared || shared.collective_id !== collective.id)) return null
   const existing = await getMemberIn(collective.id, email)
   if (existing) {
     await run("UPDATE members SET removed_at = NULL, name = COALESCE(NULLIF(?, ''), name), notify_level = ? WHERE id = ?",
       [name, level || existing.notify_level, existing.id])
+    if (shared && existing.role === 'guest') await grantThreadAccess(existing.id, shared.id)
+  } else if (shared) {
+    // a thread share link: a guest on this one thread, nothing else
+    const g = await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [collective.id, email, name || email.split('@')[0], 'guest', level || 'every', now()])
+    await grantThreadAccess(g.lastId, shared.id)
   } else {
     let role = ['reader', 'commenter', 'member'].includes(invite.role || '') ? invite.role! : 'reader'
     if (role === 'member') {
@@ -589,10 +597,24 @@ async function applyInviteJoin(inviteToken: string, email: string, name: string,
       for (const admin of (await activeMembers(collective.id)).filter((m) => m.role === 'admin' && m.email !== email)) {
         await sendOnboarding(fresh, admin.email).catch(() => {})
       }
-      return fresh
+      return { ...fresh, landing: shared ? `/inbox/${fresh.slug}/thread/${shared.id}` : undefined }
     }
   }
-  return collective
+  return { ...collective, landing: shared ? `/inbox/${collective.slug}/thread/${shared.id}` : undefined }
+}
+
+/** The share link for one thread: anyone who opens it joins as a guest on
+ *  that thread only. One live link per thread, renewed when close to expiry. */
+async function threadShareLink(collective: Collective, threadId: number, memberId: number): Promise<string> {
+  let inv = await get<Invite>('SELECT * FROM invites WHERE collective_id = ? AND thread_id = ? AND revoked_at IS NULL AND expires_at > ? ORDER BY id DESC LIMIT 1',
+    [collective.id, threadId, now() + 86400])
+  if (!inv) {
+    const token = randomToken(18)
+    await run('INSERT INTO invites (collective_id, token, role, thread_id, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [collective.id, token, 'guest', threadId, memberId, now(), now() + 14 * 86400])
+    inv = (await get<Invite>('SELECT * FROM invites WHERE token = ?', [token]))!
+  }
+  return `${cfg.baseUrl}/${collective.slug}/join/${inv.token}`
 }
 
 app.get('/join/:token', async (c) => {
@@ -609,13 +631,21 @@ app.get('/join/:token', async (c) => {
   }
   const inviter = invite.created_by ? await getMember(invite.created_by) : null
   const accounts = c.get('accounts')
+  const shared = invite.thread_id ? await getThread(invite.thread_id) : undefined
   return c.html(
     <AuthCard title={`Join ${collective.name}`} flash={c.req.query('m')}>
-      <h1>Join {collective.name}</h1>
+      <h1>{shared ? <>Collaborate on “{shared.subject}”</> : <>Join {collective.name}</>}</h1>
+      {shared ? (
+        <p class="muted">
+          {inviter ? `${memberName(inviter)} invited you` : 'You were invited'} to read and comment on one email
+          thread of <b>{collective.name}</b> ({collective.slug}@{cfg.emailDomain}). You'll see this thread only.
+        </p>
+      ) : (
       <p class="muted">
         {inviter ? `${memberName(inviter)} invited you to follow` : 'You were invited to follow'} email
         sent to <b>{collective.slug}@{cfg.emailDomain}</b>.
       </p>
+      )}
       <p class="muted">You'll join as {/^[aeiou]/i.test(ROLE_LABELS[(invite.role || 'reader') as Member['role']]) ? 'an' : 'a'} <b>{ROLE_LABELS[(invite.role || 'reader') as Member['role']]}</b> — {ROLE_HINTS[(invite.role || 'reader') as Member['role']].charAt(0).toLowerCase()}{ROLE_HINTS[(invite.role || 'reader') as Member['role']].slice(1)}</p>
       <form method="post" action={`/join/${token}`}>
         <label class="lbl">Your name</label>
@@ -674,7 +704,7 @@ app.post('/join/:token', async (c) => {
     if (!c.get('accounts').some((a) => a.email === choice)) return c.redirect(`/join/${token}`)
     const joined = await applyInviteJoin(token, choice, name, level)
     if (!joined) return c.redirect(`/join/${token}`)
-    return c.redirect(`/inbox/${joined.slug}?m=` + encodeURIComponent(`Welcome to ${joined.name}!`))
+    return c.redirect((joined.landing ?? `/inbox/${joined.slug}`) + '?m=' + encodeURIComponent(`Welcome to ${joined.name}!`))
   }
 
   const email = String(body.email || '').toLowerCase().trim()
@@ -1149,6 +1179,7 @@ const FILTERS: Record<string, { label: string; where: string }> = {
   closed: { label: 'Closed', where: "t.status = 'closed' AND t.deleted_at IS NULL" },
   spam: { label: 'Spam', where: "t.status = 'spam' AND t.deleted_at IS NULL" },
   deleted: { label: 'Deleted', where: 't.deleted_at IS NOT NULL' },
+  drafts: { label: 'Drafts', where: "t.status = 'draft' AND t.deleted_at IS NULL" },
 }
 
 // FILTERS.mine uses one positional `?` (the member id); build args accordingly
@@ -1169,7 +1200,7 @@ app.get('/inbox/:addr', async (c) => {
   if (askedF && FILTERS[askedF]) {
     f = askedF
     // spam and deleted are places you visit, not places you live
-    if (!isPrefetch && f !== 'spam' && f !== 'deleted') {
+    if (!isPrefetch && f !== 'spam' && f !== 'deleted' && f !== 'drafts') {
       kvSet(`lastfilter:${member.id}`, f).catch(() => {})
     }
   } else {
@@ -1276,8 +1307,8 @@ app.get('/inbox/:addr', async (c) => {
   }
 
   return c.html(
-    <Shell member={member} collective={collective} active="inbox" flash={c.req.query('m')}
-      inboxCount={counts.all} inboxOn={!tag}>
+    <Shell member={member} collective={collective} active={f === 'drafts' ? 'drafts' : 'inbox'} flash={c.req.query('m')}
+      inboxCount={counts.all} inboxOn={!tag && f !== 'drafts'} draftsCount={counts.drafts}>
       {[...members.values()].filter((m) => !m.removed_at && m.kind !== 'agent').length === 1 ? (
         <div class="solo-note">
           <span>You are the only member of this collective at the moment.</span>
@@ -1951,6 +1982,9 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   }
   for (const e of [replyTo.email || '', ...threadCc]) if (e && !people.some((p) => p.email === e)) people.push({ email: e, name: e === thread.counterpart_email ? thread.counterpart_name : null })
   const signature = signatureFor(collective, member)
+  const sigOffer = (c.req.query('sig') || '').trim().slice(0, 120) || null
+  // a draft invites collaboration: a link that makes anyone a guest on it
+  const shareUrl = thread.status === 'draft' && canSendRole(member.role) ? await threadShareLink(collective, thread.id, member.id) : null
 
   // cross-references: sibling threads that started (or closed) after this
   // conversation began — shown inline where they happened, like a linked PR
@@ -2006,7 +2040,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   }
 
   return c.html(
-    <Shell member={member} collective={collective} active="inbox" flash={c.req.query('m')}
+    <Shell member={member} collective={collective} active={thread.status === 'draft' ? 'drafts' : 'inbox'} flash={c.req.query('m')}
       bundle={member.role === 'reader' ? undefined : 'composer.js'}
       back={{ href: base, label: 'Back to inbox' }}>
       <div class="thread-wrap">
@@ -2093,6 +2127,31 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
           </div>
           </div>
 
+          {sigOffer && sigOffer !== signature ? (
+            <div class="nudge" data-nudge>
+              <span>You signed as <b>{sigOffer}</b>. Use it as your signature from now on?</span>
+              <span class="nudge-acts">
+                <form method="post" action={`${base}/signature`} class="inline">
+                  <input type="hidden" name="text" value={sigOffer} />
+                  <input type="hidden" name="back" value={`${base}/thread/${thread.id}`} />
+                  <button class="btn small" type="submit" data-busy="Updating…">Update my signature</button>
+                </form>
+                <button class="linkish" type="button" data-nudge-close>Not now</button>
+              </span>
+            </div>
+          ) : null}
+          {shareUrl ? (
+            <div class="nudge draft-share">
+              <span><b>Get a second pair of eyes before it goes out.</b> Assign it to a teammate, or share this link with anyone: they join as a guest on this thread only.</span>
+              <span class="nudge-acts">
+                <button class="btn small ghost" type="button" data-dialog="#assign-modal">Assign to someone…</button>
+              </span>
+              <div class="invite-row">
+                <code class="invite-url">{shareUrl}</code>
+                <button class="icon-btn" type="button" data-copy={shareUrl} title="Copy link" aria-label="Copy link"><Icon name="copy" /></button>
+              </div>
+            </div>
+          ) : null}
           <div class="tl" data-seen-url={`${base}/thread/${thread.id}/seen`}
             data-live={`${base}/thread/${thread.id}/ping`}
             data-live-v={threadVersion({
@@ -2236,11 +2295,13 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                       })()}
                     </span>
                     <span class="who">
-                      {g.direction === 'outbound' && g.sent_by_member_id ? (
+                      {g.direction === 'outbound' && !g.sent_at ? (
+                        <small class="sentby">· draft v{String(g.draft_rev ?? 1)} by {memberName(members.get(g.draft_editor_member_id ?? g.sent_by_member_id ?? 0))}</small>
+                      ) : g.direction === 'outbound' && g.sent_by_member_id ? (
                         <small class="sentby">· sent by {memberName(members.get(g.sent_by_member_id))}</small>
                       ) : null}
                     </span>
-                    <span class="when">{fmtDateTime(g.sent_at)}</span>
+                    <span class="when">{g.sent_at ? fmtDateTime(g.sent_at) : 'not sent yet'}</span>
                     {/* everything about this one message lives behind one quiet menu */}
                     <details class="msg-menu">
                       <summary title="Message options" aria-label="Message options">⋯</summary>
@@ -2730,7 +2791,7 @@ app.post('/inbox/:addr/thread/:id/reply', async (c) => {
     await run('UPDATE threads SET cc_json = ? WHERE id = ?', [JSON.stringify(cc), thread.id])
     const fresh = (await getThread(thread.id))!
     if (!fresh.assignee_member_id) await setAssignee(fresh, t.member.id, t.member.id, 'claim')
-    return c.redirect(`${base}/thread/${thread.id}?m=` + encodeURIComponent('Reply sent ✓'))
+    return c.redirect(`${base}/thread/${thread.id}?m=` + encodeURIComponent('Reply sent ✓') + sigParam(signOffDrift(String(body.body || ''), t.collective, t.member)))
   } catch (err) {
     return c.redirect(`${base}/thread/${thread.id}?m=` + encodeURIComponent(`Could not send: ${err instanceof Error ? err.message : 'unknown error'}`))
   }
@@ -2868,18 +2929,43 @@ app.post('/inbox/:addr/compose', async (c) => {
     [th.lastId, outboundFrom(t.collective).fromAddress, t.collective.name,
      JSON.stringify(to), JSON.stringify(cc), JSON.stringify(bcc), text, t.member.id, ts])
   for (const [i, f] of files.entries()) await storeAttachment(draftRow.lastId, f.filename, f.contentType, f.content, i)
+  await run('UPDATE messages SET draft_rev = 1, draft_editor_member_id = ? WHERE id = ?', [t.member.id, draftRow.lastId])
+  // whoever starts a draft has it until they hand it over
+  await setAssignee((await getThread(th.lastId))!, t.member.id, t.member.id, 'claim')
+  const sig = sigParam(signOffDrift(text, t.collective, t.member))
 
   if (!send) {
-    return c.redirect(`${base}/thread/${th.lastId}?m=` + encodeURIComponent('Draft saved — share this page with teammates, or send when ready.'))
+    return c.redirect(`${base}/thread/${th.lastId}?m=` + encodeURIComponent('Draft saved.') + sig)
   }
   try {
     await sendComposed(t.collective, th.lastId, t.member)
-    return c.redirect(`${base}/thread/${th.lastId}?m=` + encodeURIComponent(`Sent to ${to.join(', ')} ✓`))
+    return c.redirect(`${base}/thread/${th.lastId}?m=` + encodeURIComponent(`Sent to ${to.join(', ')} ✓`) + sig)
   } catch (err) {
     return c.redirect(`${base}/thread/${th.lastId}?m=` + encodeURIComponent(
-      `Saved as draft — not sent: ${err instanceof Error ? err.message : 'unknown error'}`))
+      `Saved as draft — not sent: ${err instanceof Error ? err.message : 'unknown error'}`) + sig)
   }
 })
+
+/** Adopt the sign-off someone just wrote. "— Xavier, for Commons Hub" is
+ *  the default shape with another name, so it updates their name (and with
+ *  it every place they are named); anything else becomes their signature. */
+app.post('/inbox/:addr/signature', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const base = `/inbox/${t.collective.slug}`
+  const body = await c.req.parseBody()
+  const text = String(body.text || '').trim().slice(0, 120)
+  const back = String(body.back || '')
+  const to = back.startsWith(`${base}/`) ? back : base
+  if (!/^(—|--)\s*\S/.test(text)) return c.redirect(to)
+  const esc = t.collective.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const m = text.match(new RegExp(`^—\\s*(.+?),\\s*for\\s+${esc}$`))
+  if (m) await run('UPDATE members SET name = ?, signature = NULL WHERE id = ?', [m[1].trim().slice(0, 60), t.member.id])
+  else await run('UPDATE members SET signature = ? WHERE id = ?', [text, t.member.id])
+  return c.redirect(`${to}${to.includes('?') ? '&' : '?'}m=` + encodeURIComponent(`Signature updated — you sign as “${text}” from now on.`))
+})
+
+const sigParam = (drift: string | null) => (drift ? '&sig=' + encodeURIComponent(drift) : '')
 
 /** Update (and optionally send) the draft a compose created. */
 app.post('/inbox/:addr/thread/:id/draft', async (c) => {
@@ -2914,21 +3000,30 @@ app.post('/inbox/:addr/thread/:id/draft', async (c) => {
 
   const to = parseRecipients(body.to)
   const subject = String(body.subject || '').trim().slice(0, 200) || thread.subject
-  await run('UPDATE messages SET to_json = ?, cc_json = ?, bcc_json = ?, body_text = ? WHERE id = ?',
-    [JSON.stringify(to), JSON.stringify(parseRecipients(body.cc)), JSON.stringify(parseRecipients(body.bcc)),
-     String(body.body || '').trim().slice(0, 50000), draft.id])
+  const next = {
+    to: JSON.stringify(to), cc: JSON.stringify(parseRecipients(body.cc)), bcc: JSON.stringify(parseRecipients(body.bcc)),
+    text: String(body.body || '').trim().slice(0, 50000),
+  }
+  const filesChanged = removeIds.size > 0 || (await messageAttachments(draft.id)).length !== kept.length
+  const changed = filesChanged || subject !== thread.subject || next.text !== (draft.body_text || '').trim()
+    || next.to !== (draft.to_json || '[]') || next.cc !== (draft.cc_json || '[]') || next.bcc !== (draft.bcc_json || '[]')
+  await run(`UPDATE messages SET to_json = ?, cc_json = ?, bcc_json = ?, body_text = ?,
+      draft_rev = CASE WHEN ? THEN COALESCE(draft_rev, 1) + 1 ELSE COALESCE(draft_rev, 1) END,
+      draft_editor_member_id = CASE WHEN ? THEN ? ELSE draft_editor_member_id END WHERE id = ?`,
+    [next.to, next.cc, next.bcc, next.text, changed ? 1 : 0, changed ? 1 : 0, t.member.id, draft.id])
   await run('UPDATE threads SET subject = ?, counterpart_email = ?, updated_at = ? WHERE id = ?',
     [subject, to[0] ?? null, now(), thread.id])
+  const sig = sigParam(signOffDrift(next.text, t.collective, t.member))
 
   if (body.action !== 'send') {
-    return c.redirect(`${base}/thread/${thread.id}?m=` + encodeURIComponent('Draft updated ✓'))
+    return c.redirect(`${base}/thread/${thread.id}?m=` + encodeURIComponent(changed ? 'Draft updated ✓' : 'No changes to save.') + sig)
   }
   try {
     await sendComposed(t.collective, thread.id, t.member)
-    return c.redirect(`${base}/thread/${thread.id}?m=` + encodeURIComponent(`Sent to ${to.join(', ')} ✓`))
+    return c.redirect(`${base}/thread/${thread.id}?m=` + encodeURIComponent(`Sent to ${to.join(', ')} ✓`) + sig)
   } catch (err) {
     return c.redirect(`${base}/thread/${thread.id}?m=` + encodeURIComponent(
-      `Still a draft — not sent: ${err instanceof Error ? err.message : 'unknown error'}`))
+      `Still a draft — not sent: ${err instanceof Error ? err.message : 'unknown error'}`) + sig)
   }
 })
 
@@ -3228,7 +3323,7 @@ app.post('/inbox/:addr/join-admin', async (c) => {
 // ---------- tenant: members / notifications / billing ----------
 
 const activeInvite = (collectiveId: number) =>
-  get<Invite>('SELECT * FROM invites WHERE collective_id = ? AND revoked_at IS NULL AND expires_at > ? ORDER BY id DESC LIMIT 1',
+  get<Invite>('SELECT * FROM invites WHERE collective_id = ? AND thread_id IS NULL AND revoked_at IS NULL AND expires_at > ? ORDER BY id DESC LIMIT 1',
     [collectiveId, now()])
 
 const BackNav = ({ base }: { base: string }) => (
@@ -3863,7 +3958,7 @@ app.post('/inbox/:addr/members/add', async (c) => {
     note = `Paste this to the agent. It works once and expires in 7 days.${role === 'guest' ? ' As a guest it only sees threads shared with it or where it is @mentioned.' : ''}`
   } else {
     const role = ['reader', 'commenter', 'member'].includes(String(body.role)) ? String(body.role) : 'member'
-    await run('UPDATE invites SET revoked_at = ? WHERE collective_id = ? AND revoked_at IS NULL', [now(), t.collective.id])
+    await run('UPDATE invites SET revoked_at = ? WHERE collective_id = ? AND thread_id IS NULL AND revoked_at IS NULL', [now(), t.collective.id])
     const token = randomToken(18)
     await run('INSERT INTO invites (collective_id, token, role, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)',
       [t.collective.id, token, role, t.member.id, now(), now() + cfg.inviteHours * 3600])
@@ -3880,7 +3975,7 @@ app.post('/inbox/:addr/members/invite', async (c) => {
   if (t.member.role !== 'admin') return c.redirect(`/inbox/${t.collective.slug}/members`)
   const inviteBody = await c.req.parseBody()
   const inviteRole = ['reader', 'commenter', 'member'].includes(String(inviteBody.role)) ? String(inviteBody.role) : 'member'
-  await run('UPDATE invites SET revoked_at = ? WHERE collective_id = ? AND revoked_at IS NULL', [now(), t.collective.id])
+  await run('UPDATE invites SET revoked_at = ? WHERE collective_id = ? AND thread_id IS NULL AND revoked_at IS NULL', [now(), t.collective.id])
   await run('INSERT INTO invites (collective_id, token, role, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)',
     [t.collective.id, randomToken(18), inviteRole, t.member.id, now(), now() + cfg.inviteHours * 3600])
   return c.redirect(`/inbox/${t.collective.slug}/members?m=` + encodeURIComponent('New invite link created — valid 24h.'))
@@ -3890,7 +3985,7 @@ app.post('/inbox/:addr/members/invite/revoke', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
   if (t.member.role !== 'admin') return c.redirect(`/inbox/${t.collective.slug}/members`)
-  await run('UPDATE invites SET revoked_at = ? WHERE collective_id = ? AND revoked_at IS NULL', [now(), t.collective.id])
+  await run('UPDATE invites SET revoked_at = ? WHERE collective_id = ? AND thread_id IS NULL AND revoked_at IS NULL', [now(), t.collective.id])
   return c.redirect(`/inbox/${t.collective.slug}/members?m=` + encodeURIComponent('Invite link revoked.'))
 })
 
@@ -5390,7 +5485,7 @@ app.get('/claim/:slug/invite', async (c) => {
   // the first teammate joins as a sender: a collective inbox is for replying
   // together, and a reader who cannot answer is the wrong first impression
   let invite = await get<Invite>(
-    "SELECT * FROM invites WHERE collective_id = ? AND role = 'member' AND revoked_at IS NULL AND expires_at > ? ORDER BY id DESC LIMIT 1",
+    "SELECT * FROM invites WHERE collective_id = ? AND role = 'member' AND thread_id IS NULL AND revoked_at IS NULL AND expires_at > ? ORDER BY id DESC LIMIT 1",
     [collective.id, now()])
   if (!invite) {
     const token = randomToken(18)

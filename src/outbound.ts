@@ -23,7 +23,19 @@ export function outboundFrom(collective: Collective): { fromAddress: string; fro
  *  textarea so it can be edited or removed before sending — which is why the
  *  send path only appends it when it isn't already there. */
 export const signatureFor = (collective: Collective, member: Member) =>
-  `— ${member.name || member.email}, for ${collective.name}`
+  member.signature?.trim() || `— ${member.name || member.email}, for ${collective.name}`
+
+/** The sign-off someone actually wrote, when it isn't their signature: the
+ *  last line, if it reads like a sign-off ("— …" or "-- …"). Lets the app
+ *  offer to adopt it instead of making them retype it every time. */
+export function signOffDrift(body: string, collective: Collective, member: Member): string | null {
+  const sig = signatureFor(collective, member)
+  if (!body || body.includes(sig)) return null
+  const lines = body.split('\n').map((l) => l.trim()).filter(Boolean)
+  const last = lines[lines.length - 1] || ''
+  if (!/^(—|--)\s*\S/.test(last) || last.length > 120) return null
+  return last
+}
 
 export interface OutAttachment {
   filename: string
