@@ -230,7 +230,7 @@ small { color: var(--muted); }
 /* ---------- app shell ---------- */
 /* a fixed sidebar: sized by content it changed width between pages (counts,
    "Back to inbox"…), which made everything to its right jump */
-.app { display: grid; grid-template-columns: 272px minmax(0, 1fr); min-height: 100vh; }
+.app { display: grid; grid-template-columns: 300px minmax(0, 1fr); min-height: 100vh; }
 .side {
   border-right: 1.5px solid var(--line-soft); background: var(--fill);
   padding: 18px 14px; display: flex; flex-direction: column; gap: 4px;
