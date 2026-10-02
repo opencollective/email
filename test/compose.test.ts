@@ -203,3 +203,47 @@ test('a non-platform-admin cannot change plans', async () => {
   assert.equal(res.status, 404)
   assert.equal((await get<any>('SELECT plan FROM collectives WHERE slug = ?', [slug]))!.plan, 'collective')
 })
+
+test('compose carries attachments: stored on the draft, removable, addable, and sent', async () => {
+  const { createCollective, get, all, run } = await import('../src/db.js')
+  const { createSession } = await import('../src/auth.js')
+  const { now } = await import('../src/util.js')
+  const slug = `att${Date.now() % 1000000}`
+  const col = await createCollective(slug, 'Att Co')
+  const email = `att-${Date.now()}@t.test`
+  await run("INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, 'A', 'admin', 'every', ?)", [col.id, email, now()])
+  const sid = await createSession(email)
+  const post = (path: string, fd: FormData) => app.request(path, { method: 'POST', headers: { cookie: `requests_sid=${sid}` }, body: fd })
+
+  // the form is multipart and offers the picker
+  const form = await (await app.request(`/inbox/${slug}/compose`, { headers: { cookie: `requests_sid=${sid}` } })).text()
+  assert.match(form, /class="card compose-form" enctype="multipart\/form-data"/)
+  assert.match(form, /data-attach/)
+
+  const fd = new FormData()
+  fd.set('to', 'help@monerium.test'); fd.set('subject', 'Change of organisation name'); fd.set('body', 'Hi, we renamed.'); fd.set('action', 'draft')
+  fd.append('files', new File(['statutes'], 'statutes.pdf', { type: 'application/pdf' }))
+  fd.append('files', new File(['minutes'], 'minutes.txt', { type: 'text/plain' }))
+  const res = await post(`/inbox/${slug}/compose`, fd)
+  const threadId = Number(res.headers.get('location')!.match(/thread\/(\d+)/)![1])
+  const draft = (await get<any>("SELECT id FROM messages WHERE thread_id = ? AND sent_at IS NULL", [threadId]))!
+  let atts = await all<any>('SELECT id, filename FROM attachments WHERE message_id = ? ORDER BY id', [draft.id])
+  assert.deepEqual(atts.map((a) => a.filename), ['statutes.pdf', 'minutes.txt'])
+
+  // the draft editor lists them with a remove toggle
+  const page = await (await app.request(`/inbox/${slug}/thread/${threadId}`, { headers: { cookie: `requests_sid=${sid}` } })).text()
+  const draftForm = page.slice(page.indexOf(`/thread/${threadId}/draft`), page.indexOf('data-pane="note"'))
+  assert.match(draftForm, /enctype="multipart\/form-data"/)
+  assert.match(draftForm, new RegExp(`name="remove_att" value="${atts[0].id}"`))
+
+  // remove one, add one, send
+  const fd2 = new FormData()
+  fd2.set('to', 'help@monerium.test'); fd2.set('subject', 'Change of organisation name'); fd2.set('body', 'Hi, we renamed.'); fd2.set('action', 'send')
+  fd2.append('remove_att', String(atts[1].id))
+  fd2.append('files', new File(['kbo'], 'kbo-extract.pdf', { type: 'application/pdf' }))
+  const sent = await post(`/inbox/${slug}/thread/${threadId}/draft`, fd2)
+  assert.match(decodeURIComponent(sent.headers.get('location')!), /Sent to help@monerium\.test/)
+  atts = await all<any>('SELECT filename FROM attachments WHERE message_id = ? ORDER BY id', [draft.id])
+  assert.deepEqual(atts.map((a) => a.filename), ['statutes.pdf', 'kbo-extract.pdf'])
+  assert.ok((await get<any>('SELECT sent_at FROM messages WHERE id = ?', [draft.id]))!.sent_at, 'sent with its files')
+})

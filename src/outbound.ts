@@ -342,10 +342,13 @@ export async function sendComposed(collective: Collective, threadId: number, mem
 
   const { fromAddress, fromHeader } = outboundFrom(collective)
   const messageId = `<req-${threadId}-${crypto.randomBytes(8).toString('hex')}@${cfg.emailDomain}>`
+  // the draft's files go out with it — all of them, or the send stops
+  const { files, missing } = await gatherAttachments(draft.id)
+  if (missing.length) throw new Error(`Could not read ${missing.join(', ')} — remove and re-attach it.`)
 
   let resendEmailId: string | null = null
   if (!cfg.resendKey) {
-    console.log(`\n[outbound:dev] From: ${fromAddress}\n[outbound:dev] To: ${to.join(', ')}${cc.length ? `\n[outbound:dev] Cc: ${cc.join(', ')}` : ''}${bcc.length ? `\n[outbound:dev] Bcc: ${bcc.join(', ')}` : ''}\n[outbound:dev] Subject: ${thread.subject}\n${body}\n`)
+    console.log(`\n[outbound:dev] From: ${fromAddress}\n[outbound:dev] To: ${to.join(', ')}${cc.length ? `\n[outbound:dev] Cc: ${cc.join(', ')}` : ''}${bcc.length ? `\n[outbound:dev] Bcc: ${bcc.join(', ')}` : ''}\n[outbound:dev] Subject: ${thread.subject}\n${body}\n[outbound:dev] attachments: ${files.map((f) => f.filename).join(', ') || 'none'}\n`)
   } else {
     const res = await fetch('https://api.resend.com/emails', {
       method: 'POST',
@@ -359,6 +362,7 @@ export async function sendComposed(collective: Collective, threadId: number, mem
         subject: thread.subject,
         text: body,
         headers: { 'Message-ID': messageId },
+        ...(files.length ? { attachments: files.map((f) => ({ filename: f.filename, content: f.content.toString('base64') })) } : {}),
       }),
     })
     if (!res.ok) throw new Error(`Could not send (${res.status}): ${(await res.text()).slice(0, 200)}`)

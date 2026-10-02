@@ -858,7 +858,6 @@ iframe.msg-frame {
   display: flex; align-items: center; gap: 10px;
   padding: 7px 14px; border-bottom: 1.5px solid var(--line-soft);
 }
-.c-row:focus-within { background: var(--fill); }
 .c-k {
   font-family: var(--mono); font-size: 10.5px; text-transform: uppercase;
   letter-spacing: 1px; color: var(--muted); width: 52px; flex: none;
@@ -867,8 +866,8 @@ iframe.msg-frame {
 .c-in:focus { outline: none; }
 @media (max-width: 560px) { .c-in { font-size: 16px; } .c-static { font-size: 16px; } } /* iOS zoom guard — and the To line keeps pace */
 .ccb summary {
-  list-style: none; cursor: pointer; font-size: 12px; color: var(--muted);
-  padding: 5px 14px; border-bottom: 1.5px solid var(--line-soft);
+  list-style: none; cursor: pointer; font-size: 13px; font-family: var(--mono); color: var(--muted);
+  padding: 9px 14px; border-bottom: 1.5px solid var(--line-soft);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .ccb summary::-webkit-details-marker { display: none; }
@@ -877,6 +876,24 @@ iframe.msg-frame {
 .ccb[open] summary { display: none; }
 .c-static { font-size: 13px; color: var(--muted); font-family: var(--mono); }
 .compose-form textarea { border: none; border-radius: 0; resize: vertical; padding: 12px 14px; }
+/* composers: the card is the focus cue — no blue ring around the field inside it */
+.compose-form textarea:focus, .composer form textarea:focus, .compose-form .c-in:focus, .composer .c-in:focus { outline: none; }
+.compose-form .btn-row { align-items: center; flex-wrap: wrap; }
+.compose-form .attach-field { margin-left: auto; }
+/* attachment picker: chips for each file, × to take one back */
+.attach-field { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.att-new { display: contents; }
+.att-pick {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 220px;
+  border: 1.5px solid var(--line); border-radius: 8px; padding: 4px 6px 4px 10px; font-size: 13px; background: var(--card);
+}
+.att-pick-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.att-pick input { display: none; }
+.att-x { border: none; background: none; cursor: pointer; color: var(--muted); font-size: 15px; line-height: 1; padding: 0 2px; }
+.att-x:hover { color: var(--danger); }
+label.att-pick { cursor: pointer; }
+label.att-pick:has(input:checked) { opacity: 0.5; }
+label.att-pick:has(input:checked) .att-pick-name { text-decoration: line-through; }
 .compose-form .btn-row { padding: 10px 14px; margin: 0; border-top: 1.5px solid var(--line-soft); background: var(--fill); }
 
 /* contacts */

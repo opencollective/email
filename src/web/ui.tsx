@@ -748,15 +748,36 @@ wireLive(document);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
 })();
 
-document.querySelectorAll('.file-input').forEach((inp) => {
+// Attachments: every pick adds to the list (picking again doesn't replace),
+// each file shows as a chip with × to take it back before sending.
+document.querySelectorAll('[data-attach]').forEach((field) => {
+  const inp = field.querySelector('.file-input');
+  const list = field.querySelector('[data-att-list]');
+  if (!inp || !list || typeof DataTransfer === 'undefined') return;
+  let picked = [];
+  const sync = () => {
+    const dt = new DataTransfer();
+    picked.forEach((f) => dt.items.add(f));
+    inp.files = dt.files;
+    list.innerHTML = '';
+    picked.forEach((f, i) => {
+      const chip = document.createElement('span');
+      chip.className = 'att-pick';
+      chip.title = f.name;
+      const name = document.createElement('span');
+      name.className = 'att-pick-name';
+      name.textContent = f.name;
+      const x = document.createElement('button');
+      x.type = 'button'; x.className = 'att-x'; x.textContent = '×';
+      x.setAttribute('aria-label', 'Remove ' + f.name);
+      x.addEventListener('click', () => { picked.splice(i, 1); sync(); });
+      chip.append(name, x);
+      list.appendChild(chip);
+    });
+  };
   inp.addEventListener('change', () => {
-    const label = inp.closest('.file-label');
-    const txt = label && label.querySelector('.file-text');
-    if (!txt) return;
-    const n = inp.files.length;
-    txt.textContent = n === 0 ? (txt.dataset.idle || 'Attach')
-      : n === 1 ? (inp.files[0].name.length > 22 ? inp.files[0].name.slice(0, 21) + '…' : inp.files[0].name)
-      : n + ' files';
+    picked = picked.concat([].slice.call(inp.files));
+    sync();
   });
 });
 
@@ -1005,7 +1026,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '92'
+export const ASSET_V = '93'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">

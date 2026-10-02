@@ -5,7 +5,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import type { Context } from 'hono'
 import { cfg } from '../config.js'
 import {
-  activeMembers, addEvent, addTag, all, allCollectives, attachmentsByMessage, batchAll, contactsFor, createCollective, get, getCollective, getCollectiveByCustomDomain, siblingsOnDomain, messageFoldsQuery, popularTagsQuery, setMessageFold,
+  activeMembers, addEvent, addTag, all, allCollectives, attachmentsByMessage, batchAll, contactsFor, createCollective, get, getCollective, getCollectiveByCustomDomain, messageAttachments, storeAttachment, siblingsOnDomain, messageFoldsQuery, popularTagsQuery, setMessageFold,
   getCollectiveBySlug, getMember, getMemberIn, getThread, kvGet, kvGetMany, kvSet, lastMessageQuery, memberMap, recordThreadSeenUpTo,
   renameCollectiveSlug,
   backfillGuestAccess, canSeeThread, grantThreadAccess, markThreadSeen, membershipsByEmail, readsForMember, removeTag, run, setAssignee, setStatus, tagsByThread, threadMessages, threadReads, threadTags,
@@ -32,7 +32,7 @@ import { ocCollectiveInfo, ocDescriptionContains, sendOcVerificationCode, type O
 import { createRule, deleteRule, describeRule, findMatchingRule, listRules, matchingRule, updateRule, type Rule } from '../rules.js'
 import { emailHtmlDocument } from '../sanitize.js'
 import { sendAppEmail } from '../appmail.js'
-import { readBlob, saveBlob } from '../storage.js'
+import { deleteBlob, readBlob, saveBlob } from '../storage.js'
 import { createCheckoutSession, createPortalSession, stripeUsable } from '../stripe.js'
 import { billingState, canSend, GRACE_DAYS, planLimits, recipientLimit, repliesThisMonth, trialDaysLeft } from '../billing.js'
 import { dayPhrase, escapeHtml, excerpt, fmtDate, fmtDateTime, initials, now, randomToken, relTime, signToken, slugify, splitQuotedTail, verifyToken } from '../util.js'
@@ -2383,7 +2383,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               </div>
             ) : null}
             {canSendRole(member.role) && draftMsg ? (
-            <form method="post" action={`${base}/thread/${thread.id}/draft`} data-pane="reply">
+            <form method="post" action={`${base}/thread/${thread.id}/draft`} data-pane="reply" enctype="multipart/form-data">
               <div class="to note-to">✎ Draft — nothing has been sent yet. Teammates with this link can add internal notes below.</div>
               <div class="c-row">
                 <span class="c-k">To</span>
@@ -2409,6 +2409,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               </div>
               <textarea name="body" rows={8}>{draftMsg.body_text || ''}</textarea>
               <div class="actions">
+                <AttachField existing={attsMap.get(draftMsg.id) ?? []} />
                 <span class="send-stack">
                   <button class="btn send-btn" type="submit" name="action" value="send" data-busy="Sending…">Send</button>
                   <span class="fineprint send-note"><span>as <b>{collectiveAddr}</b></span></span>
@@ -2431,7 +2432,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               {/* the sign-off is in the text, so it can be edited or deleted before sending */}
               <textarea name="body" rows={6} placeholder={`Write to ${replyFirst}…`} data-draft="reply" data-signature={signature} required>{`\n\n${signature}`}</textarea>
               <div class="actions">
-                <label class="file-label"><Icon name="clip" /><span class="file-text" data-idle="Attach">Attach</span><input type="file" name="files" multiple class="file-input" /></label>
+                <AttachField />
                 <span class="send-stack">
                   <button class="btn send-btn" type="submit" data-busy="Sending…">Send</button>
                   <span class="fineprint send-note" data-send-note>
@@ -2682,6 +2683,35 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
 
 const MAX_UPLOAD = 15 * 1024 * 1024 // total, per reply
 
+/** Files posted in a multipart form's `files` field, empty ones dropped. */
+async function uploadedFiles(body: Record<string, unknown>, already = 0) {
+  const raw = body['files']
+  const files = (Array.isArray(raw) ? raw : raw ? [raw] : []).filter((f): f is File => f instanceof File && f.size > 0)
+  const total = already + files.reduce((s, f) => s + f.size, 0)
+  if (total > MAX_UPLOAD) throw new Error(`Attachments too large (${Math.ceil(total / 1024 / 1024)} MB) — keep it under 15 MB.`)
+  return Promise.all(files.map(async (f) => ({
+    filename: f.name,
+    contentType: f.type || 'application/octet-stream',
+    content: Buffer.from(await f.arrayBuffer()),
+  })))
+}
+
+/** One attachment field for every composer (new email, draft, reply): pick
+ *  files, see each one, take any back before sending. Files already stored
+ *  on a draft come with a remove toggle (a checkbox, so it works without JS). */
+const AttachField: FC<{ existing?: Attachment[] }> = ({ existing }) => (
+  <span class="attach-field" data-attach>
+    {(existing ?? []).map((a) => (
+      <label class="att-pick" title={`${a.filename} — click to remove`}>
+        <input type="checkbox" name="remove_att" value={String(a.id)} />
+        <span class="att-pick-name">{a.filename}</span><span class="att-x" aria-hidden="true">×</span>
+      </label>
+    ))}
+    <span class="att-new" data-att-list></span>
+    <label class="file-label"><Icon name="clip" /><span class="file-text">Attach</span><input type="file" name="files" multiple class="file-input" /></label>
+  </span>
+)
+
 app.post('/inbox/:addr/thread/:id/reply', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
@@ -2692,15 +2722,7 @@ app.post('/inbox/:addr/thread/:id/reply', async (c) => {
   const base = `/inbox/${t.collective.slug}`
   const body = await c.req.parseBody({ all: true })
   try {
-    const raw = body['files']
-    const files = (Array.isArray(raw) ? raw : raw ? [raw] : []).filter((f): f is File => f instanceof File && f.size > 0)
-    const total = files.reduce((s, f) => s + f.size, 0)
-    if (total > MAX_UPLOAD) throw new Error(`Attachments too large (${Math.ceil(total / 1024 / 1024)} MB) — keep it under 15 MB.`)
-    const attachments = await Promise.all(files.map(async (f) => ({
-      filename: f.name,
-      contentType: f.type || 'application/octet-stream',
-      content: Buffer.from(await f.arrayBuffer()),
-    })))
+    const attachments = await uploadedFiles(body)
     const cc = parseEmails(String(body.cc || ''))
     const bcc = parseEmails(String(body.bcc || ''))
     await sendCollectiveReply(t.collective, thread.id, String(body.body || ''), t.member, 'web', attachments, cc, bcc)
@@ -2774,7 +2796,7 @@ const ComposeForm = ({ base, addr, signature, to }: { base: string; addr: string
   <div class="page">
     <h1>New email</h1>
     <p class="muted">Sent as <b>{addr}</b>. Save it as a draft first and the thread gets a link you can share — teammates can weigh in with internal notes before anything goes out.</p>
-    <form method="post" action={`${base}/compose`} class="card compose-form">
+    <form method="post" action={`${base}/compose`} class="card compose-form" enctype="multipart/form-data">
       <div class="c-row">
         <span class="c-k">To</span>
         <input class="c-in" name="to" value={to || ''} placeholder="them@example.org — comma-separate several" autocomplete="off" spellcheck={false} autofocus={!to} data-rcpt="list" />
@@ -2796,6 +2818,7 @@ const ComposeForm = ({ base, addr, signature, to }: { base: string; addr: string
       <div class="btn-row">
         <button class="btn" type="submit" name="action" value="send" data-busy="Sending…">Send</button>
         <button class="btn ghost" type="submit" name="action" value="draft" data-busy="Saving…">Save as draft</button>
+        <AttachField />
       </div>
     </form>
   </div>
@@ -2820,7 +2843,13 @@ app.post('/inbox/:addr/compose', async (c) => {
   const blocked = senderBlock(c, t)
   if (blocked) return blocked
   const base = `/inbox/${t.collective.slug}`
-  const body = await c.req.parseBody()
+  const body = await c.req.parseBody({ all: true })
+  let files: Awaited<ReturnType<typeof uploadedFiles>>
+  try {
+    files = await uploadedFiles(body)
+  } catch (err) {
+    return c.redirect(`${base}/compose?m=` + encodeURIComponent(err instanceof Error ? err.message : 'Could not read the attachments.'))
+  }
   const to = parseRecipients(body.to)
   const cc = parseRecipients(body.cc)
   const bcc = parseRecipients(body.bcc)
@@ -2834,10 +2863,11 @@ app.post('/inbox/:addr/compose', async (c) => {
   const th = await run(`INSERT INTO threads (collective_id, subject, status, counterpart_email, first_message_at, last_message_at, last_direction, created_at, updated_at)
     VALUES (?, ?, 'draft', ?, ?, ?, 'outbound', ?, ?)`,
     [t.collective.id, subject, to[0] ?? null, ts, ts, ts, ts])
-  await run(`INSERT INTO messages (thread_id, direction, from_email, from_name, to_json, cc_json, bcc_json, body_text, sent_by_member_id, created_at)
+  const draftRow = await run(`INSERT INTO messages (thread_id, direction, from_email, from_name, to_json, cc_json, bcc_json, body_text, sent_by_member_id, created_at)
     VALUES (?, 'outbound', ?, ?, ?, ?, ?, ?, ?, ?)`,
     [th.lastId, outboundFrom(t.collective).fromAddress, t.collective.name,
      JSON.stringify(to), JSON.stringify(cc), JSON.stringify(bcc), text, t.member.id, ts])
+  for (const [i, f] of files.entries()) await storeAttachment(draftRow.lastId, f.filename, f.contentType, f.content, i)
 
   if (!send) {
     return c.redirect(`${base}/thread/${th.lastId}?m=` + encodeURIComponent('Draft saved — share this page with teammates, or send when ready.'))
@@ -2860,10 +2890,27 @@ app.post('/inbox/:addr/thread/:id/draft', async (c) => {
   const thread = await threadOf(c, t)
   if (!thread || thread.status !== 'draft') return c.notFound()
   const base = `/inbox/${t.collective.slug}`
-  const body = await c.req.parseBody()
+  const body = await c.req.parseBody({ all: true })
   const draft = await get<Message>(
     "SELECT * FROM messages WHERE thread_id = ? AND direction = 'outbound' AND sent_at IS NULL ORDER BY id LIMIT 1", [thread.id])
   if (!draft) return c.notFound()
+
+  // attachments: drop the ticked ones (only this draft's), then add new files
+  const rawRemove = body['remove_att']
+  const removeIds = new Set((Array.isArray(rawRemove) ? rawRemove : rawRemove ? [rawRemove] : []).map((x) => Number(x)))
+  const kept: Attachment[] = []
+  for (const a of await messageAttachments(draft.id)) {
+    if (removeIds.has(a.id)) {
+      await run('DELETE FROM attachments WHERE id = ? AND message_id = ?', [a.id, draft.id])
+      if (a.path) await deleteBlob(a.path).catch(() => {})
+    } else kept.push(a)
+  }
+  try {
+    const added = await uploadedFiles(body, kept.reduce((s, a) => s + a.size, 0))
+    for (const [i, f] of added.entries()) await storeAttachment(draft.id, f.filename, f.contentType, f.content, kept.length + i)
+  } catch (err) {
+    return c.redirect(`${base}/thread/${thread.id}?m=` + encodeURIComponent(err instanceof Error ? err.message : 'Could not read the attachments.'))
+  }
 
   const to = parseRecipients(body.to)
   const subject = String(body.subject || '').trim().slice(0, 200) || thread.subject
