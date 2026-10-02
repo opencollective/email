@@ -109,3 +109,36 @@ test('guests are only notified about their threads', async () => {
   const toGuest = mails.filter((m) => m.to === 'quiet@out.test')
   assert.equal(toGuest.length, 1, 'the shared thread notifies the guest; the private one does not')
 })
+
+test('"N threads shared" opens the inbox list narrowed to what that guest can see, assigned or not', async () => {
+  const { createCollective, run, get, grantThreadAccess } = await import('../src/db.js')
+  const { createSession } = await import('../src/auth.js')
+  const { now } = await import('../src/util.js')
+  const slug = `sh${Date.now() % 1000000}`
+  const col = await createCollective(slug, 'Share Co')
+  const admin = `adm-${Date.now()}@t.test`
+  const a = await run("INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, 'Leen', 'admin', 'every', ?)", [col.id, admin, now()])
+  const g = await run("INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, 'Ruta', 'guest', 'every', ?)", [col.id, `ruta-${Date.now()}@t.test`, now()])
+  const mk = async (subject: string, assignee: number | null) => (await run(`INSERT INTO threads (collective_id, subject, status, counterpart_email, assignee_member_id, first_message_at, last_message_at, last_direction, created_at, updated_at)
+    VALUES (?, ?, 'needs_reply', 'x@out.test', ?, ?, ?, 'inbound', ?, ?)`, [col.id, subject, assignee, now(), now(), now(), now()])).lastId
+  const stillHers = await mk('Shared and assigned', g.lastId)
+  const handedBack = await mk('Shared, now with Leen', a.lastId)
+  await mk('Never shared', null)
+  await grantThreadAccess(g.lastId, stillHers)
+  await grantThreadAccess(g.lastId, handedBack)
+  const cookie = { cookie: `requests_sid=${await createSession(admin)}` }
+
+  const members = await (await app.request(`/inbox/${slug}/members`, { headers: cookie })).text()
+  assert.match(members, new RegExp(`<a href="/inbox/${slug}\\?f=all&amp;shared=${g.lastId}">2 threads shared</a>`))
+
+  const list = await (await app.request(`/inbox/${slug}?f=all&shared=${g.lastId}`, { headers: cookie })).text()
+  assert.match(list, /Threads shared with <b>Ruta<\/b>/)
+  assert.match(list, /Shared and assigned/)
+  assert.match(list, /Shared, now with Leen/, 'still shared even though no longer assigned to her')
+  assert.doesNotMatch(list, /Never shared/)
+  assert.doesNotMatch(list, /class="chip tag-chip on"/, 'no pill claims this view')
+  // and visiting it does not become the inbox's remembered filter
+  const inbox = await (await app.request(`/inbox/${slug}`, { headers: cookie })).text()
+  assert.doesNotMatch(inbox, /Threads shared with/)
+  void get
+})

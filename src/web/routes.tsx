@@ -1206,11 +1206,14 @@ app.get('/inbox/:addr', async (c) => {
   // pick another); prefetches and pill-warming must never count as picking
   const askedF = c.req.query('f')
   const isPrefetch = c.req.header('x-prefetch') === '1' || (c.req.header('sec-purpose') || '').includes('prefetch')
+  // "threads shared with <guest>": the same list, narrowed to what that
+  // person can see — whether or not it is still assigned to them
+  const sharedWith = member.role !== 'guest' ? Number(c.req.query('shared')) || 0 : 0
   let f: string
   if (askedF && FILTERS[askedF]) {
     f = askedF
     // spam and deleted are places you visit, not places you live
-    if (!isPrefetch && f !== 'spam' && f !== 'deleted' && !isDraftsView(f)) {
+    if (!isPrefetch && !sharedWith && f !== 'spam' && f !== 'deleted' && !isDraftsView(f)) {
       kvSet(`lastfilter:${member.id}`, f).catch(() => {})
     }
   } else {
@@ -1235,6 +1238,10 @@ app.get('/inbox/:addr', async (c) => {
   if (assignedTo) {
     where += ' AND t.assignee_member_id = ?'
     args.push(assignedTo)
+  }
+  if (sharedWith) {
+    where += ' AND t.id IN (SELECT thread_id FROM thread_access WHERE member_id = ?)'
+    args.push(sharedWith)
   }
   if (selTags.length || untagged) {
     const parts: string[] = []
@@ -1341,7 +1348,7 @@ app.get('/inbox/:addr', async (c) => {
       {(() => {
         const keep = q ? `&q=${encodeURIComponent(q)}` : ''
         const pill = (key: string, label: string, count?: number) => (
-          <a class={`chip tag-chip ${f === key && !tag && !assignedTo ? 'on' : ''}`} href={`${base}?f=${key}${keep}`}>
+          <a class={`chip tag-chip ${f === key && !tag && !assignedTo && !sharedWith ? 'on' : ''}`} href={`${base}?f=${key}${keep}`}>
             {label}{count ? <span class="count">{count}</span> : null}
           </a>
         )
@@ -1427,6 +1434,9 @@ app.get('/inbox/:addr', async (c) => {
       </dialog>
       <div class="rows" data-live={`${base}/ping`} data-live-v={liveV}>
         {/* inside .rows so a pill-cache swap carries it along */}
+        {sharedWith ? (
+          <div class="deleted-note">Threads shared with <b>{memberName(members.get(sharedWith))}</b> — what they can see, assigned to them or not. <a href={`${base}?f=all`}>Show all threads</a></div>
+        ) : null}
         {f === 'deleted' ? (
           <div class="deleted-note">Deleted threads stay here for <b>30 days</b>, then are removed permanently — open one to restore it.</div>
         ) : null}
@@ -3902,7 +3912,9 @@ app.get('/inbox/:addr/members', async (c) => {
             <div class="member-table">
               {members.filter((m) => m.role === 'guest').map((m) => (
                 <MemberRow m={m} viewer={member} editable={isAdmin && m.id !== member.id} lastAdmin={false}
-                  meta={<small>{guestThreadCounts.get(m.id) ?? 0} thread{(guestThreadCounts.get(m.id) ?? 0) === 1 ? '' : 's'} shared</small>} />
+                  meta={(guestThreadCounts.get(m.id) ?? 0) > 0
+                    ? <small><a href={`${base}?f=all&shared=${m.id}`}>{guestThreadCounts.get(m.id)} thread{guestThreadCounts.get(m.id) === 1 ? '' : 's'} shared</a></small>
+                    : <small>0 threads shared</small>} />
               ))}
             </div>
           </>) : null}
