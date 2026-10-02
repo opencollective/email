@@ -84,7 +84,7 @@ test('a draft offers a share link: anyone who joins with it is a guest on that t
   const { threadId } = await fx.compose('Please review')
   const html = await fx.page(`/inbox/${fx.slug}/thread/${threadId}`)
   assert.match(html, /Get a second pair of eyes/)
-  assert.match(html, /data-dialog="#assign-modal">Assign to someone/)
+  assert.match(html, /data-dialog="#assign-modal">Assign to a teammate/)
   const link = html.match(new RegExp(`(http://test\\.local/${fx.slug}/join/[A-Za-z0-9_-]+)`))![1]
   // the same link on the next visit, not a new one each time
   assert.ok((await fx.page(`/inbox/${fx.slug}/thread/${threadId}`)).includes(link))

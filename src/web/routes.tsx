@@ -2141,14 +2141,15 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             </div>
           ) : null}
           {shareUrl ? (
-            <div class="nudge draft-share">
-              <span><b>Get a second pair of eyes before it goes out.</b> Assign it to a teammate, or share this link with anyone: they join as a guest on this thread only.</span>
-              <span class="nudge-acts">
-                <button class="btn small ghost" type="button" data-dialog="#assign-modal">Assign to someone…</button>
-              </span>
-              <div class="invite-row">
-                <code class="invite-url">{shareUrl}</code>
-                <button class="icon-btn" type="button" data-copy={shareUrl} title="Copy link" aria-label="Copy link"><Icon name="copy" /></button>
+            <div class="draft-share">
+              <p class="ds-lead"><b>Get a second pair of eyes before it goes out.</b> <span>Share this link — whoever opens it joins as a guest on this thread only.</span></p>
+              <div class="ds-row">
+                <span class="copy-field">
+                  <code title={shareUrl}>{shareUrl}</code>
+                  <button class="icon-btn" type="button" data-copy={shareUrl} title="Copy link" aria-label="Copy link"><Icon name="copy" /></button>
+                </span>
+                <span class="ds-or">or</span>
+                <button class="btn small ghost" type="button" data-dialog="#assign-modal">Assign to a teammate</button>
               </div>
             </div>
           ) : null}
@@ -2469,14 +2470,8 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                 <input class="c-in" name="subject" value={thread.subject} maxlength={200} />
               </div>
               <textarea name="body" rows={8}>{draftMsg.body_text || ''}</textarea>
-              <div class="actions">
-                <AttachField existing={attsMap.get(draftMsg.id) ?? []} />
-                <span class="send-stack">
-                  <button class="btn send-btn" type="submit" name="action" value="send" data-busy="Sending…">Send</button>
-                  <span class="fineprint send-note"><span>as <b>{collectiveAddr}</b></span></span>
-                </span>
-                <button class="btn ghost" type="submit" name="action" value="save" data-busy="Saving…">Save changes</button>
-              </div>
+              <ComposerBar save={{ label: 'Save changes', value: 'save' }} existing={attsMap.get(draftMsg.id) ?? []}
+                note={<><span>Sending to <b>{JSON.parse(draftMsg.to_json || '[]').join(', ') || 'nobody yet'}</b></span><span>as <b>{collectiveAddr}</b></span></>} />
             </form>
             ) : null}
             {canSendRole(member.role) && !draftMsg ? (
@@ -2492,17 +2487,11 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               </details>
               {/* the sign-off is in the text, so it can be edited or deleted before sending */}
               <textarea name="body" rows={6} placeholder={`Write to ${replyFirst}…`} data-draft="reply" data-signature={signature} required>{`\n\n${signature}`}</textarea>
-              <div class="actions">
-                <AttachField />
-                <span class="send-stack">
-                  <button class="btn send-btn" type="submit" data-busy="Sending…">Send</button>
-                  <span class="fineprint send-note" data-send-note>
-                    <span>Sending to <b>{replyTo.email || 'unknown'}</b></span>
-                    {threadCc.length ? <span>copying <b data-cc-echo>{threadCc.join(', ')}</b></span> : <span hidden>copying <b data-cc-echo></b></span>}
-                    <span>as <b>{collectiveAddr}</b></span>
-                  </span>
-                </span>
-              </div>
+              <ComposerBar note={<>
+                <span>Sending to <b>{replyTo.email || 'unknown'}</b></span>
+                {threadCc.length ? <span>copying <b data-cc-echo>{threadCc.join(', ')}</b></span> : <span hidden>copying <b data-cc-echo></b></span>}
+                <span>as <b>{collectiveAddr}</b></span>
+              </>} />
             </form>
             ) : null}
             <form method="post" action={`${base}/thread/${thread.id}/note`} data-pane="note" class={canSendRole(member.role) ? 'hidden' : ''}>
@@ -2517,10 +2506,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                   labels: mentionLabels(activeList).map((c) => [c.label, c.member.id]),
                 })}
               ></textarea>
-              <div class="actions">
-                <button class="btn send-btn" type="submit" data-busy="Saving…">Add internal note</button>
-                <span class="hint">@mention a member to email them this note right away.</span>
-              </div>
+              <ComposerBar label="Add internal note" busy="Saving…" attach={false} hint="@mention a member to email them this note right away." />
             </form>
           </div>
           )}
@@ -2762,6 +2748,7 @@ async function uploadedFiles(body: Record<string, unknown>, already = 0) {
  *  on a draft come with a remove toggle (a checkbox, so it works without JS). */
 const AttachField: FC<{ existing?: Attachment[] }> = ({ existing }) => (
   <span class="attach-field" data-attach>
+    <label class="file-label"><Icon name="clip" /><span class="file-text">Attach</span><input type="file" name="files" multiple class="file-input" /></label>
     {(existing ?? []).map((a) => (
       <label class="att-pick" title={`${a.filename} — click to remove`}>
         <input type="checkbox" name="remove_att" value={String(a.id)} />
@@ -2769,8 +2756,25 @@ const AttachField: FC<{ existing?: Attachment[] }> = ({ existing }) => (
       </label>
     ))}
     <span class="att-new" data-att-list></span>
-    <label class="file-label"><Icon name="clip" /><span class="file-text">Attach</span><input type="file" name="files" multiple class="file-input" /></label>
   </span>
+)
+
+/** The one action bar under every composer — new email, draft, reply,
+ *  internal note — so Send is always in the same place: first, on the left,
+ *  then the save button, then attachments; who it goes to underneath. */
+const ComposerBar: FC<{
+  label?: string; busy?: string
+  save?: { label: string; value: string }
+  attach?: boolean; existing?: Attachment[]
+  note?: Child; hint?: string
+}> = (p) => (
+  <div class="composer-bar">
+    <button class="btn send-btn" type="submit" name="action" value="send" data-busy={p.busy ?? 'Sending…'}>{p.label ?? 'Send'}</button>
+    {p.save ? <button class="btn ghost" type="submit" name="action" value={p.save.value} data-busy="Saving…">{p.save.label}</button> : null}
+    {p.attach !== false ? <AttachField existing={p.existing} /> : null}
+    {p.hint ? <span class="hint">{p.hint}</span> : null}
+    {p.note ? <span class="fineprint send-note" data-send-note>{p.note}</span> : null}
+  </div>
 )
 
 app.post('/inbox/:addr/thread/:id/reply', async (c) => {
@@ -2876,11 +2880,7 @@ const ComposeForm = ({ base, addr, signature, to }: { base: string; addr: string
         <input class="c-in" name="subject" maxlength={200} required />
       </div>
       <textarea name="body" rows={10} data-signature={signature}>{`\n\n${signature}`}</textarea>
-      <div class="btn-row">
-        <button class="btn" type="submit" name="action" value="send" data-busy="Sending…">Send</button>
-        <button class="btn ghost" type="submit" name="action" value="draft" data-busy="Saving…">Save as draft</button>
-        <AttachField />
-      </div>
+      <ComposerBar save={{ label: 'Save as draft', value: 'draft' }} note={<span>as <b>{addr}</b></span>} />
     </form>
   </div>
 )

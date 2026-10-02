@@ -171,7 +171,9 @@ document.querySelectorAll('[data-filter]').forEach((form) => {
     // send what you are writing — the one shortcut that works mid-typing
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       const form = document.activeElement && document.activeElement.closest && document.activeElement.closest('form');
-      if (form && form.querySelector('textarea')) { e.preventDefault(); form.requestSubmit(); }
+      // submit through the Send button, so the form says action=send — a
+      // bare submit would make a new email "save as draft" instead
+      if (form && form.querySelector('textarea')) { e.preventDefault(); form.requestSubmit(form.querySelector('.send-btn') || undefined); }
       return;
     }
     if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
@@ -1037,7 +1039,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '94'
+export const ASSET_V = '95'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">

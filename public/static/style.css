@@ -878,8 +878,6 @@ iframe.msg-frame {
 .compose-form textarea { border: none; border-radius: 0; resize: vertical; padding: 12px 14px; }
 /* composers: the card is the focus cue — no blue ring around the field inside it */
 .compose-form textarea:focus, .composer form textarea:focus, .compose-form .c-in:focus, .composer .c-in:focus { outline: none; }
-.compose-form .btn-row { align-items: center; flex-wrap: wrap; }
-.compose-form .attach-field { margin-left: auto; }
 /* attachment picker: chips for each file, × to take one back */
 .attach-field { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
 .att-new { display: contents; }
@@ -1476,5 +1474,30 @@ kbd {
 }
 .nudge > span:first-child { flex: 1 1 320px; min-width: 0; }
 .nudge-acts { display: inline-flex; align-items: center; gap: 12px; flex: none; }
-.draft-share .invite-row { flex: 1 1 100%; display: flex; align-items: center; gap: 6px; min-width: 0; }
-.draft-share .invite-url { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* draft share: one lead line, then the link and the alternative side by side */
+.draft-share {
+  margin: 12px 0 0; padding: 12px 14px; border: 1.5px dashed var(--line); border-radius: 10px; background: var(--card);
+  display: flex; flex-direction: column; gap: 10px; font-size: 13.5px;
+}
+.draft-share .ds-lead { margin: 0; }
+.draft-share .ds-lead span { color: var(--muted); }
+.draft-share .ds-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.copy-field {
+  flex: 1 1 280px; min-width: 0; display: flex; align-items: center; gap: 4px;
+  border: 1.5px solid var(--line); border-radius: 8px; background: var(--fill); padding: 2px 4px 2px 10px;
+}
+.copy-field code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12px; color: var(--ink); }
+.draft-share .ds-or { color: var(--muted); font-size: 12.5px; }
+
+/* the composer action bar: Send first, then save, then attachments; who it
+   goes to underneath — identical for new email, draft, reply and note */
+.composer-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px;
+  padding: 10px 14px; border-top: 1.5px solid var(--line-soft); background: var(--fill);
+}
+.composer-bar .hint { font-family: var(--mono); font-size: 10.5px; color: var(--muted); flex: 1; min-width: 0; }
+.composer-bar .send-note {
+  flex-basis: 100%; margin: 0; display: flex; flex-direction: row; flex-wrap: wrap; gap: 0 10px;
+  align-items: baseline; text-align: left; line-height: 1.4; color: var(--muted);
+}
+.composer-bar .file-label { padding: 9px 14px; color: var(--ink); background: var(--card); border-radius: 8px; }
