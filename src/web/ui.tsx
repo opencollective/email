@@ -28,6 +28,8 @@ document.addEventListener('click', (e) => {
     box.querySelectorAll('[data-tab]').forEach(x => x.classList.toggle('on', x === tab));
     box.querySelectorAll('[data-pane]').forEach(p => p.classList.toggle('hidden', p.getAttribute('data-pane') !== tab.getAttribute('data-tab')));
     box.classList.toggle('note-mode', tab.getAttribute('data-tab') === 'note');
+    // a pane sized while hidden measured zero — size it now that it shows
+    box.querySelectorAll('[data-pane]:not(.hidden) textarea').forEach((ta) => { if (typeof autoGrow === 'function') autoGrow(ta); });
   }
   const copy = e.target.closest('[data-copy]');
   if (copy) {
@@ -1039,7 +1041,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '98'
+export const ASSET_V = '100'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">

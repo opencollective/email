@@ -1509,3 +1509,21 @@ kbd {
 /* long names in the fixed sidebar truncate instead of widening it */
 .side .org > div, .side .org-name, .side .org .addr { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .side .nav-item { min-width: 0; }
+
+/* thread header: who's here, and the chips, each on ONE line that scrolls
+   sideways — wrapping turned a phone header into half a screen */
+.head-people { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+.head-people::-webkit-scrollbar, .chip-scroll::-webkit-scrollbar { display: none; }
+.hp-group { flex: none; }
+.hp-group small { white-space: nowrap; }
+.thread-sub { flex-wrap: nowrap; }
+.chip-scroll { display: flex; align-items: center; gap: 8px; overflow-x: auto; min-width: 0; flex: 0 1 auto; scrollbar-width: none; }
+.chip-scroll > *, .chip-scroll form { flex: none; display: inline-flex; align-items: center; margin: 0; }
+.thread-sub .tag-add { flex: none; }
+/* what your role lets you do, under the composer */
+.role-note { margin: 0; padding: 10px 16px; font-size: 13px; color: var(--muted); border-top: 1.5px solid var(--line-soft); }
+/* never a collapsed composer, whatever measured it */
+.composer textarea { min-height: 96px; }
+/* phones: "sent by …" clipped to a lone letter reads as a glitch; the avatar
+   already says who sent it */
+@media (max-width: 560px) { .msg-head .who .sentby { display: none; } }

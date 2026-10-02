@@ -76,6 +76,11 @@ const readerBlock = (c: Context<Env>, t: { collective: Collective; member: Membe
   (t.member.role === 'reader'
     ? c.redirect(`/inbox/${t.collective.slug}?m=` + encodeURIComponent('You have read access — ask an admin to let you comment or send.'))
     : null)
+/** Closing, spamming, deleting, restoring: a sender's call. Commenters
+ *  discuss and propose; they don't change what happens to a thread. A 403
+ *  (not a redirect), so the list's keyboard triage reports it honestly. */
+const triageBlock = (c: Context<Env>, t: { collective: Collective; member: Member }) =>
+  archivedBlock(c, t) ?? (!canSendRole(t.member.role) ? c.text('Only members who can send can close, mark as spam or delete a thread.', 403) : null)
 const senderBlock = (c: Context<Env>, t: { collective: Collective; member: Member }) =>
   archivedBlock(c, t) ??
   (!canSendRole(t.member.role)
@@ -2089,7 +2094,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
           {thread.deleted_at ? (
             <div class="deleted-note thread-deleted">
               This thread is deleted — it will be removed permanently on <b>{fmtDate(thread.deleted_at + 30 * 86400)}</b>.
-              {member.role !== 'reader' ? (
+              {canSendRole(member.role) ? (
                 <form method="post" action={`${base}/thread/${thread.id}/restore`} class="inline">
                   <button class="btn small" type="submit" data-busy="Restoring…">Restore thread</button>
                 </form>
@@ -2097,6 +2102,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             </div>
           ) : null}
           <div class="thread-sub">
+            <div class="chip-scroll">
             {thread.deleted_at ? <span class="chip deleted-tag">deleted</span> : null}
             <StatusChip status={thread.status} />
             {rule?.close && !thread.assignee_member_id ? (
@@ -2118,6 +2124,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                   <button class="chip removable" type="submit" title="Remove tag">#{tg.name} ×</button>
                 </form>
               ))}
+            </div>
             {member.role !== 'reader' ? (
               <details class="tag-add">
                 <summary class="chip" title="Add a tag">+ tag</summary>
@@ -2456,7 +2463,12 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                 <button class="tab on" data-tab="reply" type="button"><Icon name="mail" /> {draftMsg ? 'Edit draft' : `Reply to ${replyFirst}`}</button>
                 <button class="tab" data-tab="note" type="button"><Icon name="note" /> Internal note</button>
               </div>
-            ) : null}
+            ) : (
+              <div class="tabs">
+                <button class="tab on" data-tab="note" type="button"><Icon name="note" /> Internal note</button>
+                <button class="tab" data-tab="propose" type="button"><Icon name="mail" /> Propose a reply</button>
+              </div>
+            )}
             {canSendRole(member.role) && draftMsg ? (
             <form method="post" action={`${base}/thread/${thread.id}/draft`} data-pane="reply" enctype="multipart/form-data">
               <div class="to note-to">✎ Draft — nothing has been sent yet. Teammates with this link can add internal notes below.</div>
@@ -2521,9 +2533,23 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               ></textarea>
               <ComposerBar label="Add internal note" busy="Saving…" attach={false} hint="@mention a member to email them this note right away." />
             </form>
+            {!canSendRole(member.role) ? (
+              <form method="post" action={`${base}/thread/${thread.id}/propose`} data-pane="propose" class="hidden">
+                <div class="c-row"><span class="c-k">To</span><span class="c-static c-to">{replyTo.email || 'unknown'}</span></div>
+                <textarea name="body" rows={6} placeholder={`Write the reply you'd send to ${replyFirst}…`} data-draft="propose" required>{
+                  proposedDrafts.find((d) => d.member_id === member.id)?.body ?? `\n\n${signature}`
+                }</textarea>
+                <ComposerBar label="Propose this reply" busy="Proposing…" attach={false}
+                  note={<span>Nothing is sent: a teammate who can send reviews it and sends it as <b>{collectiveAddr}</b>.</span>} />
+              </form>
+            ) : null}
+            {!canSendRole(member.role) ? (
+              <p class="role-note">You're signed in as a <b>{member.role === 'guest' ? 'guest on this thread' : 'commenter'}</b>: you can add internal notes and <b>propose a reply</b>, which a teammate with sending rights reviews and sends.</p>
+            ) : null}
           </div>
           )}
 
+          {canSendRole(member.role) ? (
           <div class="thread-actions">
             {thread.status === 'closed' || thread.status === 'spam' ? (
               <form method="post" action={`${base}/thread/${thread.id}/status`}>
@@ -2547,6 +2573,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               </form>
             ) : null}
           </div>
+          ) : null}
 
           {member.role !== 'reader' ? (
             <dialog id="assign-modal" class="modal assign-modal">
@@ -2637,7 +2664,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               // one action, and when the last message landed. A thread that has
               // been sitting a while is a fact, not something to be warned about.
               const when = dayPhrase(thread.last_message_at)
-              const closeIt = member.role !== 'reader' && thread.status !== 'closed' ? (
+              const closeIt = canSendRole(member.role) && thread.status !== 'closed' ? (
                 <form method="post" action={`${base}/thread/${thread.id}/status`} class="next-close">
                   <input type="hidden" name="status" value="closed" />
                   or <button class="linkish" type="submit">mark as closed</button>
@@ -2838,6 +2865,24 @@ app.post('/inbox/:addr/thread/:id/forward', async (c) => {
   } catch (err) {
     return c.redirect(`${base}/thread/${thread.id}?m=` + encodeURIComponent(`Could not forward: ${err instanceof Error ? err.message : 'unknown error'}`))
   }
+})
+
+/** A commenter (or guest) proposes the reply: stored like an agent's proposal,
+ *  shown to senders with "Use this draft". One live proposal per person per
+ *  thread — a newer one replaces it. */
+app.post('/inbox/:addr/thread/:id/propose', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const blocked = readerBlock(c, t)
+  if (blocked) return blocked
+  const thread = await threadOf(c, t)
+  if (!thread) return c.notFound()
+  const text = String((await c.req.parseBody()).body || '').trim().slice(0, 50_000)
+  const back = `/inbox/${t.collective.slug}/thread/${thread.id}`
+  if (!text) return c.redirect(back)
+  await run('DELETE FROM thread_drafts WHERE thread_id = ? AND member_id = ?', [thread.id, t.member.id])
+  await run('INSERT INTO thread_drafts (thread_id, member_id, body, created_at) VALUES (?, ?, ?, ?)', [thread.id, t.member.id, text, now()])
+  return c.redirect(`${back}?m=` + encodeURIComponent('Reply proposed ✓ — a teammate who can send will review it and send it.'))
 })
 
 app.post('/inbox/:addr/thread/:id/note', async (c) => {
@@ -3177,7 +3222,7 @@ app.post('/inbox/:addr/thread/:id/sender', async (c) => {
 app.post('/inbox/:addr/thread/:id/status', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
-  const blocked = readerBlock(c, t)
+  const blocked = triageBlock(c, t)
   if (blocked) return blocked
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
@@ -3250,7 +3295,7 @@ app.post('/inbox/:addr/thread/:id/seen', async (c) => {
 app.post('/inbox/:addr/thread/:id/delete', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
-  const blocked = readerBlock(c, t)
+  const blocked = triageBlock(c, t)
   if (blocked) return blocked
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
@@ -3262,7 +3307,7 @@ app.post('/inbox/:addr/thread/:id/delete', async (c) => {
 app.post('/inbox/:addr/thread/:id/restore', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
-  const blocked = readerBlock(c, t)
+  const blocked = triageBlock(c, t)
   if (blocked) return blocked
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
