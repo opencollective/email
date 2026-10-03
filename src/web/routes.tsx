@@ -1069,6 +1069,17 @@ app.get('/admin', async (c) => {
         </div>
 
         <section class="card admin-code">
+          <h2>Resend a notification to me</h2>
+          <p class="muted">Paste a thread link: its latest incoming message is notified again, to your own address only (you must be a member of that collective).</p>
+          <form method="post" action="/admin/renotify" class="assign-form">
+            <input class="input" name="url" placeholder="https://collective.email/inbox/commonshub/thread/123" required />
+            <select class="input" name="account">
+              {c.get('accounts').map((a) => <option value={a.email} selected={a.email === 'xdamman@gmail.com'}>{a.email}</option>)}
+            </select>
+            <button class="btn small" type="submit" data-busy="Sending…">Resend to me</button>
+          </form>
+        </section>
+        <section class="card admin-code">
           <h2>Discount code</h2>
           <p class="muted">Redeemed by that collective's admin in Settings. Months of the plan, or free forever.</p>
           <form method="get" action="/admin" class="assign-form">
@@ -1124,6 +1135,28 @@ app.get('/admin', async (c) => {
 /** Platform admin: put a collective on a plan. The only way to change this
  *  used to be a discount code or a direct database write, and the database is
  *  not reachable from anywhere but the app. */
+/** Platform admin: re-send a thread's latest notification to their OWN
+ *  signed-in address (only if they are a member there) — for checking how a
+ *  notification renders. Never to anyone else. */
+app.post('/admin/renotify', async (c) => {
+  if (!platformAdminAccount(c)) return c.notFound()
+  const body = await c.req.parseBody()
+  const m = String(body.url || '').match(/\/inbox\/([a-z0-9-]+)\/thread\/(\d+)/)
+  // one of YOUR signed-in accounts — the session is the proof, never the form
+  const account = c.get('accounts').find((a) => a.email === String(body.account || ''))?.email
+  if (!m) return c.redirect('/admin?m=' + encodeURIComponent('That is not a thread link.'))
+  const collective = await getCollectiveBySlug(m[1])
+  const thread = collective ? await getThread(Number(m[2])) : undefined
+  if (!collective || !thread || thread.collective_id !== collective.id) return c.redirect('/admin?m=' + encodeURIComponent('No such thread.'))
+  const me = account ? await getMemberIn(collective.id, account) : await memberAmongAccounts(c, collective.id)
+  if (!me || me.removed_at) return c.redirect('/admin?m=' + encodeURIComponent(`${account ?? 'None of your signed-in accounts'} is not a member of ${collective.slug}.`))
+  const msg = await get<Message>("SELECT * FROM messages WHERE thread_id = ? AND direction = 'inbound' ORDER BY id DESC LIMIT 1", [thread.id])
+  if (!msg) return c.redirect('/admin?m=' + encodeURIComponent('That thread has no incoming message.'))
+  const { notifyInbound } = await import('../notify.js')
+  await notifyInbound(collective, thread, msg, undefined, undefined, me.email)
+  return c.redirect('/admin?m=' + encodeURIComponent(`Notification for “${thread.subject}” re-sent to ${me.email}.`))
+})
+
 app.post('/admin/plan', async (c) => {
   if (!platformAdminAccount(c)) return c.notFound()
   const body = await c.req.parseBody()

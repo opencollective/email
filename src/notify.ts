@@ -66,13 +66,25 @@ export const receivingAddress = (c: Collective) =>
  *  The client already shows the subject, so the body never repeats it. */
 const threadShell = (collective: Collective, inner: string, footerLinks?: string) => `
 <div style="font-family:Inter,-apple-system,Segoe UI,Roboto,sans-serif;color:#141414;background:#ffffff">
-  <div style="max-width:720px;margin:0 auto;padding:8px 16px 0">
+  <div style="max-width:720px;margin:0;padding:4px 0 0">
     ${inner}
     <div style="border-top:1px solid #e6e8eb;margin-top:18px;padding:10px 0 16px;font-size:11px;color:#8a8f98">
       ${footerLinks ? `${footerLinks} · ` : ''}<a href="${inboxUrl(collective)}/notifications" style="color:#8a8f98">notification settings</a> · <a href="${cfg.baseUrl}" style="color:#8a8f98">collective.email</a>
     </div>
   </div>
 </div>`
+
+/** Mail apps ignore <style> blocks, so a newsletter laid out at a fixed
+ *  600px stays 600px on a phone. Wide fixed widths (attributes and inline
+ *  px) become "fill the screen, at most that wide" — inline, which they honour. */
+export function fitWidths(html: string): string {
+  return html
+    .replace(/\swidth=["']?(\d{3,4})(px)?["']?/gi, (m, n) => (Number(n) >= 300 ? ` data-w="${n}"` : m))
+    .replace(/(\bstyle=")([^"]*)"/gi, (_m, a, css) => a + css.replace(/(^|;)\s*(min-)?width\s*:\s*(\d{3,4})px/gi,
+      (mm: string, sep: string, min: string, n: string) => (Number(n) >= 300 ? `${sep}${min ? 'min-width:0' : `width:100%;max-width:${n}px`}` : mm)) + '"')
+    .replace(/<table\b(?![^>]*\bstyle=)/gi, '<table style="max-width:100%"')
+    .replace(/<img\b(?![^>]*\bstyle=)/gi, '<img style="max-width:100%;height:auto"')
+}
 
 /** Quiet link-buttons for thread notifications — the message is the point,
  *  the actions shouldn't shout. */
@@ -130,6 +142,8 @@ export async function notifyInbound(
   message: Message,
   extraActions?: { label: string; url: string }[],
   rule?: { tag: string | null },
+  /** resend to this one member only (admin "resend me this notification") */
+  only?: string,
 ) {
   const members = await activeMembers(collective.id)
   const assigneeId = thread.assignee_member_id
@@ -150,7 +164,7 @@ export async function notifyInbound(
   // guests only hear about the threads shared with them
   const guestIds = new Set((await all<{ member_id: number }>(
     'SELECT member_id FROM thread_access WHERE thread_id = ?', [thread.id])).map((r) => r.member_id))
-  const recipients = members.filter(
+  const recipients = only ? members.filter((m) => m.kind !== 'agent' && m.email === only.toLowerCase()) : members.filter(
     // agents have synthetic addresses and hear about mail through their own
     // event stream — never through SMTP
     (m) => m.kind !== 'agent' && m.role !== 'reader' && !muted.has(m.id) && (m.notify_level === 'every' || m.id === assigneeId)
@@ -197,8 +211,10 @@ export async function notifyInbound(
     // Rule-filed mail (newsletters, updates): forward the real HTML (already
     // sanitized at ingest) instead of a text preview, and drop the reply /
     // assignment machinery — it's filed, nobody needs to answer it.
-    const bodyBlock = rule && message.body_html
-      ? `<div style="margin:14px 0">${message.body_html}</div>`
+    // The email as its sender wrote it — HTML (sanitized at ingest) whenever
+    // there is one; a text-only email, or a broken HTML part, keeps the text
+    const bodyBlock = message.body_html && message.body_html.replace(/<[^>]*>/g, '').trim().length > 20
+      ? `<div style="margin:14px 0;max-width:100%;overflow-x:auto;word-break:break-word">${fitWidths(message.body_html)}</div>`
       : `<div style="margin:14px 0;font-size:15px;line-height:1.55;white-space:pre-wrap">${escapeHtml(bodyPreview)}</div>`
 
     const html = rule
