@@ -1035,6 +1035,23 @@ app.get('/admin', async (c) => {
         SUM(CASE WHEN direction = 'inbound' AND created_at > ? THEN 1 ELSE 0 END) AS received30
       FROM messages WHERE created_at > ?`, args: [monthAgo, monthAgo, monthAgo] },
   ]) as [AdminRow[], { sent30: number | null; received30: number | null }[]]
+  // Security audit (Oct 2026 reports): traces of the two holes closed in
+  // the "assign-new" and email-reply fixes — empty means no sign of use.
+  const [selfPromotions, guestSends] = await batchAll([
+    { sql: `SELECT e.created_at, e.thread_id, c.slug, a.email AS actor, a.role AS actor_role, tm.email AS target, tm.role AS target_role
+        FROM events e JOIN threads t ON t.id = e.thread_id JOIN collectives c ON c.id = t.collective_id
+        LEFT JOIN members a ON a.id = e.actor_member_id
+        LEFT JOIN members tm ON tm.id = CAST(json_extract(e.data_json, '$.to') AS INTEGER)
+        WHERE e.type = 'assigned' AND json_extract(e.data_json, '$.reason') = 'manual'
+          AND (CAST(json_extract(e.data_json, '$.to') AS INTEGER) = e.actor_member_id
+               OR (a.role IN ('guest', 'commenter') AND tm.role = 'commenter'))
+        ORDER BY e.created_at DESC LIMIT 100` },
+    { sql: `SELECT m.sent_at AS created_at, m.thread_id, c.slug, s.email AS actor, s.role AS actor_role, m.to_json AS target, '' AS target_role
+        FROM messages m JOIN threads t ON t.id = m.thread_id JOIN collectives c ON c.id = t.collective_id
+        JOIN members s ON s.id = m.sent_by_member_id
+        WHERE m.direction = 'outbound' AND m.sent_at IS NOT NULL AND s.role = 'guest'
+        ORDER BY m.sent_at DESC LIMIT 100` },
+  ]) as { created_at: number; thread_id: number; slug: string; actor: string | null; actor_role: string | null; target: string | null; target_role: string | null }[][]
   const clocks = new Map(rows.map((r) => [r.id, planClock(r)]))
   const live = rows.filter((r) => r.status === 'active')
   const by = (state: string) => live.filter((r) => clocks.get(r.id)!.state === state).length
@@ -1101,6 +1118,28 @@ app.get('/admin', async (c) => {
               <small class="muted">{dmonths === 'forever' ? 'free forever' : `${dmonths} month${dmonths === '1' ? '' : 's'}`} · {dplan} · only for {dslug}@{cfg.emailDomain}</small>
             </div>
           ) : null}
+        </section>
+
+        <section class="card">
+          <h2>Security audit</h2>
+          {selfPromotions.length + guestSends.length === 0 ? (
+            <p class="muted">✓ No trace of either reported hole being used: no role granted through a thread assignment by a guest or commenter, and no email sent as a collective by a guest.</p>
+          ) : (
+            <table class="admin-table">
+              <thead><tr><th>When</th><th>What</th><th>Who</th><th>Target</th><th>Thread</th></tr></thead>
+              <tbody>
+                {[...selfPromotions.map((r) => ({ ...r, what: 'role via assign-new' })), ...guestSends.map((r) => ({ ...r, what: 'email sent by a guest' }))].map((r) => (
+                  <tr>
+                    <td>{fmtDateTime(r.created_at)}</td>
+                    <td>{r.what}</td>
+                    <td>{r.actor ?? '—'}<small>{r.actor_role ?? ''}</small></td>
+                    <td>{r.target ?? '—'}<small>{r.target_role ?? ''}</small></td>
+                    <td><a href={`/inbox/${r.slug}/thread/${r.thread_id}`}>{r.slug} #{r.thread_id}</a></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </section>
 
         <div class="tbl-wrap">
@@ -2619,7 +2658,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
           </div>
           ) : null}
 
-          {member.role !== 'reader' ? (
+          {member.role !== 'reader' && member.role !== 'guest' ? (
             <dialog id="assign-modal" class="modal assign-modal">
               <h2>Who has this?</h2>
               {assignee && lastAssignEvent ? (
@@ -2644,7 +2683,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                   </form>
                 ) : null}
               </div>
-              <details class="assign-else">
+              {canSendRole(member.role) ? (<details class="assign-else">
                 <summary class="assign-row"><span class="avatar empty">+</span><span>Someone else…</span></summary>
                 <form method="post" action={`${base}/thread/${thread.id}/assign-new`} class="assign-else-form">
                   <input class="input" type="email" name="email" placeholder="their@email.com" required />
@@ -2653,10 +2692,10 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                     <input type="radio" name="access" value="thread" checked />
                     <span>Only this thread — they join as a <b>guest</b></span>
                   </label>
-                  <label class="check-row">
+                  {member.role === 'admin' ? (<label class="check-row">
                     <input type="radio" name="access" value="collective" />
                     <span>The whole inbox — they join as a <b>commenter</b></span>
-                  </label>
+                  </label>) : null}
                   {thread.counterpart_email ? (
                     <label class="check-row">
                       <input type="checkbox" name="autoassign" value="1" />
@@ -2665,7 +2704,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                   ) : null}
                   <button class="btn small" type="submit" data-busy="Assigning…">Assign &amp; invite</button>
                 </form>
-              </details>
+              </details>) : null}
               {member.role === 'admin' ? (
                 // automating the same decision: a rule is "always assign these"
                 rule ? (
@@ -3169,6 +3208,9 @@ app.post('/inbox/:addr/thread/:id/assign', async (c) => {
   if (t instanceof Response) return t
   const blocked = readerBlock(c, t)
   if (blocked) return blocked
+  // a guest is a visitor on one thread: they don't decide who has it (and
+  // assigning to another guest would share the thread onward)
+  if (t.member.role === 'guest') return c.text('Guests cannot reassign a thread.', 403)
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
   const body = await c.req.parseBody()
@@ -3199,7 +3241,11 @@ app.post('/inbox/:addr/thread/:id/assign', async (c) => {
 app.post('/inbox/:addr/thread/:id/assign-new', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
-  const blocked = readerBlock(c, t)
+  // Bringing someone new in is a sender's call; giving anyone access to the
+  // whole inbox is an admin's — the same rule as the Members page. Guests and
+  // commenters could otherwise promote themselves or mint accounts that
+  // outlive their own removal.
+  const blocked = senderBlock(c, t)
   if (blocked) return blocked
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
@@ -3208,8 +3254,13 @@ app.post('/inbox/:addr/thread/:id/assign-new', async (c) => {
   const back = `/inbox/${t.collective.slug}/thread/${thread.id}`
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return c.redirect(back + '?m=' + encodeURIComponent('That email address does not look right.'))
   const wantsAll = String(body.access) === 'collective'
+  if (wantsAll && t.member.role !== 'admin') {
+    return c.redirect(back + '?m=' + encodeURIComponent('Only an admin can give someone access to the whole inbox — share this thread with them instead.'))
+  }
   let m = await getMemberIn(t.collective.id, email)
   if (m?.removed_at) m = undefined
+  // never a way to change your own role
+  if (m && m.id === t.member.id) return c.redirect(back)
   if (!m) {
     const r = await run(
       'INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
@@ -3295,7 +3346,8 @@ app.post('/inbox/:addr/thread/:id/draft/:draftId/dismiss', async (c) => {
   if (blocked) return blocked
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
-  await run('DELETE FROM thread_drafts WHERE id = ? AND thread_id = ?', [Number(c.req.param('draftId')), thread.id])
+  await run(`DELETE FROM thread_drafts WHERE id = ? AND thread_id = ?${canSendRole(t.member.role) ? '' : ' AND member_id = ?'}`,
+    canSendRole(t.member.role) ? [Number(c.req.param('draftId')), thread.id] : [Number(c.req.param('draftId')), thread.id, t.member.id])
   return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}`)
 })
 

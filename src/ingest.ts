@@ -330,7 +330,7 @@ export async function handleEmailNote(parsed: ParsedMail, ref: ReplyRef) {
   const writer = matched && !matched.removed_at ? matched
     : from === recipient.email.toLowerCase() && !recipient.removed_at ? recipient
       : null
-  if (!writer) {
+  if (!writer || dmarcFailed(parsed)) {
     console.log(`[ingest] note reply on thread ${thread.id} from ${from || 'unknown'} — not a member, ignored`)
     return
   }
@@ -388,6 +388,13 @@ async function recipientsAddedBy(
   return out.slice(0, 25)
 }
 
+/** The receiving server's verdict on the From domain, when it gave one. */
+function dmarcFailed(parsed: ParsedMail): boolean {
+  const raw = parsed.headers?.get?.('authentication-results')
+  const values = (Array.isArray(raw) ? raw : raw ? [raw] : []).map((v) => (typeof v === 'string' ? v : JSON.stringify(v)))
+  return values.some((v) => /\bdmarc=fail\b/i.test(v))
+}
+
 export async function handleEmailReply(
   parsed: ParsedMail,
   ref: { slug: string; threadId: number; memberId: number; msgId: number },
@@ -399,11 +406,29 @@ export async function handleEmailReply(
   if (!collective || collective.slug !== ref.slug) return
   // Never let vacation autoresponders or mail-loop artifacts reach the sender
   if (isAutoSubmitted(parsed)) return
-  if (member.role === 'reader' || member.role === 'commenter') {
+
+  // Who is speaking: the token proves access to the thread, the From says who
+  // wrote. Only the member the address was minted for (their own address or
+  // one an admin linked to them) may send through it — a forwarded
+  // notification or a leaked Cc must not let anyone else write as the
+  // collective. A From the receiving server judged forged (DMARC fail) is
+  // never trusted, whatever it claims.
+  const from = addrList(parsed.from)[0]?.address || ''
+  const { member: matched } = await teamSender(collective, from)
+  const isThem = from === member.email.toLowerCase() || matched?.id === member.id
+  if (!isThem || dmarcFailed(parsed)) {
+    console.log(`[ingest] email reply on thread ${thread.id} from ${from || 'unknown'} does not belong to member ${member.id} — ignored`)
+    return
+  }
+
+  // the same rule as the web: only senders answer the outside world
+  if (member.role !== 'member' && member.role !== 'admin') {
     await sendReplyFailure(collective, member, thread,
       member.role === 'reader'
         ? 'You have read access to this collective. Ask an admin to let you comment or send.'
-        : 'Your role can comment in the web inbox but not send email to the outside. Ask an admin for sending rights.',
+        : member.role === 'guest'
+          ? 'You have guest access to this conversation: you can add internal notes and propose a reply in the web inbox, but not send email as the collective.'
+          : 'Your role can comment in the web inbox but not send email to the outside. Ask an admin for sending rights.',
       plainText(parsed, true))
     return
   }

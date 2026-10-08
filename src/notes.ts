@@ -26,7 +26,8 @@ export async function addNote(
       [lastId, m.id, now()])
     // mentioning a guest IS sharing the thread with them — otherwise the
     // mention would point at a conversation they cannot open
-    if (m.role === 'guest') await grantThreadAccess(m.id, thread.id)
+    // — but a guest can't widen a thread's audience by mentioning other guests
+    if (m.role === 'guest' && author.role !== 'guest') await grantThreadAccess(m.id, thread.id)
   }
   // fed AFTER the mentions exist, so a poll can never see the note without them
   await feedAgents(collective.id, 'note.new', thread.id, lastId)
