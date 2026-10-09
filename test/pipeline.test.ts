@@ -317,15 +317,20 @@ test('the forwarding test email round-trips into the inbox; other own-domain mai
   const { cfg } = await import('../src/config.js')
   const col = await createCollective(`fwd${Date.now() % 100000}`, 'Fwd Co')
 
-  const mk = (subject: string) => simpleParser([
+  let n = 0
+  const mk = (subject: string, body = 'body') => simpleParser([
     `From: collective.email <notifications@${cfg.emailDomain}>`,
     `To: hello@fwd.test`,
     `Subject: ${subject}`,
-    `Message-ID: <fw-${subject.length}-${Date.now()}@x>`,
-    '', 'body',
+    `Message-ID: <fw-${subject.length}-${Date.now()}-${++n}@x>`,
+    '', body,
   ].join('\r\n'))
 
+  // the subject alone proves nothing (anyone can type it): no marker, no pass
   await ingestInbound(col, await mk('Forwarding test for hello@fwd.test ✓'))
+  assert.equal((await allRows<any>('SELECT * FROM threads WHERE collective_id = ?', [col.id])).length, 0, 'a typed subject is just own-domain mail: looped out')
+  const { signToken } = await import('../src/util.js')
+  await ingestInbound(col, await mk('Forwarding test for hello@fwd.test ✓', `ref: fwdtest:${signToken({ a: 'fwdtest', c: col.id }, 3600)}`))
   const threads = await allRows<any>('SELECT * FROM threads WHERE collective_id = ?', [col.id])
   assert.equal(threads.length, 1, 'the forwarding test lands as a thread')
   assert.equal(threads[0].status, 'answered', 'and does not scream needs-reply')
@@ -383,16 +388,28 @@ test('google-group forward: counterpart is the original author, not the group', 
   ].join('\r\n'))
   assert.deepEqual(effectiveSender(direct, pro), { address: 'marie@sender.test', name: 'Marie' })
 
-  // but an X-Original-Sender marker (list rewrite to an external group address) does
+  // but a real Google Groups relay's X-Original-Sender does
   const extGroup = await simpleParser([
-    "From: 'Bo' via Some List <somelist@googlegroups.test>",
+    "From: 'Bo' via Some List <somelist@googlegroups.com>",
     'X-Original-Sender: bo@company.test',
     'To: hello@commonshub.test',
     'Subject: Via list',
-    `Message-ID: <l-${uniq()}@googlegroups.test>`,
+    `Message-ID: <l-${uniq()}@googlegroups.com>`,
     '', 'hi',
   ].join('\r\n'))
   assert.equal(effectiveSender(extGroup, pro).address, 'bo@company.test')
+
+  // while the same header on anyone else's mail is only a claim (audit, Oct 2026):
+  // an outsider can't become a member, or a customer, by writing it
+  const forged = await simpleParser([
+    'From: Mallory <mallory@evil.test>',
+    'X-Original-From: alice@commonshub.test',
+    'To: hello@commonshub.test',
+    'Subject: Via list',
+    `Message-ID: <f-${uniq()}@evil.test>`,
+    '', 'hi',
+  ].join('\r\n'))
+  assert.equal(effectiveSender(forged, pro).address, 'mallory@evil.test')
 })
 
 test("a member's direct reply arriving through the group counts as the team's answer", async () => {

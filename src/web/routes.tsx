@@ -49,6 +49,17 @@ import {
 type Env = { Variables: { email: string | null; accounts: Account[] } }
 export const app = new Hono<Env>()
 
+// Baseline security headers on every response: never framed (clickjacking of
+// one-click pages), no MIME sniffing (attachments), and thread URLs don't
+// leak in full to the sites people click through to.
+app.use('*', async (c, next) => {
+  await next()
+  c.res.headers.set('X-Frame-Options', 'DENY')
+  if (!c.res.headers.has('Content-Security-Policy')) c.res.headers.set('Content-Security-Policy', "frame-ancestors 'none'; base-uri 'self'; object-src 'none'")
+  c.res.headers.set('X-Content-Type-Options', 'nosniff')
+  c.res.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin')
+})
+
 const SID = 'requests_sid'
 /** Roles: reader (can read) → commenter (can comment) → member (can send) → admin.
  *  Readers see everything but act on nothing; commenters do everything except
@@ -334,15 +345,20 @@ app.post('/waitlist', async (c) => {
   const email = String(body.email || '').toLowerCase().trim().slice(0, 200)
   const name = slugify(String(body.collective_name || ''))
   const plan = ['duo', 'collective', 'pro'].includes(String(body.plan)) ? String(body.plan) : 'collective'
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return c.redirect('/#waitlist')
-  await run('INSERT OR IGNORE INTO waitlist (email, collective_name, plan, created_at) VALUES (?, ?, ?, ?)',
+  if (!/^[^@\s<>"'`]+@[^@\s<>"'`]+\.[^@\s<>"'`]+$/.test(email)) return c.redirect('/#waitlist')
+  const ins = await run('INSERT OR IGNORE INTO waitlist (email, collective_name, plan, created_at) VALUES (?, ?, ?, ?)',
     [email, name || null, plan, now()])
+  // one admin email per new signup, and at most 30 an hour whatever arrives
+  const hourKey = `waitlistmail:${Math.floor(now() / 3600)}`
+  const sentThisHour = Number((await get<{ v: string }>('SELECT v FROM kv WHERE k = ?', [hourKey]))?.v || 0)
+  if (!ins.changes || sentThisHour >= 30) return c.redirect('/?joined=1#waitlist')
+  await run('INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v', [hourKey, String(sentThisHour + 1)])
   for (const adminEmail of cfg.adminEmails) {
     const total = (await get<{ n: number }>('SELECT COUNT(*) AS n FROM waitlist'))!.n
     await sendAppEmail({
       to: adminEmail,
       subject: `[collective.email] waitlist #${total}: ${name || '(no name)'} (${plan})`,
-      html: `<p><b>${name || '(no name)'}@${cfg.emailDomain}</b> · ${plan} · ${email}</p><p><a href="${cfg.baseUrl}/admin">Open admin</a> · ${total} signups so far.</p>`,
+      html: `<p><b>${escapeHtml(name || '(no name)')}@${cfg.emailDomain}</b> · ${escapeHtml(plan)} · ${escapeHtml(email)}</p><p><a href="${cfg.baseUrl}/admin">Open admin</a> · ${total} signups so far.</p>`,
       text: `${name || '(no name)'}@${cfg.emailDomain} · ${plan} · ${email}\n${cfg.baseUrl}/admin · ${total} signups so far.`,
     }).catch(() => {})
   }
@@ -353,7 +369,7 @@ app.post('/waitlist', async (c) => {
 
 /** Only ever redirect to relative in-app paths from user-supplied `next`. */
 const safeNext = (v: unknown): string | null =>
-  typeof v === 'string' && /^\/[^/\\]/.test(v) ? v : null
+  typeof v === 'string' && /^\/(?![/\\])[^\s\\\x00-\x1f\x7f]*$/.test(v) ? v : null
 
 const CodeForm = (p: { email: string; error?: string; next?: string | null; sentToAdmins?: string; resend?: boolean; claiming?: boolean }) => (
   <AuthCard title="Enter code">
@@ -501,16 +517,10 @@ app.post('/resend', async (c) => {
       inviteToken: prev.invite_token ?? undefined, name: prev.join_name ?? undefined, level: prev.join_level ?? undefined,
       claimSlug: prev.claim_slug ?? undefined, claimRef: prev.claim_ref ?? undefined,
     }
-    if (prev.purpose === 'claim' && prev.claim_slug) {
-      // Ownership proof must not be bypassable: if the slug belongs to a
-      // contactable OC collective, the new code goes to its admins again.
-      const info = await ocCollectiveInfo(prev.claim_slug)
-      if (info.kind === 'contactable') {
-        const slug = prev.claim_slug
-        const ok = await issueCode(email, 'claim', join, (code) => sendOcVerificationCode(slug, code))
-        return c.html(<CodeForm email={email} sentToAdmins={info.name} next={next} error={ok ? undefined : rateLimited} />)
-      }
-    }
+    // A login code is a key to `email`'s account, so it only ever goes to
+    // `email`. (Proving ownership of an Open Collective name is a separate,
+    // earlier step with its own code, kept outside login_codes; and /verify
+    // re-checks the name before reserving it.)
     const ok = await issueCode(email, prev.purpose, join)
     return c.html(<CodeForm email={email} next={next} error={ok ? undefined : rateLimited} />)
   }
@@ -571,8 +581,17 @@ async function applyInviteJoin(inviteToken: string, email: string, name: string,
   const shared = invite.thread_id ? await getThread(invite.thread_id) : undefined
   if (invite.thread_id && (!shared || shared.collective_id !== collective.id)) return null
   const existing = await getMemberIn(collective.id, email)
-  if (existing) {
-    await run("UPDATE members SET removed_at = NULL, name = COALESCE(NULLIF(?, ''), name), notify_level = ? WHERE id = ?",
+  if (existing && existing.removed_at) {
+    // Removed earlier: they come back with what THIS invite offers — a guest
+    // on one thread, or the invite's role within the seat limit — never with
+    // the role they had before someone took it away.
+    let role = shared ? 'guest' : ['reader', 'commenter', 'member'].includes(invite.role || '') ? invite.role! : 'reader'
+    if (role === 'member' && (await activeMembers(collective.id)).filter((m) => canSendRole(m.role)).length >= planLimits(collective.plan).contributors) role = 'commenter'
+    await run("UPDATE members SET removed_at = NULL, role = ?, name = COALESCE(NULLIF(?, ''), name), notify_level = ? WHERE id = ?",
+      [role, name, level || existing.notify_level, existing.id])
+    if (shared) await grantThreadAccess(existing.id, shared.id)
+  } else if (existing) {
+    await run("UPDATE members SET name = COALESCE(NULLIF(?, ''), name), notify_level = ? WHERE id = ?",
       [name, level || existing.notify_level, existing.id])
     if (shared && existing.role === 'guest') await grantThreadAccess(existing.id, shared.id)
   } else if (shared) {
@@ -699,7 +718,7 @@ app.post('/join/:token', async (c) => {
   const invite = await get<Invite>('SELECT * FROM invites WHERE token = ?', [token])
   if (!invite || invite.revoked_at || invite.expires_at < now()) return c.redirect(`/join/${token}`)
   const body = await c.req.parseBody()
-  const name = String(body.name || '').trim().slice(0, 60)
+  const name = String(body.name || '').replace(/[\r\n\t\x00-\x1f]+/g, ' ').trim().slice(0, 60)
   const level = ['every', 'assigned', 'daily', 'weekly'].includes(String(body.level)) ? String(body.level) : 'every'
 
   // A signed-in account is already a verified address — the session is the
@@ -743,6 +762,9 @@ async function heldReply(key: string): Promise<{
  *  mail, and mail clients prefetch links. */
 app.post('/a/:token', async (c) => {
   const payload = verifyToken(c.req.param('token'))
+  // one-click assign / spam: the GET page submits here; the shared handler
+  // below does the work (registered for both methods)
+  if (payload && (payload.a === 'assign' || payload.a === 'spam')) return oneClick(c)
   if (!payload || payload.a !== 'held') return c.redirect('/')
   const held = await heldReply(String(payload.k || ''))
   if (!held) {
@@ -801,8 +823,9 @@ app.post('/a/:token', async (c) => {
   }
 })
 
-app.get('/a/:token', async (c) => {
-  const payload = verifyToken(c.req.param('token'))
+app.get('/a/:token', (c) => oneClick(c))
+async function oneClick(c: Context<Env>): Promise<Response> {
+  const payload = verifyToken(c.req.param('token') || '')
   if (!payload || !['assign', 'spam', 'approve', 'approvepro', 'credits', 'mute', 'unmute', 'held'].includes(payload.a)) {
     return c.html(
       <AuthCard title="Link expired">
@@ -913,10 +936,18 @@ app.get('/a/:token', async (c) => {
     const months = Math.min(24, Math.max(1, Number(payload.m) || 2))
     const target = await getCollective(Number(payload.cid))
     if (!target || target.status !== 'active') return c.redirect('/')
-    const onceKey = `approvepro:${target.id}:${payload.m}:${payload.t ?? ''}`
+    const onceKey = `approvepro:${target.id}:${payload.t ?? payload.m}`
+    if (await kvGet(onceKey)) {
+      return c.html(
+        <AuthCard title="Already approved">
+          <h1>Already approved</h1>
+          <p class="muted">This approval link was already used — {target.slug} got its Pro months the first time.</p>
+        </AuthCard>,
+      )
+    }
+    await kvSet(onceKey, String(now()))
     await run("UPDATE collectives SET plan = 'pro', trial_ends_at = ? WHERE id = ?",
       [Math.max(target.trial_ends_at || 0, now()) + months * 30 * 86400, target.id])
-    void onceKey
     const admins = (await activeMembers(target.id)).filter((m) => m.role === 'admin')
     const { sendCreditEmail } = await import('../notify.js')
     await sendCreditEmail(target, admins, `${target.slug}@${cfg.emailDomain} is now on Pro 🎉`,
@@ -953,6 +984,27 @@ app.get('/a/:token', async (c) => {
   const actor = await getMember(Number(payload.by))
   const collective = thread ? await getCollective(thread.collective_id) : undefined
   if (!thread || !collective) return c.redirect('/')
+  // the link is a signed request from `actor`: they must still be in this
+  // collective, still allowed to do it, and still able to see the thread
+  const allowed = !!actor && actor.collective_id === collective.id && !actor.removed_at
+    && (payload.a === 'spam' ? canSendRole(actor.role) : actor.role !== 'reader' && actor.role !== 'guest')
+    && collective.status === 'active'
+  if (!allowed) return c.redirect(`/inbox/${collective.slug}/thread/${thread.id}`)
+  // Mail security scanners open every link in an email. A GET therefore only
+  // shows a page that submits itself (a person sees it for a blink, or clicks
+  // the button without JavaScript); the action happens on the POST.
+  if (c.req.method === 'GET') {
+    const label = payload.a === 'spam' ? 'Mark as spam' : 'Assign'
+    return c.html(
+      <AuthCard title={label}>
+        <form method="post" action={`/a/${c.req.param('token')}`} id="one-click">
+          <p class="muted">{payload.a === 'spam' ? `Marking “${thread.subject}” as spam…` : `Assigning “${thread.subject}”…`}</p>
+          <button class="btn" type="submit">{label}</button>
+        </form>
+        <script dangerouslySetInnerHTML={{ __html: "document.getElementById('one-click').submit()" }} />
+      </AuthCard>,
+    )
+  }
 
   let act = ''
   let pane = payload.r ? 'reply' : 'note'
@@ -975,7 +1027,7 @@ app.get('/a/:token', async (c) => {
   const dest = `/inbox/${collective.slug}/thread/${thread.id}?act=${act}&pane=${pane}#act`
   if (!c.get('email')) return c.redirect('/login?next=' + encodeURIComponent(dest))
   return c.redirect(dest)
-})
+}
 
 // ---------- attachments (proxied: locators are never exposed) ----------
 
@@ -985,7 +1037,10 @@ app.get('/attachment/:id', async (c) => {
   if (!att) return c.notFound()
   const msg = await get<{ thread_id: number }>('SELECT thread_id FROM messages WHERE id = ?', [att.message_id])
   const thread = msg ? await getThread(msg.thread_id) : undefined
-  if (!thread || (!(await memberAmongAccounts(c, thread.collective_id)) && !platformAdminAccount(c))) return c.notFound()
+  if (!thread) return c.notFound()
+  const viewer = await memberAmongAccounts(c, thread.collective_id)
+  // a guest sees attachments of the threads shared with them, nothing else
+  if (viewer ? !(await canSeeThread(viewer, thread.id)) : !platformAdminAccount(c)) return c.notFound()
   const content = await readBlob(att.path)
   if (!content) return c.notFound()
   return c.body(new Uint8Array(content), 200, {
@@ -1282,7 +1337,7 @@ app.get('/inbox/:addr', async (c) => {
   // person can see — whether or not it is still assigned to them
   const sharedWith = member.role !== 'guest' ? Number(c.req.query('shared')) || 0 : 0
   let f: string
-  if (askedF && FILTERS[askedF]) {
+  if (askedF && Object.hasOwn(FILTERS, askedF)) {
     f = askedF
     // spam and deleted are places you visit, not places you live
     if (!isPrefetch && !sharedWith && f !== 'spam' && f !== 'deleted' && !isDraftsView(f)) {
@@ -1290,7 +1345,7 @@ app.get('/inbox/:addr', async (c) => {
     }
   } else {
     const remembered = await kvGet(`lastfilter:${member.id}`)
-    f = remembered && FILTERS[remembered] ? remembered : 'needs_reply'
+    f = remembered && Object.hasOwn(FILTERS, remembered) ? remembered : 'needs_reply'
   }
   const tag = c.req.query('tag') || ''
   const q = (c.req.query('q') || '').trim()
@@ -1343,22 +1398,25 @@ app.get('/inbox/:addr', async (c) => {
 
   // round-trip 1: thread list + all sidebar data in ONE batched DB request
   const filterKeys = Object.keys(FILTERS)
+  // a guest's counts, tags and change stamp cover their threads only
+  const guestOnly = member.role === 'guest' ? ' AND t.id IN (SELECT thread_id FROM thread_access WHERE member_id = ?)' : ''
+  const guestArgs: number[] = member.role === 'guest' ? [member.id] : []
   const batch1 = await batchAll([
     { sql: `SELECT t.* FROM threads t WHERE ${where} ORDER BY ${order} LIMIT 200`, args },
     ...filterKeys.map((key) => ({
-      sql: `SELECT COUNT(*) AS n FROM threads t WHERE t.collective_id = ? AND (${FILTERS[key].where})`,
-      args: [collective.id, ...filterArgs(key, member.id)],
+      sql: `SELECT COUNT(*) AS n FROM threads t WHERE t.collective_id = ? AND (${FILTERS[key].where})${guestOnly}`,
+      args: [collective.id, ...filterArgs(key, member.id), ...guestArgs],
     })),
     {
       sql: `SELECT tg.name, COUNT(*) AS n FROM tags tg
             JOIN thread_tags tt ON tt.tag_id = tg.id
-            JOIN threads t ON t.id = tt.thread_id AND ${isDraftsView(f) ? "t.status = 'draft'" : "t.status != 'spam'"} AND t.deleted_at IS NULL
+            JOIN threads t ON t.id = tt.thread_id AND ${isDraftsView(f) ? "t.status = 'draft'" : "t.status != 'spam'"} AND t.deleted_at IS NULL${guestOnly}
             WHERE tg.collective_id = ?
             GROUP BY tg.id ORDER BY n DESC, tg.name LIMIT 20`,
-      args: [collective.id],
+      args: [...guestArgs, collective.id],
     },
     { sql: 'SELECT * FROM members WHERE collective_id = ?', args: [collective.id] },
-    listVersionQuery(collective.id),
+    listVersionQuery(collective.id, guestArgs[0]),
   ])
   const threads = batch1[0] as Thread[]
   const counts: Record<string, number> = {}
@@ -1555,9 +1613,10 @@ app.post('/inbox/:addr/contact/:email/auto-assign', async (c) => {
     if (existing) await deleteRule(t.collective.id, existing.id)
     return c.redirect(`${back2}?m=` + encodeURIComponent('New threads from this contact are no longer auto-assigned.'))
   }
+  const m = await getMember(memberId)
+  if (!m || m.collective_id !== t.collective.id || m.removed_at) return c.redirect(back2)
   // reuse createRule so the change also applies to any open, unassigned threads
   await createRule(t.collective, { from: email, assignMemberId: memberId, close: false }, t.member.id)
-  const m = await getMember(memberId)
   return c.redirect(`${back2}?m=` + encodeURIComponent(`New threads from this contact will be assigned to ${m ? memberName(m) : 'them'}.`))
 })
 
@@ -1567,14 +1626,15 @@ app.post('/inbox/:addr/contact/:email/auto-assign', async (c) => {
 /** "this address is part of that thread" — as sender, counterpart, or merely
  *  copied. LEFT JOIN: a thread whose only tie is its counterpart (no messages
  *  yet, e.g. a fresh draft) still counts. */
-function involves(collectiveId: number, email: string, excludeId: number) {
+function involves(collectiveId: number, email: string, excludeId: number, guestId = 0) {
   const like = `%"${email}"%`
   return {
     from: 'threads t LEFT JOIN messages m ON m.thread_id = t.id',
     where: `t.collective_id = ? AND t.status != 'spam' AND t.deleted_at IS NULL AND t.id != ?
        AND (lower(t.counterpart_email) = ? OR lower(m.from_email) = ?
-            OR lower(m.to_json) LIKE ? OR lower(m.cc_json) LIKE ? OR lower(m.bcc_json) LIKE ?)`,
-    args: [collectiveId, excludeId, email, email, like, like, like] as (string | number)[],
+            OR lower(m.to_json) LIKE ? OR lower(m.cc_json) LIKE ? OR lower(m.bcc_json) LIKE ?)`
+       + (guestId ? ' AND t.id IN (SELECT thread_id FROM thread_access WHERE member_id = ?)' : ''),
+    args: [collectiveId, excludeId, email, email, like, like, like, ...(guestId ? [guestId] : [])] as (string | number)[],
   }
 }
 
@@ -1584,8 +1644,8 @@ async function threadsInvolving(collectiveId: number, email: string, excludeId =
 }
 
 /** How many other threads this address is part of — for the sender card. */
-const threadCountQuery = (collectiveId: number, email: string, excludeId: number) => {
-  const q = involves(collectiveId, email, excludeId)
+const threadCountQuery = (collectiveId: number, email: string, excludeId: number, guestId = 0) => {
+  const q = involves(collectiveId, email, excludeId, guestId)
   return { sql: `SELECT COUNT(DISTINCT t.id) AS n FROM ${q.from} WHERE ${q.where}`, args: q.args }
 }
 
@@ -1631,10 +1691,11 @@ const threadVersionQuery = (threadId: number) => ({
 })
 const threadVersion = (r: { m: number; n: number; e: number; d: number }) => `${r.m}-${r.n}-${r.e}-${r.d}`
 
-const listVersionQuery = (collectiveId: number) => ({
+const listVersionQuery = (collectiveId: number, guestId = 0) => ({
   sql: `SELECT COUNT(*) AS c, COALESCE(MAX(updated_at), 0) AS u, COALESCE(MAX(last_message_at), 0) AS l
-        FROM threads WHERE collective_id = ? AND status != 'spam' AND deleted_at IS NULL`,
-  args: [collectiveId] as (string | number)[],
+        FROM threads WHERE collective_id = ? AND status != 'spam' AND deleted_at IS NULL`
+        + (guestId ? ' AND id IN (SELECT thread_id FROM thread_access WHERE member_id = ?)' : ''),
+  args: [collectiveId, ...(guestId ? [guestId] : [])] as (string | number)[],
 })
 const listVersion = (r: { c: number; u: number; l: number }) => `${r.c}-${r.u}-${r.l}`
 
@@ -1828,7 +1889,7 @@ app.get('/inbox/:addr/contact/:email', async (c) => {
     "SELECT id, assign_member_id FROM rules WHERE collective_id = ? AND lower(match_from) = ? AND (match_subject IS NULL OR match_subject = '') AND assign_member_id IS NOT NULL ORDER BY id DESC LIMIT 1",
     [collective.id, email])
   const autoAssignee = autoRule?.assign_member_id ? members.get(autoRule.assign_member_id) : undefined
-  const lvq = listVersionQuery(collective.id)
+  const lvq = listVersionQuery(collective.id, member.role === 'guest' ? member.id : 0)
   const liveV = listVersion((await get<any>(lvq.sql, lvq.args))!)
   const activeMembersOnly = [...members.values()].filter((m) => !m.removed_at).sort((a, b) => memberName(a).localeCompare(memberName(b)))
   const signature = signatureFor(collective, member)
@@ -1928,7 +1989,9 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   // one batched round-trip for everything knowable from the ids alone; a
   // second, below, for what depends on this batch's results. On a remote
   // database the page's cost is the number of trips, not of statements.
-  const invQ = thread.counterpart_email ? involves(collective.id, thread.counterpart_email.toLowerCase(), thread.id) : null
+  // a guest only ever hears of the threads shared with them
+  const guestScope = member.role === 'guest' ? member.id : 0
+  const invQ = thread.counterpart_email ? involves(collective.id, thread.counterpart_email.toLowerCase(), thread.id, guestScope) : null
   const batch = await batchAll([
     { sql: 'SELECT * FROM messages WHERE thread_id = ? ORDER BY sent_at, id', args: [thread.id] },
     { sql: 'SELECT * FROM notes WHERE thread_id = ? ORDER BY created_at', args: [thread.id] },
@@ -1991,7 +2054,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
     startedAfter.length
       ? { sql: `SELECT thread_id, type, created_at FROM events WHERE thread_id IN (${startedAfter.map(() => '?').join(',')}) AND type IN ('closed', 'reopened')`, args: startedAfter.map((o) => o.id) }
       : { sql: 'SELECT 1 WHERE 0', args: [] },
-    ...countedEmails.map((e) => threadCountQuery(collective.id, e, thread.id)),
+    ...countedEmails.map((e) => threadCountQuery(collective.id, e, thread.id, guestScope)),
   ])
   const attsMap = new Map<number, Attachment[]>()
   for (const a of batchB[0] as Attachment[]) {
@@ -3369,7 +3432,7 @@ app.post('/inbox/:addr/thread/:id/tags', async (c) => {
 app.get('/inbox/:addr/ping', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
-  const q = listVersionQuery(t.collective.id)
+  const q = listVersionQuery(t.collective.id, t.member.role === 'guest' ? t.member.id : 0)
   return c.text(listVersion((await get<any>(q.sql, q.args))!), 200, { 'Cache-Control': 'no-store' })
 })
 
@@ -4224,7 +4287,7 @@ app.post('/inbox/:addr/members/:id/update', async (c) => {
   }
 
   const notes: string[] = []
-  const name = String(body.name || '').trim().slice(0, 60)
+  const name = String(body.name || '').replace(/[\r\n\t\x00-\x1f]+/g, ' ').trim().slice(0, 60)
   if (name) await run("UPDATE members SET name = ? WHERE id = ?", [name, target.id])
 
   const avatar = body.avatar
@@ -4432,7 +4495,7 @@ app.post('/inbox/:addr/profile', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
   const body = await c.req.parseBody({ all: true })
-  const name = String(body.name || '').trim().slice(0, 60)
+  const name = String(body.name || '').replace(/[\r\n\t\x00-\x1f]+/g, ' ').trim().slice(0, 60)
   const avatar = body.avatar
   if (avatar instanceof File && avatar.size > 0) {
     if (!avatar.type.startsWith('image/')) {
@@ -4954,8 +5017,8 @@ app.post('/inbox/:addr/domain/test', async (c) => {
   await sendAppEmail({
     to: addr,
     subject: `Forwarding test for ${addr} ✓`,
-    text: `If you can read this in the ${collective.slug}@${cfg.emailDomain} inbox, the forward from ${addr} works. — collective.email`,
-    html: `<p>If you can read this in the <b>${escapeHtml(collective.slug)}@${escapeHtml(cfg.emailDomain)}</b> inbox, the forward from <b>${escapeHtml(addr)}</b> works.</p><p>— collective.email</p>`,
+    text: `If you can read this in the ${collective.slug}@${cfg.emailDomain} inbox, the forward from ${addr} works. — collective.email\n\nref: fwdtest:${signToken({ a: 'fwdtest', c: collective.id }, 3600)}`,
+    html: `<p>If you can read this in the <b>${escapeHtml(collective.slug)}@${escapeHtml(cfg.emailDomain)}</b> inbox, the forward from <b>${escapeHtml(addr)}</b> works.</p><p>— collective.email</p><p style="color:#9aa1ab;font-size:11px">ref: fwdtest:${signToken({ a: 'fwdtest', c: collective.id }, 3600)}</p>`,
   })
   return c.redirect(`${base}/domain?m=` + encodeURIComponent(`Test sent to ${addr} — it should appear in this inbox within a minute.`))
 })
@@ -5381,7 +5444,7 @@ const OC_TAKEN_MSG = (slug: string) =>
 app.post('/claim', async (c) => {
   const body = await c.req.parseBody()
   const address = slugify(String(body.address || ''))
-  const name = String(body.name || '').trim().slice(0, 60)
+  const name = String(body.name || '').replace(/[\r\n\t\x00-\x1f]+/g, ' ').trim().slice(0, 60)
   const email = String(body.email || '').toLowerCase().trim()
   const refSlug = slugify(String(body.ref || ''))
   // a signed-in account named in the form is the first admin, no code needed:

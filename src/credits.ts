@@ -107,7 +107,7 @@ export async function fileContribution(collective: Collective, member: Member, t
   const hub = await getCollectiveBySlug(CONTRIBUTE_SLUG)
   if (!hub || hub.status !== 'active') throw new Error('Contributions are closed right now — email hello@collective.email instead.')
   const raw = [
-    `From: ${member.name || member.email} <${member.email}>`,
+    `From: ${(member.name || member.email).replace(/[\r\n<>"]+/g, ' ').trim()} <${member.email}>`,
     `To: ${CONTRIBUTE_SLUG}@${cfg.emailDomain}`,
     `Subject: Contribution from ${collective.slug}@${cfg.emailDomain}`,
     `Message-ID: <contribution-${collective.id}-${now()}@${cfg.emailDomain}>`,

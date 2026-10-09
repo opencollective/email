@@ -11,7 +11,9 @@ import { billingState, canReceive } from './billing.js'
 /** Verify a svix-signed webhook (Resend uses svix).
  *  signature = base64(hmacSHA256(base64decode(secret_after_whsec), `${id}.${timestamp}.${body}`)) */
 function verifySvix(headers: Headers, body: string): boolean {
-  if (!cfg.resendWebhookSecret) return true // verification disabled (dev)
+  // without a secret, anyone could POST a fake inbound email: only acceptable
+  // in dev, where no real email flows (no Resend key)
+  if (!cfg.resendWebhookSecret) return !cfg.resendKey
   const id = headers.get('svix-id')
   const timestamp = headers.get('svix-timestamp')
   const signatures = headers.get('svix-signature')
@@ -180,10 +182,12 @@ webhooks.post('/webhooks/resend', async (c) => {
 
 webhooks.post('/webhooks/stripe', async (c) => {
   const body = await c.req.text()
-  if (cfg.stripeWebhookSecret) {
-    if (!verifyStripeSignature(body, c.req.header('stripe-signature') || '', cfg.stripeWebhookSecret)) {
-      return c.json({ error: 'invalid signature' }, 401)
-    }
+  // an unsigned event could make any collective "subscribed": with billing
+  // configured, a missing secret means refuse, never trust
+  if (!cfg.stripeWebhookSecret) {
+    if (cfg.stripeKey) return c.json({ error: 'webhook secret not configured' }, 503)
+  } else if (!verifyStripeSignature(body, c.req.header('stripe-signature') || '', cfg.stripeWebhookSecret)) {
+    return c.json({ error: 'invalid signature' }, 401)
   }
   let event: any
   try {

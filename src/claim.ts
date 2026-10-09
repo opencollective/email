@@ -1,3 +1,4 @@
+import crypto from 'node:crypto'
 import { simpleParser } from 'mailparser'
 import { cfg } from './config.js'
 import { get, getCollectiveBySlug, getMemberIn, run, type Collective } from './db.js'
@@ -90,7 +91,7 @@ export async function fileProApplication(collective: Collective, applicantEmail:
   const apps = await getCollectiveBySlug(APPLICATIONS_SLUG)
   if (!apps || apps.status !== 'active') throw new Error('Applications are closed right now — email hello@collective.email instead.')
   const raw = [
-    `From: ${applicantName} <${applicantEmail}>`,
+    `From: ${applicantName.replace(/[\r\n<>"]+/g, ' ').trim()} <${applicantEmail.replace(/[\r\n<>\s]+/g, '')}>`,
     `To: ${APPLICATIONS_SLUG}@${cfg.emailDomain}`,
     `Subject: Pro application: ${collective.slug}@${cfg.emailDomain} (${requestedMonths} months requested)`,
     `Message-ID: <pro-application-${collective.id}-${now()}@${cfg.emailDomain}>`,
@@ -137,7 +138,7 @@ export async function fileApplication(
   const apps = await getCollectiveBySlug(APPLICATIONS_SLUG)
   if (!apps || apps.status !== 'active') throw new Error('Applications are closed right now — email hello@collective.email instead.')
   const raw = [
-    `From: ${applicantName} <${applicantEmail}>`,
+    `From: ${applicantName.replace(/[\r\n<>"]+/g, ' ').trim()} <${applicantEmail.replace(/[\r\n<>\s]+/g, '')}>`,
     `To: ${APPLICATIONS_SLUG}@${cfg.emailDomain}`,
     `Subject: Free trial application: ${pending.slug}@${cfg.emailDomain} (${requestedMonths} months requested)`,
     `Message-ID: <application-${pending.id}-${now()}@${cfg.emailDomain}>`,
@@ -195,7 +196,7 @@ const readOcCode = async (slug: string): Promise<OcCodeState | null> => {
 export async function issueOcOwnershipCode(slug: string, deliver: (code: string) => Promise<boolean>): Promise<boolean> {
   const existing = await readOcCode(slug)
   if (existing && now() - existing.at < OC_CODE_RESEND_GAP) return false
-  const code = String(Math.floor(Math.random() * 1000000)).padStart(6, '0')
+  const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0')
   await kvSet(ocCodeKey(slug), JSON.stringify(
     { h: hmac(`occode:${slug}:${code}`, 64), exp: now() + OC_CODE_TTL, n: 0, at: now() } satisfies OcCodeState))
   return deliver(code)

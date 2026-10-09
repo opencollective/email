@@ -1,3 +1,4 @@
+import { sanitizeEmailHtml } from './sanitize.js'
 import { cfg } from './config.js'
 import {
   activeMembers, all, allCollectives, canSeeThread, get, getMember, kvGet, kvSet, messageAttachments,
@@ -196,6 +197,9 @@ export async function notifyInbound(
     const badgeToken = signToken({ a: 'aimg', th: thread.id, m: m.id }, 60 * 60 * 24 * 90)
     const assignLine = `<p style="margin:0 0 4px"><a href="${threadUrl(collective, thread.id)}" style="text-decoration:none"><img src="${cfg.baseUrl}/aimg/${badgeToken}" height="30" style="vertical-align:middle;border:0;height:30px;width:auto;max-width:80%" alt="${assignee ? `Assigned to ${escapeHtml(memberLabel(assignee))} when this was sent` : 'Unassigned when this was sent'}"></a> <a href="${threadUrl(collective, thread.id)}" style="font-size:12px;color:#6b7280;vertical-align:middle;margin-left:6px">change →</a></p>`
     const spamUrl = `${cfg.baseUrl}/a/${signToken({ a: 'spam', th: thread.id, by: m.id }, 60 * 60 * 24 * 14)}`
+    // what this recipient may do from the email — the same rules as the app
+    const canSend = m.role === 'member' || m.role === 'admin'
+    const canAssign = m.role !== 'guest' && m.role !== 'reader'
     const noteUrl = `${threadUrl(collective, thread.id)}?pane=note#composer`
     // one-click, member-scoped: only this member stops hearing from this sender
     const muteUrl = message.from_email
@@ -214,7 +218,7 @@ export async function notifyInbound(
     // The email as its sender wrote it — HTML (sanitized at ingest) whenever
     // there is one; a text-only email, or a broken HTML part, keeps the text
     const bodyBlock = message.body_html && message.body_html.replace(/<[^>]*>/g, '').trim().length > 20
-      ? `<div style="margin:14px 0;max-width:100%;overflow-x:auto;word-break:break-word">${fitWidths(message.body_html)}</div>`
+      ? `<div style="margin:14px 0;max-width:100%;overflow-x:auto;word-break:break-word">${sanitizeEmailHtml(fitWidths(message.body_html))}</div>`
       : `<div style="margin:14px 0;font-size:15px;line-height:1.55;white-space:pre-wrap">${escapeHtml(bodyPreview)}</div>`
 
     const html = rule
@@ -231,12 +235,13 @@ export async function notifyInbound(
       ${headerBlock}
       ${bodyBlock}
       ${attHtml}
-      <p style="margin:0 0 10px;font-size:13px;color:#6b7280"><b style="color:#141414">Just reply to this email</b> to answer ${escapeHtml(message.from_email || 'the sender')} as ${escapeHtml(sendAddr)}${assignee?.id === m.id ? '' : ' — the thread is assigned to you'}. If a teammate answers first, we stop your reply and tell you.</p>
+      ${canSend ? `<p style="margin:0 0 10px;font-size:13px;color:#6b7280"><b style="color:#141414">Just reply to this email</b> to answer ${escapeHtml(message.from_email || 'the sender')} as ${escapeHtml(sendAddr)}${assignee?.id === m.id ? '' : ' — the thread is assigned to you'}. If a teammate answers first, we stop your reply and tell you.</p>`
+        : `<p style="margin:0 0 10px;font-size:13px;color:#6b7280">You can add an internal note or propose a reply in the inbox — a teammate with sending rights answers ${escapeHtml(message.from_email || 'the sender')}.</p>`}
       ${(extraActions || []).map((x) => quietBtn(x.url, x.label)).join('')}
-      ${assignee?.id === m.id ? '' : quietBtn(assignUrl(thread.id, m.id, m.id, true), 'Assign to me — answer later')}
+      ${assignee?.id === m.id || !canAssign ? '' : quietBtn(assignUrl(thread.id, m.id, m.id, true), 'Assign to me — answer later')}
       ${quietBtn(threadUrl(collective, thread.id), 'Open thread')}
-      ${others.length ? others.slice(0, 12).map((o) => quietBtn(assignUrl(thread.id, o.id, m.id), `→ ${escapeHtml(memberLabel(o))}`)).join('') : ''}
-      <p style="margin:10px 0 0;font-size:12px;color:#9aa1ab"><a href="${noteUrl}" style="color:#6b7280">Add a private note</a> · <a href="${spamUrl}" style="color:#6b7280">Mark as spam</a></p>`, footerLinks)
+      ${canAssign && others.length ? others.slice(0, 12).map((o) => quietBtn(assignUrl(thread.id, o.id, m.id), `→ ${escapeHtml(memberLabel(o))}`)).join('') : ''}
+      <p style="margin:10px 0 0;font-size:12px;color:#9aa1ab"><a href="${noteUrl}" style="color:#6b7280">Add a private note</a>${canSend ? ` · <a href="${spamUrl}" style="color:#6b7280">Mark as spam</a>` : ''}</p>`, footerLinks)
 
     const text = rule ? [
       `Filed${rule.tag ? ` as #${rule.tag}` : ''} — no reply needed (to ${inboundAddr})`,

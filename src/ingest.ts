@@ -5,7 +5,7 @@ import {
   suggestedAssigneeFor, type Collective, type Member, type Message, type Thread,
   feedAgents,
 } from './db.js'
-import { htmlToText, normalizeSubject, now, randomToken, stripQuotedReply } from './util.js'
+import { htmlToText, normalizeSubject, now, randomToken, stripQuotedReply, verifyToken } from './util.js'
 import { matchingRule, type Rule } from './rules.js'
 import { sanitizeEmailHtml } from './sanitize.js'
 import { notifyInbound, receivingAddress, sendCollisionNotice, sendReplyConfirmation, sendReplyFailure } from './notify.js'
@@ -111,9 +111,11 @@ export function effectiveSender(parsed: ParsedMail, collective: Collective): { a
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(address)) return null
     return { address, name: m ? raw.slice(0, raw.indexOf('<')).replace(/["']/g, '').trim() : '' }
   }
-  // Only distrust From when a relay clearly rewrote it: it's one of our own
-  // receiving addresses, or the relay left its X-Original-* marker behind.
-  const rewritten = own(from.address) || headerAddr('x-original-sender') || headerAddr('x-original-from')
+  // Only distrust From when a relay we know rewrote it: one of our own
+  // receiving addresses (a Google Group in front of hello@…) or a Google
+  // Groups address. X-Original-* headers are written by whoever sends the
+  // email, so on anything else they are just claims — never identity.
+  const rewritten = own(from.address) || /@googlegroups\.com$/i.test(from.address)
   if (!rewritten) return from
   const candidates = [headerAddr('x-original-from'), headerAddr('x-original-sender'), ...addrList(parsed.replyTo)]
   const real = candidates.find((c): c is { address: string; name: string } => !!c && !own(c.address))
@@ -176,7 +178,11 @@ export async function ingestInbound(
   // Loop guard: never ingest mail sent from our own domain (our notifications,
   // our replies) — EXCEPT the forwarding test, whose whole point is to come
   // back around and prove the custom-domain forward works.
-  const isForwardTest = /^Forwarding test for /.test(parsed.subject || '')
+  // our own forwarding test, recognised by the signed marker we put in it —
+  // a subject anyone can type would let them skip notifications and rules
+  const testRef = /fwdtest:([A-Za-z0-9_.-]+)/.exec(`${parsed.text || ''} ${typeof parsed.html === 'string' ? parsed.html : ''}`)?.[1]
+  const testPayload = testRef ? verifyToken(testRef) : null
+  const isForwardTest = /^Forwarding test for /.test(parsed.subject || '') && testPayload?.a === 'fwdtest' && Number(testPayload.c) === collective.id
   if (rawFrom.address.endsWith(`@${cfg.emailDomain}`) && !isForwardTest) return
   const from = effectiveSender(parsed, collective)
 
@@ -184,7 +190,8 @@ export async function ingestInbound(
   const refs = Array.isArray(parsed.references) ? parsed.references[0] : parsed.references
   const isReply = !!(parsed.inReplyTo || refs)
 
-  const { team, member } = isForwardTest ? { team: false, member: undefined } : await teamSender(collective, from.address)
+  // team status is identity: never for a From the receiving server judged forged
+  const { team, member } = isForwardTest || dmarcFailed(parsed) ? { team: false, member: undefined } : await teamSender(collective, from.address)
 
   // Who this message is really "with": for a teammate's own mail that's the
   // outsider they wrote to, never the teammate. Threading has to use that,
@@ -237,7 +244,9 @@ export async function ingestInbound(
   }
 
   const rawHtml = typeof parsed.html === 'string' ? parsed.html : ''
-  const bodyHtml = rawHtml ? sanitizeEmailHtml(rawHtml).slice(0, 400_000) : null
+  // cut BEFORE sanitizing: a cut after it could end inside a tag and leave an
+  // open attribute that swallows whatever HTML is placed after the body
+  const bodyHtml = rawHtml ? sanitizeEmailHtml(rawHtml.slice(0, 600_000)).slice(0, 400_000) : null
   const r = await run(`
     INSERT INTO messages (thread_id, rfc822_message_id, in_reply_to, direction, from_email, from_name, to_json, cc_json, body_text, body_html, sent_by_member_id, resend_email_id, sent_at, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

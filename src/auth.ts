@@ -5,6 +5,8 @@ import { sendLoginCode } from './notify.js'
 
 const CODE_TTL = 10 * 60
 const MAX_ATTEMPTS = 5
+const REPLAY_ATTEMPTS = 2
+const MAX_CODES_PER_DAY = 10
 // A duplicate submit of a just-used code (double tap, iOS OTP autofill firing
 // twice) should sign in again, not scare the user with "expired".
 const REPLAY_WINDOW = 2 * 60
@@ -39,6 +41,12 @@ export async function issueCode(
   const clean = email.toLowerCase().trim()
   const recent = await get<{ created_at: number }>('SELECT created_at FROM login_codes WHERE email = ? ORDER BY id DESC LIMIT 1', [clean])
   if (recent && now() - recent.created_at < 30) return false
+  // each new code resets its attempt counter, so the number of codes per
+  // address per day is what bounds guessing — and inbox spam
+  const dayKey = `codes:${clean}:${Math.floor(now() / 86400)}`
+  const issued = Number((await get<{ v: string }>('SELECT v FROM kv WHERE k = ?', [dayKey]))?.v || 0)
+  if (issued >= MAX_CODES_PER_DAY) return false
+  await run('INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v', [dayKey, String(issued + 1)])
 
   const code = randomCode()
   await run('DELETE FROM login_codes WHERE email = ?', [clean])
@@ -60,16 +68,22 @@ export async function checkCode(email: string, code: string): Promise<CheckResul
   const clean = email.toLowerCase().trim()
   const row = await get<LoginCodeRow>('SELECT * FROM login_codes WHERE email = ? ORDER BY id DESC LIMIT 1', [clean])
   if (!row) return { ok: false, error: 'That code expired — request a new one.', resend: true }
+  // Every comparison costs an attempt, claimed atomically BEFORE comparing:
+  // parallel requests can't each get a free guess, and the replay window
+  // (a double tap right after success) gets only a couple more tries.
+  const take = async (limit: number) =>
+    !!(await get<{ attempts: number }>('UPDATE login_codes SET attempts = attempts + 1 WHERE id = ? AND attempts < ? RETURNING attempts', [row.id, limit]))
   if (row.consumed_at) {
-    if (now() - row.consumed_at < REPLAY_WINDOW && sha256(code.trim() + cfg.secret) === row.code_hash) return { ok: true, row, replay: true }
+    if (now() - row.consumed_at < REPLAY_WINDOW && await take(MAX_ATTEMPTS + REPLAY_ATTEMPTS)
+      && sha256(code.trim() + cfg.secret) === row.code_hash) return { ok: true, row, replay: true }
     return { ok: false, error: 'That code was already used — request a new one.', resend: true }
   }
   if (row.expires_at < now()) return { ok: false, error: 'That code expired — request a new one.', resend: true }
-  if (row.attempts >= MAX_ATTEMPTS) return { ok: false, error: 'Too many attempts — request a new code.', resend: true }
-  await run('UPDATE login_codes SET attempts = attempts + 1 WHERE id = ?', [row.id])
+  if (!(await take(MAX_ATTEMPTS))) return { ok: false, error: 'Too many attempts — request a new code.', resend: true }
   if (sha256(code.trim() + cfg.secret) !== row.code_hash) return { ok: false, error: 'That code is not right — check the email and try again.' }
-  await run('UPDATE login_codes SET consumed_at = ? WHERE id = ?', [now(), row.id])
-  return { ok: true, row }
+  // consumed once: a second concurrent success becomes a replay, not a second login
+  const won = await get('UPDATE login_codes SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL RETURNING id', [now(), row.id])
+  return won ? { ok: true, row } : { ok: true, row, replay: true }
 }
 
 /** Sessions carry the verified email — memberships are resolved per collective. */

@@ -1,3 +1,4 @@
+import { escapeHtml } from '../util.js'
 import { Hono } from 'hono'
 import {
   AGENT_ROLES, agentAuth, agentCursor, agentEvents, claimAgentInvite, findInvite, threadJson,
@@ -175,10 +176,10 @@ ${cfg.baseUrl}/skill.md` : 'Ask a collective admin for a fresh invitation.'}
 `
   // browsers get a human explanation; everything else gets the instructions
   if ((c.req.header('accept') || '').includes('text/html')) {
-    return c.html(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent invitation · ${collective.name}</title>
+    return c.html(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent invitation · ${escapeHtml(collective.name)}</title>
 <body style="font-family: system-ui; max-width: 620px; margin: 60px auto; padding: 0 20px; line-height: 1.5">
-<h1 style="font-size: 22px">🤖 An agent invitation for ${collective.name}</h1>
-<p>This link lets an <b>AI agent</b> join <b>${collective.slug}@${cfg.emailDomain}</b> as a <b>${invite.role}</b>${state === 'open' ? '' : ` — but it is <b>${state}</b>`}.</p>
+<h1 style="font-size: 22px">🤖 An agent invitation for ${escapeHtml(collective.name)}</h1>
+<p>This link lets an <b>AI agent</b> join <b>${escapeHtml(collective.slug)}@${escapeHtml(cfg.emailDomain)}</b> as a <b>${escapeHtml(String(invite.role))}</b>${state === 'open' ? '' : ` — but it is <b>${state}</b>`}.</p>
 <p>Paste the URL to your agent and ask it to join. It will read the machine instructions at this same address and claim the invitation on its own.</p>
 <p style="color:#666; font-size: 14px">Agents can read threads${invite.role === 'reader' ? '' : ', leave internal notes and prepare draft replies'} — they can never send email from the collective.</p></body>`)
   }
