@@ -20,7 +20,7 @@ type El = { type: string; props: Record<string, unknown> }
 const h = (type: string, style: Record<string, unknown>, ...children: (El | string)[]): El =>
   ({ type, props: { style, children: children.length <= 1 ? children[0] : children } })
 
-async function png(el: El, width: number, height: number): Promise<Buffer> {
+async function png(el: El, width: number, height: number, outHeight?: number): Promise<Buffer> {
   const svg = await satori(el as never, {
     width,
     height,
@@ -29,7 +29,7 @@ async function png(el: El, width: number, height: number): Promise<Buffer> {
       { name: 'Inter', data: INTER_SEMIBOLD, weight: 600, style: 'normal' },
     ],
   })
-  return new Resvg(svg).render().asPng() as Buffer
+  return new Resvg(svg, outHeight ? { fitTo: { mode: 'height', value: outHeight } } : undefined).render().asPng() as Buffer
 }
 
 const memberName = (m?: Member | null) => (m ? m.name || m.email.split('@')[0] : '')
@@ -65,13 +65,16 @@ ogApp.get('/aimg/:token', async (c) => {
   const text = s.line.replace(/^✓ /, '')
   // the pill hugs its text: the canvas width follows the line, and the email
   // scales by height alone, so "Unassigned" is a short chip, not a banner
-  const width = Math.min(1040, Math.round(text.length * 22 + 190))
+  // Capped, and output at 2× its 30px display height (60px): iOS Mail shows
+  // any image wider than the screen edge to edge, ignoring the email's left
+  // margin — a 112px-tall master made the badge stick out past every line.
+  const width = Math.min(600, Math.round(text.length * 22 + 190))
   const img = await png(
     h('div', { display: 'flex', width: '100%', height: '100%', alignItems: 'center', gap: 24, padding: '0 30px', backgroundColor: s.bg, border: `3px solid ${s.color}`, borderRadius: 26, fontFamily: 'Inter' },
       h('div', { display: 'flex', width: 60, height: 60, borderRadius: 30, backgroundColor: s.color, color: '#ffffff', alignItems: 'center', justifyContent: 'center', fontSize: 26, fontWeight: 600, flexShrink: 0 }, initials),
       // displayed at 30px height in emails — bigger type stays readable
-      h('div', { display: 'flex', fontSize: 40, fontWeight: 600, color: s.color, whiteSpace: 'nowrap' }, text)),
-    width, 112,
+      h('div', { display: 'flex', fontSize: 40, fontWeight: 600, color: s.color, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }, text)),
+    width, 112, 60,
   )
   c.header('Content-Type', 'image/png')
   c.header('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate')
