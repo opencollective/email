@@ -122,3 +122,41 @@ test('no usable Stripe key: subscribe UI hidden, opening the inbox leads', async
   assert.equal(res.status, 302)
   assert.match(decodeURIComponent(res.headers.get('location')!), /start with the free trial/)
 })
+
+test('returning from checkout confirms the session with Stripe: status and Subscribe section update without the webhook', async () => {
+  const { run } = await import('../src/db.js')
+  const { createSession } = await import('../src/auth.js')
+  const { now } = await import('../src/util.js')
+  const col = await createCollective(`ret${Date.now() % 100000}`, 'Return Co')
+  await run("INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, 'ret@t.test', 'R', 'admin', 'every', ?)", [col.id, now()])
+  const sid = await createSession('ret@t.test')
+  const sessions: Record<string, any> = {
+    cs_test_paid: { id: 'cs_test_paid', status: 'complete', payment_status: 'paid', customer: 'cus_ret', subscription: 'sub_ret', currency: 'eur', metadata: { collective_id: String(col.id), plan: 'pro', cycle: 'yearly' } },
+    cs_test_other: { id: 'cs_test_other', status: 'complete', payment_status: 'paid', metadata: { collective_id: String(col.id + 999), plan: 'pro' } },
+    cs_test_open: { id: 'cs_test_open', status: 'open', payment_status: 'unpaid', metadata: { collective_id: String(col.id), plan: 'pro' } },
+  }
+  const realFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string) => {
+    const id = String(url).split('/checkout/sessions/')[1]?.split('?')[0]
+    return new Response(JSON.stringify(sessions[id] ?? { error: { message: 'No such session' } }), { status: sessions[id] ? 200 : 404 })
+  }) as typeof fetch
+  const page = (q: string) => app.request(`/inbox/${col.slug}/billing?${q}`, { headers: { cookie: `requests_sid=${sid}` } }).then((r) => r.text())
+  try {
+    for (const q of ['success=1&session_id=cs_test_other', 'success=1&session_id=cs_test_open', 'success=1&session_id=cs_test_missing', 'success=1&session_id=bogus']) {
+      const html = await page(q)
+      assert.match(html, /free trial/, `${q}: not applied`)
+      assert.match(html, /Refresh to update/)
+    }
+    assert.equal((await get<any>('SELECT stripe_status FROM collectives WHERE id = ?', [col.id])).stripe_status, null)
+
+    const html = await page('success=1&session_id=cs_test_paid')
+    assert.match(html, /Subscription active/)
+    assert.match(html, /subscribed · yearly/)
+    assert.match(html, /Manage your subscription/)
+    assert.doesNotMatch(html, /Continue to checkout/)
+    const after = await get<any>('SELECT * FROM collectives WHERE id = ?', [col.id])
+    assert.deepEqual([after.stripe_status, after.stripe_customer_id, after.stripe_subscription_id, after.plan], ['active', 'cus_ret', 'sub_ret', 'pro'])
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})

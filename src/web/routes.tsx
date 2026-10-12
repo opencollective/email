@@ -33,7 +33,7 @@ import { createRule, deleteRule, describeRule, findMatchingRule, listRules, matc
 import { emailHtmlDocument } from '../sanitize.js'
 import { sendAppEmail } from '../appmail.js'
 import { deleteBlob, readBlob, saveBlob } from '../storage.js'
-import { createCheckoutSession, createPortalSession, stripeUsable } from '../stripe.js'
+import { confirmCheckoutSession, createCheckoutSession, createPortalSession, stripeUsable } from '../stripe.js'
 import { billingState, canSend, GRACE_DAYS, planLimits, recipientLimit, repliesThisMonth, trialDaysLeft } from '../billing.js'
 import { dayPhrase, escapeHtml, excerpt, fmtDate, fmtDateTime, initials, now, randomToken, relTime, signToken, slugify, splitQuotedTail, verifyToken } from '../util.js'
 import { AssigneeChip, AuthCard, Avatar, eventText, Icon, Shell, StatusChip, TimeAgo, Page } from './ui.js'
@@ -4554,16 +4554,27 @@ app.get('/inbox/:addr/billing', async (c) => {
   const { member } = t
   const base = `/inbox/${t.collective.slug}`
   if (member.role !== 'admin') return c.redirect(base)
+  // back from Stripe: confirm the payment now rather than wait for the webhook
+  let confirmed = false
+  const sessionId = c.req.query('session_id')
+  if (sessionId) {
+    try {
+      confirmed = await confirmCheckoutSession(sessionId, t.collective.id)
+    } catch (err) {
+      console.error('[stripe] could not confirm checkout session', err)
+    }
+  }
   // tenant() carries a slim collective — billing needs the stripe columns
   const collective = (await getCollective(t.collective.id))!
   const seats = (await activeMembers(collective.id)).length
   const plan = PLAN_INFO[collective.plan] || PLAN_INFO.collective
   const currency = visitorCurrency(c) === 'EUR' ? 'eur' : 'usd'
   const sym = currency === 'eur' ? '€' : '$'
-  const flash = c.req.query('success') ? 'Subscription active — thank you! 🎉'
+  const state = billingState(collective)
+  const flash = c.req.query('success')
+    ? (confirmed || state === 'subscribed' ? 'Subscription active — thank you! 🎉' : 'Payment received — your subscription will show here in a moment. Refresh to update.')
     : c.req.query('canceled') ? 'Checkout canceled — nothing was charged.'
     : c.req.query('m')
-  const state = billingState(collective)
   const subscribed = state === 'subscribed'
   const daysLeft = trialDaysLeft(collective)
   const used = await repliesThisMonth(collective.id)
@@ -4609,18 +4620,18 @@ app.get('/inbox/:addr/billing', async (c) => {
           ) : null}
         </section>
 
-        {!(await stripeUsable()) ? (
-          <section class="card">
-            <h2>Nothing to pay yet</h2>
-            <p class="muted">Online payment isn't enabled in this environment yet. Your trial status above is accurate — we'll email the admins before anything changes.</p>
-          </section>
-        ) : subscribed ? (
+        {subscribed ? (
           <section class="card">
             <h2>Manage your subscription</h2>
             <p class="muted">Update the card, switch plans, download invoices, or cancel — all in the secure Stripe portal.</p>
             <form method="post" action={`${base}/billing/portal`}>
               <button class="btn small" type="submit" data-busy="Opening…">Open billing portal →</button>
             </form>
+          </section>
+        ) : !(await stripeUsable()) ? (
+          <section class="card">
+            <h2>Nothing to pay yet</h2>
+            <p class="muted">Online payment isn't enabled in this environment yet. Your trial status above is accurate — we'll email the admins before anything changes.</p>
           </section>
         ) : (
           <section class="card">

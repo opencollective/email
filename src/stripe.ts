@@ -1,6 +1,6 @@
 import crypto from 'node:crypto'
 import { cfg } from './config.js'
-import type { Collective } from './db.js'
+import { run, type Collective } from './db.js'
 
 export const stripeEnabled = () => !!cfg.stripeKey
 
@@ -91,7 +91,9 @@ export async function createCheckoutSession(
     mode: 'subscription',
     'line_items[0][price]': price,
     'line_items[0][quantity]': '1',
-    success_url: `${billingUrl}?success=1`,
+    // Stripe fills in {CHECKOUT_SESSION_ID}: the billing page confirms the
+    // payment itself on return, so it never depends on the webhook's timing
+    success_url: `${billingUrl}?success=1&session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${billingUrl}?canceled=1`,
     'metadata[collective_id]': String(collective.id),
     'metadata[plan]': plan,
@@ -102,6 +104,37 @@ export async function createCheckoutSession(
   else params.customer_email = adminEmail
   const session = await stripe('/checkout/sessions', params)
   return session.url
+}
+
+/** Record a completed checkout on its collective. Shared by the webhook and
+ *  the return from checkout, whichever comes first (both are idempotent). */
+export async function applyCheckoutSession(s: any): Promise<number | null> {
+  const collectiveId = Number(s?.metadata?.collective_id)
+  if (!collectiveId) return null
+  await run(`
+    UPDATE collectives SET
+      stripe_customer_id = ?, stripe_subscription_id = ?, stripe_status = 'active',
+      status = 'active', activated_at = COALESCE(activated_at, unixepoch()),
+      plan = COALESCE(?, plan), billing_cycle = ?, billing_currency = ?
+    WHERE id = ?
+  `, [
+    s.customer ?? null, s.subscription ?? null,
+    s.metadata?.plan ?? null, s.metadata?.cycle ?? null, s.currency ?? null,
+    collectiveId,
+  ])
+  return collectiveId
+}
+
+/** On return from checkout: fetch the session from Stripe and apply it if it
+ *  is paid and belongs to this collective. The session id comes from the URL,
+ *  so nothing is trusted until Stripe confirms it. */
+export async function confirmCheckoutSession(sessionId: string, collectiveId: number): Promise<boolean> {
+  if (!/^cs_[A-Za-z0-9_]+$/.test(sessionId)) return false
+  const s = await stripe(`/checkout/sessions/${sessionId}`, undefined, 'GET')
+  if (Number(s?.metadata?.collective_id) !== collectiveId) return false
+  if (s.status !== 'complete' || !['paid', 'no_payment_required'].includes(s.payment_status)) return false
+  await applyCheckoutSession(s)
+  return true
 }
 
 /** Stripe Billing Portal (update card, change plan, cancel). */

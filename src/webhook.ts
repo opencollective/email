@@ -5,7 +5,7 @@ import { cfg } from './config.js'
 import { getCollectiveBySlug, getCollectiveByCustomAddress, getCollectiveByCustomDomain, run } from './db.js'
 import { resolveReplyAddress, viaSlug } from './reply-tokens.js'
 import { handleEmailNote, handleEmailReply, ingestInbound } from './ingest.js'
-import { verifyStripeSignature } from './stripe.js'
+import { applyCheckoutSession, verifyStripeSignature } from './stripe.js'
 import { billingState, canReceive } from './billing.js'
 
 /** Verify a svix-signed webhook (Resend uses svix).
@@ -187,6 +187,9 @@ webhooks.post('/webhooks/stripe', async (c) => {
   if (!cfg.stripeWebhookSecret) {
     if (cfg.stripeKey) return c.json({ error: 'webhook secret not configured' }, 503)
   } else if (!verifyStripeSignature(body, c.req.header('stripe-signature') || '', cfg.stripeWebhookSecret)) {
+    // a length mismatch means the body was rewritten on the way in (re-serialised
+    // JSON); equal lengths mean STRIPE_WEBHOOK_SECRET isn't this endpoint's secret
+    console.error(`[stripe] invalid signature: content-length ${c.req.header('content-length') ?? '?'}, received ${Buffer.byteLength(body)} bytes`)
     return c.json({ error: 'invalid signature' }, 401)
   }
   let event: any
@@ -198,21 +201,8 @@ webhooks.post('/webhooks/stripe', async (c) => {
 
   if (event.type === 'checkout.session.completed') {
     const s = event.data?.object ?? {}
-    const collectiveId = Number(s.metadata?.collective_id)
-    if (collectiveId) {
-      await run(`
-        UPDATE collectives SET
-          stripe_customer_id = ?, stripe_subscription_id = ?, stripe_status = 'active',
-          status = 'active', activated_at = COALESCE(activated_at, unixepoch()),
-          plan = COALESCE(?, plan), billing_cycle = ?, billing_currency = ?
-        WHERE id = ?
-      `, [
-        s.customer ?? null, s.subscription ?? null,
-        s.metadata?.plan ?? null, s.metadata?.cycle ?? null, s.currency ?? null,
-        collectiveId,
-      ])
-      console.log(`[stripe] collective ${collectiveId} subscribed (${s.metadata?.plan}/${s.metadata?.cycle})`)
-    }
+    const collectiveId = await applyCheckoutSession(s)
+    if (collectiveId) console.log(`[stripe] collective ${collectiveId} subscribed (${s.metadata?.plan}/${s.metadata?.cycle})`)
   } else if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.deleted') {
     const sub = event.data?.object ?? {}
     const status = event.type.endsWith('deleted') ? 'canceled' : String(sub.status || 'active')
