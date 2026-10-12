@@ -62,7 +62,11 @@ export const FaqPage: FC<{ currency?: 'USD' | 'EUR' }> = ({ currency = 'USD' }) 
     </Q>
 
     <Q q="Where is our data, and can we leave?">
-      <p>Everything is hosted in the EU (Dublin), with nightly backups. And your conversations are yours, one click deep: any admin can <b>download a full archive</b> from the Billing page. The zip expands into a folder with a browsable offline inbox — open <code>inbox.html</code> and read your whole history, internal notes and attachments included, no server needed — plus the raw data as JSON for importing anywhere else. No lock-in games.</p>
+      <p>Everything is hosted in the EU (Dublin), with nightly backups. And your conversations are yours, one click deep: any admin can <b>download a full archive</b> from Settings → Data. The zip expands into a folder with a browsable offline inbox — open <code>inbox.html</code> and read your whole history, internal notes and attachments included, no server needed — plus the raw data as JSON for importing anywhere else. No lock-in games.</p>
+    </Q>
+
+    <Q q="Is it open source? Can we move to our own server?">
+      <p>Yes. collective.email is <b>open source</b> (AGPL-3.0), and the code is on <a href="https://github.com/opencollective/email">GitHub</a>. You can switch to your own instance <b>at any time</b>: download your archive from Settings → Data, set up the open source version on your server, and import the zip with one command (<code>npm run import -- archive.zip</code>). Threads, internal notes, tags, assignments and attachments all come along, and members keep signing in with their usual email. If you use your own domain, point it at your instance and the people writing to you notice nothing. The <a href="https://github.com/opencollective/email#run-your-own-instance">README</a> walks you through it, and you can come back the same way.</p>
     </Q>
 
     <Q q="Can one person be part of several collectives?">

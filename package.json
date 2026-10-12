@@ -4,13 +4,16 @@
   "description": "A shared email inbox for communities — nothing falls through the cracks.",
   "type": "module",
   "private": true,
+  "license": "AGPL-3.0-or-later",
+  "repository": "github:opencollective/email",
   "scripts": {
     "dev": "npm run build:client && tsx watch src/index.ts",
     "build": "tsc && npm run build:client",
     "build:client": "esbuild src/client/composer.tsx --bundle --minify --format=iife --target=es2020 --define:process.env.NODE_ENV=\\\"production\\\" --outfile=public/static/composer.js",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.client.json",
-    "test": "tsx --test test/*.test.ts"
+    "test": "tsx --test test/*.test.ts",
+    "import": "tsx src/cli-import.ts"
   },
   "dependencies": {
     "@fontsource/inter": "5.2.8",

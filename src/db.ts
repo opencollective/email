@@ -612,6 +612,7 @@ export async function createCollective(
   if (RESERVED_SLUGS.has(clean)) throw new Error(`"${clean}" is reserved.`)
   if (await getCollectiveBySlug(clean)) throw new Error(`${clean}@${cfg.emailDomain} is already taken.`)
   const status = opts.status ?? 'active'
+  if (cfg.billingOff) plan = 'pro' // self-hosted: everything unlocked
   const r = await run('INSERT INTO collectives (slug, name, status, plan, trial_ends_at, activated_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
     [clean, name.trim() || clean, status, plan, opts.trial === false ? null : now() + (opts.trialDays ?? 60) * 86400, status === 'active' ? now() : null, now()])
   return (await getCollective(r.lastId))!

@@ -353,6 +353,7 @@ const Foot: FC = () => (
     <a href="/docs">Docs</a>
     <a href="/faq">FAQ</a>
     <a href="/about">About</a>
+    <a href="https://github.com/opencollective/email">Open source</a>
     <a href="/login">Sign in</a>
     <a href="mailto:hello@collective.email">hello@collective.email</a>
   </footer>

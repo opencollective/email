@@ -1,5 +1,6 @@
 import { get, type Collective } from './db.js'
 import { now } from './util.js'
+import { cfg } from './config.js'
 
 /** Business model: 60-day free trial (no card), then 30 days read-only grace,
  *  then the address stops receiving. Subscribing at any point restores everything.
@@ -13,6 +14,7 @@ export type BillingState = 'subscribed' | 'comped' | 'trial' | 'grace' | 'expire
 const SUB_ACTIVE = new Set(['active', 'trialing', 'past_due'])
 
 export function billingState(c: Pick<Collective, 'stripe_status' | 'trial_ends_at' | 'comped'>): BillingState {
+  if (cfg.billingOff) return 'comped'
   if (SUB_ACTIVE.has(c.stripe_status || '')) return 'subscribed'
   if (c.comped || !c.trial_ends_at) return 'comped'
   const n = now()

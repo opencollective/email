@@ -50,10 +50,14 @@ export function aboutContent(currency: 'USD' | 'EUR' = 'USD'): About {
         { p: 'The backstory: twenty years of starting citizen initiatives and joining other people\'s, and the exact same week-one problem every time. Someone creates `hello@ourcollective` on Gmail, it feels solved, and then the real questions arrive. How do we share the password? Who actually checks it? In practice always the same person, who becomes the inbox — and when they are on holiday, or burned out, messages from real people go unanswered and the collective looks dead from the outside. The helpdesks that fix this are built for companies with agents and tickets. A citizen initiative has fifteen people who care and no budget line for "customer support software". This is the small tool he wished existed each of those times.' },
         { p: '[@xdamman on X](https://x.com/xdamman) · [GitHub](https://github.com/xdamman) · [hello@collective.email](mailto:hello@collective.email)' },
       ] },
+      { id: 'open-source', title: 'Open source', blocks: [
+        { p: 'collective.email is **open source** under the AGPL-3.0 license. The code that runs this service is the code on [GitHub](https://github.com/opencollective/email): read it, run it, improve it.' },
+        { p: 'That is also your exit door. Download your inbox as a zip from Settings → Data at any time, start your own instance, and import it with one command. Every thread, internal note, tag, assignment and attachment comes along, and your members sign in with the same email addresses. The setup guide is in the [README](https://github.com/opencollective/email#run-your-own-instance).' },
+      ] },
       { id: 'how', title: 'How we work', blocks: [{ li: [
         '**Getting started takes a minute.** Claim an address, and it is live and receiving immediately with a month free, no card. Invite the rest of the collective from inside the inbox.',
         '**Support is the product.** Write to [hello@collective.email](mailto:hello@collective.email) — a shared inbox, of course — and a human answers, usually the same day on weekdays.',
-        '**Your data is yours.** Every collective can download its full archive as a zip at any time. Closing an inbox is reversible for 30 days, then everything is deleted.',
+        '**Your data is yours.** Every collective can download its full archive as a zip at any time, and import it into its own instance of the [open source version](https://github.com/opencollective/email). Closing an inbox is reversible for 30 days, then everything is deleted.',
         '**Shipped with its users.** Improvements come from the collectives using it; if something is missing, say so and it is often live within days.',
       ] }] },
     ],
@@ -69,6 +73,7 @@ export function aboutContent(currency: 'USD' | 'EUR' = 'USD'): About {
       ['Alternatives', 'A shared Gmail password, Google Groups, Front, Missive, Help Scout'],
       ['Email infrastructure', 'Resend (EU region); addresses live at collective.email or your own domain'],
       ['Data location', 'European Union'],
+      ['Source code', '[github.com/opencollective/email](https://github.com/opencollective/email) (AGPL-3.0)'],
       ['Support', '[hello@collective.email](mailto:hello@collective.email)'],
       ['Docs for people', '[collective.email/docs](/docs)'],
       ['Docs for AI agents', '[collective.email/llms.txt](/llms.txt)'],
@@ -81,6 +86,7 @@ export function aboutContent(currency: 'USD' | 'EUR' = 'USD'): About {
       { q: 'Can people answer from their own mail client?', a: 'Yes. Reply to the notification email and the answer goes out as the collective; the thread in the inbox stays complete.' },
       { q: 'How is this different from a Google Group?', a: 'A group forwards mail to everyone and then nobody knows who answered. Here a thread is assigned, its state is visible, the internal discussion stays internal, and the reply is sent by the collective rather than from a personal address.' },
       { q: 'Where is our data stored?', a: 'In the European Union. You can export the whole archive at any time.' },
+      { q: 'Is collective.email open source?', a: 'Yes, under the AGPL-3.0 license, at [github.com/opencollective/email](https://github.com/opencollective/email). You can switch to your own instance at any time: export your inbox, import it there, and keep everything.' },
       { q: 'Can an AI agent help with the inbox?', a: 'Yes. An admin invites an agent with a link; it can read, leave internal notes and prepare drafts according to its role, and it can never send email on its own. Details are at [/llms.txt](/llms.txt).' },
     ],
   }
@@ -96,6 +102,7 @@ export const aboutJsonLd = () => ({
   founder: { '@type': 'Person', name: 'Xavier Damman', sameAs: ['https://x.com/xdamman', 'https://github.com/xdamman'] },
   address: { '@type': 'PostalAddress', addressLocality: 'Brussels', addressCountry: 'BE' },
   email: 'hello@collective.email',
+  sameAs: ['https://github.com/opencollective/email'],
 })
 
 /** /about.md — the same page for readers of raw text: LLMs, curl, agents.

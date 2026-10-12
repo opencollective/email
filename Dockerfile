@@ -5,6 +5,8 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
+COPY public ./public
+# builds dist/ (server) and public/static/composer.js (the reply editor)
 RUN npm run build && npm prune --omit=dev
 
 # ---- runtime ----
@@ -16,7 +18,7 @@ ENV NODE_ENV=production \
 WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
-COPY public ./public
+COPY --from=build /app/public ./public
 COPY package.json ./
 RUN mkdir -p /data && chown node:node /data
 USER node

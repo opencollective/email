@@ -17,7 +17,7 @@ import { cfg } from './config.js'
  *  offline forever, importable elsewhere from the JSON. */
 export async function buildArchive(collective: Collective): Promise<Uint8Array> {
   const [members, threads, messages, notes, events, tags, threadTags, attachments] = await Promise.all([
-    all<Record<string, unknown>>('SELECT id, email, name, role, notify_level, created_at, removed_at FROM members WHERE collective_id = ?', [collective.id]),
+    all<Record<string, unknown>>('SELECT id, email, name, role, kind, notify_level, signature, created_at, removed_at FROM members WHERE collective_id = ?', [collective.id]),
     all<Record<string, unknown>>('SELECT * FROM threads WHERE collective_id = ?', [collective.id]),
     all<Record<string, unknown>>('SELECT m.* FROM messages m JOIN threads t ON t.id = m.thread_id WHERE t.collective_id = ?', [collective.id]),
     all<Record<string, unknown>>('SELECT n.* FROM notes n JOIN threads t ON t.id = n.thread_id WHERE t.collective_id = ?', [collective.id]),

@@ -22,7 +22,9 @@ export function validateClaimSlug(slug: string): string | null {
  *  for a day; if opencollective.com is unreachable we fail open — an outage
  *  elsewhere must never block claiming. */
 export async function ocSlugTaken(slug: string): Promise<boolean> {
-  if (process.env.SKIP_OC_SLUG_CHECK) return false
+  // reserving Open Collective names is a collective.email promise, not something
+  // a self-hosted instance should do on opencollective.com's behalf
+  if (process.env.SKIP_OC_SLUG_CHECK || !cfg.hosted) return false
   const key = `ocslug:${slug}`
   const cached = await kvGet(key)
   if (cached) {

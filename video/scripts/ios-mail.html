@@ -1,0 +1,50 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<style>
+  * { box-sizing: border-box }
+  html, body { margin: 0; background: #fff; font-family: Inter, -apple-system, sans-serif; color: #000; -webkit-font-smoothing: antialiased }
+  .status { height: 54px; display: flex; align-items: center; justify-content: space-between; padding: 14px 30px 0 44px; font-weight: 600; font-size: 17px }
+  .status .r { display: flex; gap: 6px; align-items: center }
+  .nav { height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px 0 8px; color: #007aff; font-size: 17px }
+  .nav .back { display: flex; align-items: center; gap: 2px }
+  .nav .arrows { display: flex; gap: 22px; padding-right: 6px }
+  .scroll { padding: 6px 16px 120px }
+  .head { display: flex; gap: 10px; align-items: flex-start; padding-bottom: 12px; border-bottom: 0.5px solid #c6c6c8 }
+  .av { width: 40px; height: 40px; border-radius: 50%; background: linear-gradient(#a5abb8, #858b98); color: #fff; font-weight: 600; font-size: 16px; display: flex; align-items: center; justify-content: center; flex: none }
+  .who { flex: 1; min-width: 0 }
+  .name { font-weight: 600; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+  .to { font-size: 14px; color: #8a8a8e; margin-top: 2px }
+  .when { font-size: 14px; color: #8a8a8e; white-space: nowrap }
+  .subject { font-weight: 700; font-size: 20px; line-height: 1.25; margin: 14px 0 14px }
+  .bar { position: fixed; left: 0; right: 0; bottom: 0; height: 84px; background: rgba(249,249,249,.94); border-top: 0.5px solid #c6c6c8; display: flex; justify-content: space-around; padding-top: 12px; color: #007aff }
+  .home { position: fixed; bottom: 8px; left: 50%; width: 134px; height: 5px; margin-left: -67px; border-radius: 3px; background: #000 }
+</style></head><body>
+<div class="status"><span>9:41</span><span class="r">
+  <svg width="18" height="12" viewBox="0 0 18 12"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="7" rx="1"/><rect x="10" y="2.5" width="3" height="9.5" rx="1"/><rect x="15" y="0" width="3" height="12" rx="1"/></svg>
+  <svg width="16" height="12" viewBox="0 0 16 12"><path d="M8 2.5c2.3 0 4.4.9 6 2.4l1.2-1.2A10.2 10.2 0 0 0 8 .8C5.2.8 2.7 1.9.8 3.7L2 4.9a8.4 8.4 0 0 1 6-2.4zm0 3.4c1.4 0 2.6.5 3.6 1.4l1.2-1.2A6.8 6.8 0 0 0 8 4.2c-1.9 0-3.6.7-4.8 1.9l1.2 1.2c1-.9 2.2-1.4 3.6-1.4zm0 3.4c-.6 0-1.1.2-1.5.6L8 11.4l1.5-1.5c-.4-.4-.9-.6-1.5-.6z"/></svg>
+  <svg width="27" height="13" viewBox="0 0 27 13"><rect x=".5" y=".5" width="23" height="12" rx="3.5" fill="none" stroke="#000" opacity=".4"/><rect x="2" y="2" width="20" height="9" rx="2"/><rect x="24.5" y="4.5" width="1.5" height="4" rx=".7" opacity=".4"/></svg>
+</span></div>
+<div class="nav">
+  <span class="back"><svg width="13" height="21" viewBox="0 0 13 21"><path d="M11 2 3 10.5 11 19" stroke="#007aff" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>&nbsp;Inbox</span>
+  <span class="arrows">
+    <svg width="20" height="12" viewBox="0 0 20 12"><path d="M2 10 10 2l8 8" stroke="#007aff" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <svg width="20" height="12" viewBox="0 0 20 12"><path d="M2 2l8 8 8-8" stroke="#007aff" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </span>
+</div>
+<div class="scroll">
+  <div class="head">
+    <div class="av">{{INITIALS}}</div>
+    <div class="who"><div class="name">{{FROM}}</div><div class="to">To: Xavier ›</div></div>
+    <div class="when">{{WHEN}}</div>
+  </div>
+  <div class="subject">{{SUBJECT}}</div>
+  {{BODY}}
+</div>
+<div class="bar">
+  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#007aff" stroke-width="1.7"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>
+  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#007aff" stroke-width="1.7"><path d="M3 6h7l2 2h9v11H3z"/></svg>
+  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#007aff" stroke-width="1.7"><path d="M10 7 4 12l6 5M4 12h10a6 6 0 0 1 6 6"/></svg>
+  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#007aff" stroke-width="1.7"><path d="M14 4H5v15h15v-9M10 14l1-4 8-8 3 3-8 8z"/></svg>
+</div>
+<div class="home"></div>
+</body></html>

@@ -28,6 +28,9 @@ if (!secret) {
 }
 
 const emailDomain = env('EMAIL_DOMAIN', 'collective.email').toLowerCase()
+/** The collective.email service itself (production or staging), as opposed
+ *  to someone's own instance of the open source code. */
+const hosted = emailDomain === 'collective.email' || emailDomain.endsWith('.collective.email')
 
 export const cfg = {
   port: Number(env('PORT', '3000')),
@@ -41,12 +44,16 @@ export const cfg = {
   /** Vercel Blob token: when set, attachments go to Blob storage instead of local disk. */
   blobToken: env('BLOB_READ_WRITE_TOKEN'),
   cronSecret: secretEnv('CRON_SECRET'),
+  /** BILLING=off for a self-hosted instance: no trials, no plans to buy —
+   *  every collective is created on Pro and never expires. */
+  billingOff: env('BILLING').toLowerCase() === 'off',
+  hosted,
   /** The domain all collective addresses live on: <slug>@collective.email */
   emailDomain,
   /** Platform admins (comma-separated): the only accounts that can open
    *  /admin. Defaults to the founder's addresses so a fresh deploy is not
    *  locked out; ADMIN_EMAIL overrides the whole list. */
-  adminEmails: env('ADMIN_EMAIL', 'xdamman@opencollective.com,xdamman@gmail.com')
+  adminEmails: env('ADMIN_EMAIL', hosted ? 'xdamman@opencollective.com,xdamman@gmail.com' : '')
     .split(',').map((e) => e.toLowerCase().trim()).filter(Boolean),
   resendKey: secretEnv('RESEND_API_KEY'),
   /** Open Collective personal token (of a dedicated Individual). Enables
@@ -72,7 +79,7 @@ export function warnMissingConfig() {
   if (!cfg.resendKey) notes.push('RESEND_API_KEY not set — all email (login codes, notifications, replies, inbound fetch) is disabled; emails are logged to stdout.')
   if (!cfg.resendWebhookSecret) notes.push('RESEND_WEBHOOK_SECRET not set — inbound webhook signatures are NOT verified. Fine in dev, not in production.')
   if (cfg.adminEmails.length === 0) notes.push('ADMIN_EMAIL is empty — nobody can access /admin.')
-  if (!cfg.ocToken) notes.push('OPENCOLLECTIVE_TOKEN not set — existing opencollective.com names are blocked (no self-serve ownership verification).')
+  if (!cfg.ocToken && cfg.hosted) notes.push('OPENCOLLECTIVE_TOKEN not set — existing opencollective.com names are blocked (no self-serve ownership verification).')
   if (isVercel && cfg.dbUrl.startsWith('file:')) notes.push('Running on Vercel without TURSO_DATABASE_URL — the file: database lives in /tmp and WILL be lost between invocations.')
   if (isVercel && !cfg.blobToken) notes.push('Running on Vercel without BLOB_READ_WRITE_TOKEN — attachments in /tmp WILL be lost between invocations.')
   for (const n of notes) console.warn(`[config] ${n}`)

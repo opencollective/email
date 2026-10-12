@@ -3682,6 +3682,7 @@ app.get('/inbox/:addr/data', async (c) => {
         <section class="card">
           <h2>Where it lives</h2>
           <p class="muted">Your mail is stored in the EU (Dublin) and backed up nightly. Internal notes, assignments and attachments are included in the archive — it is the whole record, not a summary. No lock-in games.</p>
+          <p class="muted">collective.email is <a href="https://github.com/opencollective/email">open source</a>: you can run your own instance and import this archive into it with one command, any time. <a href="https://github.com/opencollective/email#run-your-own-instance">How →</a></p>
         </section>
 
         <section class="card">
