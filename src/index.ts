@@ -11,6 +11,7 @@ app.route('/', ogApp) // on Vercel these routes are served by api/og.js instead
 app.use('/static/*', serveStatic({ root: './public' }))
 app.use('/sw.js', serveStatic({ root: './public' }))
 app.use('/manifest.webmanifest', serveStatic({ root: './public' }))
+app.use('/video.mp4', serveStatic({ root: './public' }))
 
 serve({ fetch: app.fetch, port: cfg.port }, (info) => {
   console.log(`[web] collective.email listening on :${info.port} (${cfg.baseUrl}, addresses @${cfg.emailDomain})`)
