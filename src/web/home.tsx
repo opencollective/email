@@ -374,7 +374,11 @@ export const MarketingPage: FC<{ title: string; description: string; og?: string
       <meta property="og:image" content={`${cfg.baseUrl}/og/${p.og || 'home'}.png`} />
       <meta property="og:image:width" content="1200" />
       <meta property="og:image:height" content="630" />
+      <meta property="og:site_name" content="collective.email" />
       <meta name="twitter:card" content="summary_large_image" />
+      <meta name="twitter:title" content={p.title} />
+      <meta name="twitter:description" content={p.description} />
+      <meta name="twitter:image" content={`${cfg.baseUrl}/og/${p.og || 'home'}.png`} />
       {p.alternateMarkdown ? <link rel="alternate" type="text/markdown" href={p.alternateMarkdown} title="This page as Markdown" /> : null}
       <link rel="icon" href="/static/icon-192.png" type="image/png" />
       <link rel="manifest" href="/manifest.webmanifest" />
@@ -408,10 +412,19 @@ export const HomePage: FC<{ joined?: boolean; currency?: 'USD' | 'EUR' }> = ({ j
         <meta property="og:type" content="website" />
         <meta property="og:title" content="collective.email — an email address for your collective" />
         <meta property="og:description" content="Share one inbox within your group, assign any conversation to any member, and talk about it internally — no shared passwords." />
-        <meta property="og:image" content={`${cfg.baseUrl}/og/home.png`} />
+        <meta property="og:url" content={`${cfg.baseUrl}/`} />
+        <meta property="og:site_name" content="collective.email" />
+        {/* a static file, not the generated card: link unfurlers (X above all) time
+            out or cache a failure for days; bump ?v= when the image changes */}
+        <meta property="og:image" content={`${cfg.baseUrl}/static/og-home.png?v=2`} />
         <meta property="og:image:width" content="1200" />
         <meta property="og:image:height" content="630" />
+        <meta property="og:image:alt" content="collective.email: the shared inbox on the web and a notification in iPhone Mail, assigned in one tap" />
         <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:title" content="collective.email — an email address for your collective" />
+        <meta name="twitter:description" content="Share one inbox within your group, assign any conversation to any member, and talk about it internally — no shared passwords." />
+        <meta name="twitter:image" content={`${cfg.baseUrl}/static/og-home.png?v=2`} />
+        <meta name="twitter:creator" content="@xdamman" />
         <link rel="icon" href="/static/icon-192.png" type="image/png" />
         <link rel="manifest" href="/manifest.webmanifest" />
         <link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
