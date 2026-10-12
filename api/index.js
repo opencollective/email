@@ -8,8 +8,10 @@ let loadError = null
 const loading = import('../dist/app.js').then((m) => { app = m.app }).catch((err) => { loadError = err })
 
 // Keep request bodies raw (required for webhook signature verification and
-// multipart uploads). If the platform ignores this and pre-parses the body,
-// the handler below reconstructs it.
+// multipart uploads). Vercel's Node helpers buffer the body and replay it on
+// the request stream, and expose a lazy `req.body` that PARSES it on first
+// access — so read the stream first: re-serialising parsed JSON changes the
+// bytes (Stripe signs pretty-printed JSON) and every signature check fails.
 export const config = { api: { bodyParser: false } }
 
 export default async function handler(req, res) {
@@ -22,17 +24,16 @@ export default async function handler(req, res) {
   }
   let body
   if (req.method !== 'GET' && req.method !== 'HEAD') {
-    if (req.body !== undefined) {
-      // body parser ran anyway: rebuild the raw bytes as faithfully as possible
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    if (chunks.length) body = Buffer.concat(chunks)
+    else if (req.body !== undefined) {
+      // nothing on the stream but the platform parsed a body: rebuild it
       const ct = String(req.headers['content-type'] || '')
       if (Buffer.isBuffer(req.body)) body = req.body
       else if (typeof req.body === 'string') body = Buffer.from(req.body)
       else if (ct.includes('application/x-www-form-urlencoded')) body = Buffer.from(new URLSearchParams(req.body).toString())
       else body = Buffer.from(JSON.stringify(req.body))
-    } else {
-      const chunks = []
-      for await (const chunk of req) chunks.push(chunk)
-      body = chunks.length ? Buffer.concat(chunks) : undefined
     }
   }
 
