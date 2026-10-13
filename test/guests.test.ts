@@ -190,6 +190,15 @@ test('thread share links: comment by default, send on request — on that one th
   const assignNew = await post(`/inbox/${fx.slug}/thread/${fx.t1}/assign-new`, sender, 'email=friend@t.test')
   assert.match(decodeURIComponent(assignNew.headers.get('location') || ''), /comment but not send/, 'cannot invite others')
 
+  // the log says who brought whom in
+  const log = (await (await page(`/inbox/${fx.slug}/thread/${fx.t1}`, fx.sid)).text()).replace(/&#39;|&quot;/g, "'")
+  assert.match(log, /Ruta \(invited by Xavier\) joined this thread(?! —)/)
+  assert.match(log, /Ruta \(invited by Xavier\) joined this thread — can send replies/)
+  // opening the link again logs nothing new
+  const before = (await all("SELECT id FROM events WHERE thread_id = ? AND type = 'joined'", [fx.t1])).length
+  await page(`/join/${tokenOf(sendUrl)}`, sender)
+  assert.equal((await all("SELECT id FROM events WHERE thread_id = ? AND type = 'joined'", [fx.t1])).length, before)
+
   // turning the links off kills both; joined guests keep access
   await post(`/inbox/${fx.slug}/thread/${fx.t1}/share/revoke`, fx.sid, '')
   assert.match(await (await app.request(`/join/${tokenOf(sendUrl)}`)).text(), /expired/)

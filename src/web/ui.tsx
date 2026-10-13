@@ -1092,6 +1092,11 @@ export function eventText(
     case 'replied': return data.via === 'email' ? `${a} replied by email to their notification` : `${a} replied`
     case 'deleted': return `${a ?? 'Someone'} deleted this thread`
     case 'restored': return `${a ?? 'Someone'} restored this thread`
+    case 'joined': {
+      const by = data.by ? ` (invited by ${name(data.by)})` : ''
+      if (data.upgraded) return `${a ?? 'Someone'}${by} can now send replies on this thread`
+      return `${a ?? 'Someone'}${by} joined this thread${data.can_send ? ' — can send replies' : ''}`
+    }
     case 'reply_blocked': return `${a} tried to reply by email, but ${name(data.answered_by)} had already answered — reply not sent`
     default: return ev.type
   }

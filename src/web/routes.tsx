@@ -602,16 +602,16 @@ async function applyInviteJoin(inviteToken: string, email: string, name: string,
     if (role === 'member' && (await activeMembers(collective.id)).filter((m) => canSendRole(m.role)).length >= planLimits(collective.plan).contributors) role = 'commenter'
     await run("UPDATE members SET removed_at = NULL, role = ?, name = COALESCE(NULLIF(?, ''), name), notify_level = ? WHERE id = ?",
       [role, name, level || existing.notify_level, existing.id])
-    if (shared) await grantThreadAccess(existing.id, shared.id, !!invite.can_send)
+    if (shared) await joinSharedThread(existing.id, shared.id, invite)
   } else if (existing) {
     await run("UPDATE members SET name = COALESCE(NULLIF(?, ''), name), notify_level = ? WHERE id = ?",
       [name, level || existing.notify_level, existing.id])
-    if (shared && existing.role === 'guest') await grantThreadAccess(existing.id, shared.id, !!invite.can_send)
+    if (shared && existing.role === 'guest') await joinSharedThread(existing.id, shared.id, invite)
   } else if (shared) {
     // a thread share link: a guest on this one thread, nothing else
     const g = await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
       [collective.id, email, name || email.split('@')[0], 'guest', level || 'every', now()])
-    await grantThreadAccess(g.lastId, shared.id, !!invite.can_send)
+    await joinSharedThread(g.lastId, shared.id, invite)
   } else {
     let role = ['reader', 'commenter', 'member'].includes(invite.role || '') ? invite.role! : 'reader'
     if (role === 'member') {
@@ -639,6 +639,16 @@ async function applyInviteJoin(inviteToken: string, email: string, name: string,
     }
   }
   return { ...collective, landing: shared ? `/inbox/${collective.slug}/thread/${shared.id}` : undefined }
+}
+
+/** A guest comes in through a thread's share link: grant it, and log who
+ *  brought them — once when they join, once more if a send link widens it. */
+async function joinSharedThread(memberId: number, threadId: number, invite: Invite) {
+  const had = await get<{ can_send: number }>('SELECT can_send FROM thread_access WHERE member_id = ? AND thread_id = ?', [memberId, threadId])
+  await grantThreadAccess(memberId, threadId, !!invite.can_send)
+  if (!had || (invite.can_send && !had.can_send)) {
+    await addEvent(threadId, memberId, 'joined', { by: invite.created_by, can_send: !!invite.can_send, upgraded: !!had })
+  }
 }
 
 /** The share link for one thread: anyone who opens it joins as a guest on
@@ -676,7 +686,7 @@ app.get('/join/:token', async (c) => {
     for (const a of accounts) {
       const m = await getMemberIn(collective.id, a.email)
       if (!m || m.removed_at) continue
-      if (m.role === 'guest') await grantThreadAccess(m.id, shared.id, !!invite.can_send)
+      if (m.role === 'guest') await joinSharedThread(m.id, shared.id, invite)
       return c.redirect(`/inbox/${collective.slug}/thread/${shared.id}`)
     }
   }
