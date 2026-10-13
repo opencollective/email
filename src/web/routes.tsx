@@ -2056,6 +2056,12 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   const allEvents = batch[2] as { actor_member_id: number | null; type: string; data_json: string | null; created_at: number }[]
   const tags = batch[3] as { id: number; name: string }[]
   const members = new Map((batch[4] as Member[]).map((m) => [m.id, m]))
+  // who started the conversation, for the share text: the first sender, or
+  // the member who wrote it when it began as ours
+  const starter = msgs[0]
+  const startedBy = starter
+    ? (starter.direction === 'outbound' && starter.sent_by_member_id ? memberName(members.get(starter.sent_by_member_id)) : starter.from_name || (starter.from_email === thread.counterpart_email ? thread.counterpart_name : null) || starter.from_email)
+    : thread.counterpart_name || thread.counterpart_email || 'someone'
   // notes that named *you* — worth a marker when you land on a long thread
   const mentionsMe = new Set((batch[5] as { note_id: number; member_id: number }[])
     .filter((r) => r.member_id === member.id).map((r) => r.note_id))
@@ -2281,12 +2287,14 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                   <span><b>Can also send</b><small>answer from {collective.slug}@{cfg.emailDomain} — on this thread only</small></span>
                 </label>
               </div>
+              {/* the post as it will read in the group chat — editable; the link
+                  is appended when it arrives */}
+              <textarea class="input share-text" rows={4} data-share-text
+                data-intro={`Join the thread “${thread.subject}” started by ${startedBy}`}>{`Join the thread “${thread.subject}” started by ${startedBy}`}</textarea>
               <div class="share-row">
-                <span class="copy-field">
-                  <code data-share-link>…</code>
-                </span>
-                <button class="btn small ghost" type="button" data-copy="" disabled>Copy</button>
-                <button class="btn small" type="button" data-share-native hidden>Share…</button>
+                <button class="btn small" type="button" data-copy="" data-copy-text disabled>Copy text</button>
+                <button class="btn small ghost" type="button" data-copy="" data-copy-url disabled>Copy URL only</button>
+                <button class="btn small ghost" type="button" data-share-native hidden>Share…</button>
               </div>
               <p class="fineprint">Links work for 14 days.</p>
               <div class="modal-foot">

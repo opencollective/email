@@ -43,7 +43,7 @@ document.addEventListener('click', (e) => {
   if (dlgBtn) {
     const dlg = document.querySelector(dlgBtn.getAttribute('data-dialog'));
     if (dlg) {
-      if (dlg.dataset.share) shareLink(dlg);
+      if (dlg.dataset.share && !dlg.dataset.url) shareLink(dlg);
       dlg.showModal();
       // showModal focuses the first field, which pops the picker on iOS —
       // park focus on the dialog itself instead
@@ -66,23 +66,37 @@ document.addEventListener('click', (e) => {
     if (e.clientY < r.top || e.clientY > r.bottom || e.clientX < r.left || e.clientX > r.right) e.target.close();
   }
 });
-// The thread share dialog: fetch the link for the chosen access, on demand.
+// The thread share dialog: fetch the link for the chosen access, on demand,
+// and keep the ready-to-post text (editable) and its copy buttons in step.
+function shareText(dlg) {
+  const ta = dlg.querySelector('[data-share-text]');
+  dlg.querySelector('[data-copy-text]').setAttribute('data-copy', ta.value);
+}
 function shareLink(dlg) {
   const mode = dlg.querySelector('input[name="share_mode"]:checked')?.value || 'comment';
-  const code = dlg.querySelector('[data-share-link]');
-  const copyBtn = dlg.querySelector('[data-copy]');
+  const ta = dlg.querySelector('[data-share-text]');
+  const textBtn = dlg.querySelector('[data-copy-text]');
+  const urlBtn = dlg.querySelector('[data-copy-url]');
   const native = dlg.querySelector('[data-share-native]');
-  code.textContent = '…'; copyBtn.disabled = true;
+  textBtn.disabled = urlBtn.disabled = true;
   fetch(dlg.dataset.share, { method: 'POST', body: new URLSearchParams({ mode }), credentials: 'same-origin' })
     .then((r) => r.json()).then((d) => {
-      if (!d.url) { code.textContent = d.error || 'Could not make a link.'; return; }
-      code.textContent = d.url; code.title = d.url;
-      copyBtn.setAttribute('data-copy', d.url); copyBtn.disabled = false;
-      if (native && navigator.share) { native.hidden = false; native.onclick = () => navigator.share({ url: d.url }).catch(() => {}); }
-    }, () => { code.textContent = 'Could not make a link.'; });
+      if (!d.url) { ta.value = d.error || 'Could not make a link.'; return; }
+      // swap the link in place, keeping whatever the sender already edited
+      const prev = dlg.dataset.url;
+      ta.value = prev && ta.value.includes(prev) ? ta.value.replace(prev, d.url) : ta.value.replace(/\\s*$/, '') + '\\n' + d.url;
+      dlg.dataset.url = d.url;
+      urlBtn.setAttribute('data-copy', d.url);
+      shareText(dlg);
+      textBtn.disabled = urlBtn.disabled = false;
+      if (native && navigator.share) { native.hidden = false; native.onclick = () => navigator.share({ text: ta.value }).catch(() => {}); }
+    }, () => { ta.value = 'Could not make a link.'; });
 }
 document.addEventListener('change', (e) => {
   if (e.target.name === 'share_mode') shareLink(e.target.closest('dialog'));
+});
+document.addEventListener('input', (e) => {
+  if (e.target.matches && e.target.matches('[data-share-text]')) shareText(e.target.closest('dialog'));
 });
 const wantedPane = new URLSearchParams(location.search).get('pane');
 if (wantedPane === 'note') document.querySelector('[data-tab="note"]')?.click();
@@ -1108,7 +1122,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '105'
+export const ASSET_V = '106'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">

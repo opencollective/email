@@ -147,6 +147,7 @@ test('thread share links: comment by default, send on request — on that one th
   const fx = await fixture()
   const html = await (await page(`/inbox/${fx.slug}/thread/${fx.t1}`, fx.sid)).text()
   assert.match(html, /data-dialog="#share-modal"/, 'a share button on the thread')
+  assert.match(html, /Join the thread “Shared thread” started by Miriam<\/textarea>/, 'a ready-to-post text')
   const link = async (mode: string) => (await (await post(`/inbox/${fx.slug}/thread/${fx.t1}/share`, fx.sid, `mode=${mode}`)).json()).url as string
   const commentUrl = await link('comment')
   const sendUrl = await link('send')

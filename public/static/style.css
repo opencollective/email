@@ -986,7 +986,7 @@ label.att-pick:has(input:checked) .att-pick-name { text-decoration: line-through
 .share-modal { max-width: 520px; }
 .share-modal .level-cards { margin: 12px 0; }
 .share-row { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
-.share-row .copy-field { flex: 1; min-width: 0; }
+.share-text { width: 100%; box-sizing: border-box; resize: vertical; font-size: 14px; line-height: 1.45; margin-bottom: 8px; }
 .share-modal .modal-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 14px; }
 .tag-add { position: relative; display: inline-block; }
 .tag-add summary { list-style: none; cursor: pointer; color: var(--muted); }
