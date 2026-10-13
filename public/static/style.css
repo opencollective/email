@@ -982,7 +982,8 @@ label.att-pick:has(input:checked) .att-pick-name { text-decoration: line-through
   animation: status-pending 1s linear forwards;
 }
 @keyframes status-pending { to { background-position: left; } }
-.thread-top .share-btn { flex: none; margin-left: auto; }
+/* share sits at the far end of the chip row, never on a line of its own */
+.thread-sub .share-btn { flex: none; margin-left: auto; width: 30px; height: 30px; }
 .share-modal { max-width: 520px; }
 .share-modal .level-cards { margin: 12px 0; }
 .share-row { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
@@ -1537,6 +1538,12 @@ kbd {
 .chip-scroll { display: flex; align-items: center; gap: 8px; overflow-x: auto; min-width: 0; flex: 0 1 auto; scrollbar-width: none; }
 .chip-scroll > *, .chip-scroll form { flex: none; display: inline-flex; align-items: center; margin: 0; }
 .thread-sub .tag-add { flex: none; }
+/* + tag scrolls with the chips; its popover hangs off the row (the scroller
+   would clip it), opening where the chip sits */
+.thread-sub { position: relative; }
+.thread-sub .tag-add { position: static; }
+.thread-sub form.tag-pop { left: auto; top: calc(100% - 4px); }
+@media (max-width: 900px) { .thread-sub form.tag-pop { left: 14px; right: 14px; } }
 /* what your role lets you do, under the composer */
 .role-note { margin: 0; padding: 10px 16px; font-size: 13px; color: var(--muted); border-top: 1.5px solid var(--line-soft); }
 /* never a collapsed composer, whatever measured it */

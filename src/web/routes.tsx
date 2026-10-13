@@ -2269,9 +2269,6 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                 ))}</> : null}
               </p>
             </div>
-            {canSendRole(member.role) && !thread.deleted_at ? (
-              <button class="icon-btn share-btn" type="button" data-dialog="#share-modal" title="Share this thread" aria-label="Share this thread"><Icon name="share" /></button>
-            ) : null}
           </div>
           {canSendRole(member.role) && !thread.deleted_at ? (
             <dialog id="share-modal" class="modal share-modal" data-share={`${base}/thread/${thread.id}/share`}>
@@ -2366,25 +2363,28 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                   <button class="chip removable" type="submit" title="Remove tag">#{tg.name} ×</button>
                 </form>
               ))}
-            </div>
-            {member.role !== 'reader' ? (
-              <details class="tag-add">
-                <summary class="chip" title="Add a tag">+ tag</summary>
-                <form method="post" action={`${base}/thread/${thread.id}/tags`} class="tag-pop" data-tagpop>
-                  <div class="tag-row">
-                    <input class="input small" name="name" placeholder="add-a-tag" autocomplete="off" />
-                    <button class="btn small ghost" type="submit">Add</button>
-                  </div>
-                  {/* each suggestion submits itself, so the list works with JS off too */}
-                  {tagSugs.length ? (
-                    <div class="tag-sugs">
-                      {tagSugs.map((s) => (
-                        <button class="chip tag-sug" type="submit" name="pick" value={s.name} data-find={s.name}>{s.name}</button>
-                      ))}
+              {member.role !== 'reader' ? (
+                <details class="tag-add">
+                  <summary class="chip" title="Add a tag">+ tag</summary>
+                  <form method="post" action={`${base}/thread/${thread.id}/tags`} class="tag-pop" data-tagpop>
+                    <div class="tag-row">
+                      <input class="input small" name="name" placeholder="add-a-tag" autocomplete="off" />
+                      <button class="btn small ghost" type="submit">Add</button>
                     </div>
-                  ) : null}
-                </form>
-              </details>
+                    {/* each suggestion submits itself, so the list works with JS off too */}
+                    {tagSugs.length ? (
+                      <div class="tag-sugs">
+                        {tagSugs.map((s) => (
+                          <button class="chip tag-sug" type="submit" name="pick" value={s.name} data-find={s.name}>{s.name}</button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </form>
+                </details>
+              ) : null}
+            </div>
+            {canSendRole(member.role) && !thread.deleted_at ? (
+              <button class="icon-btn share-btn" type="button" data-dialog="#share-modal" title="Share this thread" aria-label="Share this thread"><Icon name="share" /></button>
             ) : null}
           </div>
           </div>
