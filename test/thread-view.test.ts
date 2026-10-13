@@ -288,7 +288,7 @@ test('HTML or text is a per-member choice remembered for the sender', async () =
 test('the assign modal carries the create-a-rule form; the sidebar no longer does', async () => {
   const fx = await fixture()
   const html = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
-  const modal = html.slice(html.indexOf('assign-modal'), html.indexOf('</dialog>'))
+  const modal = html.slice(html.indexOf('assign-modal'), html.indexOf('</dialog>', html.indexOf('assign-modal')))
   assert.match(modal, /Create a rule for similar messages/)
   const aside = html.slice(html.indexOf('class="thread-side"'))
   assert.doesNotMatch(aside, /Create a rule for similar messages/)
@@ -409,7 +409,8 @@ test('c / s / d shortcuts: the thread page marks its close, spam and delete butt
 test('the needs reply chip marks the thread answered in one tap, and says who did it', async () => {
   const fx = await fixture()
   const before = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
-  assert.match(before, /<button class="chip status-btn status-needs_reply" type="submit" title="Mark as answered">/)
+  assert.match(before, /<form method="post" action="[^"]+\/status" data-delay="1000">/, 'posted after a second, so a second tap can cancel')
+  assert.match(before, /<button class="chip status-btn status-needs_reply" type="submit"[^>]*title="Mark as answered">/)
 
   const res = await post(`/inbox/${fx.slug}/thread/${fx.threadId}/status`, fx.alice.sid, 'status=answered')
   assert.equal(res.status, 302)
@@ -419,5 +420,5 @@ test('the needs reply chip marks the thread answered in one tap, and says who di
   assert.ok(after.includes('Alice changed the status to &quot;answered&quot;') || after.includes('Alice changed the status to "answered"'),
     'the change is logged by name')
   // and the chip flips back, in case it was a mistake
-  assert.match(after, /<button class="chip status-btn status-answered" type="submit" title="Mark as needing a reply">/)
+  assert.match(after, /<button class="chip status-btn status-answered" type="submit"[^>]*title="Mark as needing a reply">/)
 })

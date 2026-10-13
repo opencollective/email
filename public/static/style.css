@@ -976,6 +976,18 @@ label.att-pick:has(input:checked) .att-pick-name { text-decoration: line-through
 .assign-btn:hover { border-color: var(--accent); }
 .status-btn { cursor: pointer; font: inherit; font-family: var(--mono); font-size: 11px; }
 .status-btn:hover { background: var(--fill); }
+/* the second it waits before posting: the chip fills, and a tap undoes it */
+.status-btn.pending {
+  background: linear-gradient(90deg, var(--fill) 50%, transparent 50%) right / 200% 100% no-repeat;
+  animation: status-pending 1s linear forwards;
+}
+@keyframes status-pending { to { background-position: left; } }
+.thread-top .share-btn { flex: none; margin-left: auto; }
+.share-modal { max-width: 520px; }
+.share-modal .level-cards { margin: 12px 0; }
+.share-row { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
+.share-row .copy-field { flex: 1; min-width: 0; }
+.share-modal .modal-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 14px; }
 .tag-add { position: relative; display: inline-block; }
 .tag-add summary { list-style: none; cursor: pointer; color: var(--muted); }
 .tag-add summary::-webkit-details-marker { display: none; }

@@ -318,6 +318,9 @@ function init(): Promise<void> {
       'ALTER TABLE messages ADD COLUMN draft_editor_member_id INTEGER',
       // a share link for one thread: whoever joins with it is a guest on it
       'ALTER TABLE invites ADD COLUMN thread_id INTEGER',
+      // ...and whether it also lets them send replies, on that thread only
+      'ALTER TABLE invites ADD COLUMN can_send INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE thread_access ADD COLUMN can_send INTEGER NOT NULL DEFAULT 0',
     ]
     ready = db.batch(SCHEMA, 'write')
       // additive migrations for pre-existing tables; ignore "duplicate column"
@@ -423,6 +426,9 @@ export interface Member {
   created_at: number
   last_seen_at: number | null
   removed_at: number | null
+  /** request-scoped: a guest whose share link lets them send on the thread
+   *  this request is about (never stored on the row) */
+  send_thread?: number
 }
 
 export interface Thread {
@@ -469,6 +475,7 @@ export interface Invite {
   token: string
   role: 'member' | 'commenter' | 'reader' | 'guest' | null
   thread_id?: number | null
+  can_send?: number | null
   created_by: number | null
   created_at: number
   expires_at: number
@@ -499,8 +506,18 @@ export async function canSeeThread(member: Member, threadId: number): Promise<bo
   return !!(await get('SELECT 1 FROM thread_access WHERE member_id = ? AND thread_id = ?', [member.id, threadId]))
 }
 
-export const grantThreadAccess = (memberId: number, threadId: number) =>
-  run('INSERT OR IGNORE INTO thread_access (member_id, thread_id, created_at) VALUES (?, ?, ?)', [memberId, threadId, now()])
+/** Share a thread with a guest. Send rights only ever widen: opening a
+ *  comment-only link later does not take away what a send link gave. */
+export const grantThreadAccess = (memberId: number, threadId: number, canSend = false) =>
+  run(`INSERT INTO thread_access (member_id, thread_id, created_at, can_send) VALUES (?, ?, ?, ?)
+       ON CONFLICT(member_id, thread_id) DO UPDATE SET can_send = MAX(can_send, excluded.can_send)`,
+    [memberId, threadId, now(), canSend ? 1 : 0])
+
+/** Whether a guest may send replies on this one thread. */
+export async function guestCanSend(member: Member, threadId: number): Promise<boolean> {
+  if (member.role !== 'guest') return false
+  return !!(await get('SELECT 1 FROM thread_access WHERE member_id = ? AND thread_id = ? AND can_send = 1', [member.id, threadId]))
+}
 
 /** Becoming a guest keeps the conversations that were already theirs: every
  *  thread where they were ever @mentioned or assigned is granted up front. */

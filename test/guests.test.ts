@@ -142,3 +142,70 @@ test('"N threads shared" opens the inbox list narrowed to what that guest can se
   assert.doesNotMatch(inbox, /Threads shared with/)
   void get
 })
+
+test('thread share links: comment by default, send on request — on that one thread only', async () => {
+  const fx = await fixture()
+  const html = await (await page(`/inbox/${fx.slug}/thread/${fx.t1}`, fx.sid)).text()
+  assert.match(html, /data-dialog="#share-modal"/, 'a share button on the thread')
+  const link = async (mode: string) => (await (await post(`/inbox/${fx.slug}/thread/${fx.t1}/share`, fx.sid, `mode=${mode}`)).json()).url as string
+  const commentUrl = await link('comment')
+  const sendUrl = await link('send')
+  assert.notEqual(commentUrl, sendUrl)
+  assert.equal(await link('send'), sendUrl, 'one live link per mode, reused')
+  const tokenOf = (u: string) => u.split('/').pop()!
+
+  // signed out: the link asks for a name and an email, nothing else
+  const join = await (await app.request(`/join/${tokenOf(sendUrl)}`)).text()
+  assert.match(join, /name="name"/)
+  assert.match(join, /type="email" name="email"/)
+  assert.doesNotMatch(join, /name="level" value="daily"/, 'no notification choices for one thread')
+  assert.match(join, /send it from/)
+
+  // a commenter guest can propose but not send
+  const joinAs = async (token: string) => {
+    const email = `g-${uniq()}@t.test`
+    const sid = await createSession(email)
+    await app.request(`/join/${token}`, {
+      method: 'POST', headers: { cookie: `requests_sid=${sid}`, 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ account: email, name: 'Ruta', level: 'every' }),
+    })
+    return sid
+  }
+  const commenter = await joinAs(tokenOf(commentUrl))
+  const cRes = await post(`/inbox/${fx.slug}/thread/${fx.t1}/reply`, commenter, 'body=hi')
+  assert.match(decodeURIComponent(cRes.headers.get('location')!), /comment but not send/)
+  assert.equal((await post(`/inbox/${fx.slug}/thread/${fx.t1}/status`, commenter, 'status=answered')).status, 403)
+
+  // a sender guest replies and marks answered on THIS thread — and nowhere else
+  const sender = await joinAs(tokenOf(sendUrl))
+  const page1 = await (await page(`/inbox/${fx.slug}/thread/${fx.t1}`, sender)).text()
+  assert.match(page1, /action="[^"]*\/thread\/\d+\/reply"/, 'the reply composer is there')
+  assert.doesNotMatch(page1, /data-dialog="#share-modal"/, 'a guest does not re-share')
+  assert.doesNotMatch(page1, /\/delete"/, 'nor delete')
+  const sRes = await post(`/inbox/${fx.slug}/thread/${fx.t1}/reply`, sender, 'body=On it!')
+  assert.match(decodeURIComponent(sRes.headers.get('location')!), /Reply sent/)
+  assert.equal((await post(`/inbox/${fx.slug}/thread/${fx.t1}/status`, sender, 'status=spam')).status, 302)
+  assert.notEqual((await get<any>('SELECT status FROM threads WHERE id = ?', [fx.t1])).status, 'spam', 'spam stays a member\'s call')
+  assert.notEqual((await page(`/inbox/${fx.slug}/thread/${fx.t2}`, sender)).status, 200, 'other threads stay invisible')
+  const assignNew = await post(`/inbox/${fx.slug}/thread/${fx.t1}/assign-new`, sender, 'email=friend@t.test')
+  assert.match(decodeURIComponent(assignNew.headers.get('location') || ''), /comment but not send/, 'cannot invite others')
+
+  // turning the links off kills both; joined guests keep access
+  await post(`/inbox/${fx.slug}/thread/${fx.t1}/share/revoke`, fx.sid, '')
+  assert.match(await (await app.request(`/join/${tokenOf(sendUrl)}`)).text(), /expired/)
+  assert.equal((await page(`/inbox/${fx.slug}/thread/${fx.t1}`, sender)).status, 200)
+})
+
+test('flipping the status back within seconds is a slip: restored, and not logged', async () => {
+  const fx = await fixture()
+  await post(`/inbox/${fx.slug}/thread/${fx.t1}/status`, fx.sid, 'status=answered')
+  await post(`/inbox/${fx.slug}/thread/${fx.t1}/status`, fx.sid, 'status=needs_reply')
+  assert.equal((await get<any>('SELECT status FROM threads WHERE id = ?', [fx.t1])).status, 'needs_reply')
+  assert.equal((await all("SELECT id FROM events WHERE thread_id = ? AND type = 'status'", [fx.t1])).length, 0)
+  // a deliberate change later still logs
+  await run("UPDATE events SET created_at = created_at - 60 WHERE thread_id = ?", [fx.t1])
+  await post(`/inbox/${fx.slug}/thread/${fx.t1}/status`, fx.sid, 'status=answered')
+  await run("UPDATE events SET created_at = created_at - 60 WHERE thread_id = ?", [fx.t1])
+  await post(`/inbox/${fx.slug}/thread/${fx.t1}/status`, fx.sid, 'status=needs_reply')
+  assert.equal((await all("SELECT id FROM events WHERE thread_id = ? AND type = 'status'", [fx.t1])).length, 2)
+})

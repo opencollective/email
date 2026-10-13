@@ -8,7 +8,7 @@ import {
   activeMembers, addEvent, addTag, all, allCollectives, attachmentsByMessage, batchAll, contactsFor, createCollective, get, getCollective, getCollectiveByCustomDomain, messageAttachments, storeAttachment, siblingsOnDomain, messageFoldsQuery, popularTagsQuery, setMessageFold,
   getCollectiveBySlug, getMember, getMemberIn, getThread, kvGet, kvGetMany, kvSet, lastMessageQuery, memberMap, recordThreadSeenUpTo,
   renameCollectiveSlug,
-  backfillGuestAccess, canSeeThread, grantThreadAccess, markThreadSeen, membershipsByEmail, readsForMember, removeTag, run, setAssignee, setStatus, tagsByThread, threadMessages, threadReads, threadTags,
+  backfillGuestAccess, canSeeThread, grantThreadAccess, guestCanSend, markThreadSeen, membershipsByEmail, readsForMember, removeTag, run, setAssignee, setStatus, tagsByThread, threadMessages, threadReads, threadTags,
   type ThreadRead,
   type Attachment, type Collective, type Invite, type Member, type Message, type Thread,
 } from '../db.js'
@@ -65,6 +65,9 @@ const SID = 'requests_sid'
  *  Readers see everything but act on nothing; commenters do everything except
  *  send external email; senders + admins are the paid contributor seats. */
 const canSendRole = (r: Member['role']) => r === 'member' || r === 'admin'
+/** Sending on the thread at hand: a sender's role, or a guest whose share
+ *  link gave them send rights on exactly this thread. */
+const canSendHere = (m: Member) => canSendRole(m.role) || !!m.send_thread
 const ROLE_LABELS: Record<Member['role'], string> = { reader: 'reader', commenter: 'commenter', member: 'sender', admin: 'admin', guest: 'guest' }
 /** "a sender" but "an admin" — only 'admin' starts with a vowel today, but the
  *  rule is cheap and survives the next role we name. */
@@ -95,6 +98,13 @@ const triageBlock = (c: Context<Env>, t: { collective: Collective; member: Membe
 const senderBlock = (c: Context<Env>, t: { collective: Collective; member: Member }) =>
   archivedBlock(c, t) ??
   (!canSendRole(t.member.role)
+    ? c.redirect(`/inbox/${t.collective.slug}?m=` + encodeURIComponent('Your role can comment but not send email — ask an admin for sending rights.'))
+    : null)
+/** Replying, forwarding, sending a draft: on top of a sender's role, a guest
+ *  with a send link passes — on that thread only (see tenant). */
+const threadSendBlock = (c: Context<Env>, t: { collective: Collective; member: Member }) =>
+  archivedBlock(c, t) ??
+  (!canSendHere(t.member)
     ? c.redirect(`/inbox/${t.collective.slug}?m=` + encodeURIComponent('Your role can comment but not send email — ask an admin for sending rights.'))
     : null)
 const memberName = (m?: Member | null) => (m ? m.name || m.email.split('@')[0] : 'someone')
@@ -261,6 +271,9 @@ async function tenant(c: Context<Env>): Promise<{ collective: Collective; member
   if (!member.last_seen_at || now() - member.last_seen_at > 300) {
     run('UPDATE members SET last_seen_at = ? WHERE id = ?', [now(), member.id]).catch(() => {})
   }
+  // a guest's send link lifts them on that one thread, for this request only
+  const onThread = member.role === 'guest' ? /^\/inbox\/[^/]+\/thread\/(\d+)(\/|$)/.exec(c.req.path) : null
+  if (onThread && await guestCanSend(member, Number(onThread[1]))) member.send_thread = Number(onThread[1])
   return { collective, member }
 }
 
@@ -589,16 +602,16 @@ async function applyInviteJoin(inviteToken: string, email: string, name: string,
     if (role === 'member' && (await activeMembers(collective.id)).filter((m) => canSendRole(m.role)).length >= planLimits(collective.plan).contributors) role = 'commenter'
     await run("UPDATE members SET removed_at = NULL, role = ?, name = COALESCE(NULLIF(?, ''), name), notify_level = ? WHERE id = ?",
       [role, name, level || existing.notify_level, existing.id])
-    if (shared) await grantThreadAccess(existing.id, shared.id)
+    if (shared) await grantThreadAccess(existing.id, shared.id, !!invite.can_send)
   } else if (existing) {
     await run("UPDATE members SET name = COALESCE(NULLIF(?, ''), name), notify_level = ? WHERE id = ?",
       [name, level || existing.notify_level, existing.id])
-    if (shared && existing.role === 'guest') await grantThreadAccess(existing.id, shared.id)
+    if (shared && existing.role === 'guest') await grantThreadAccess(existing.id, shared.id, !!invite.can_send)
   } else if (shared) {
     // a thread share link: a guest on this one thread, nothing else
     const g = await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
       [collective.id, email, name || email.split('@')[0], 'guest', level || 'every', now()])
-    await grantThreadAccess(g.lastId, shared.id)
+    await grantThreadAccess(g.lastId, shared.id, !!invite.can_send)
   } else {
     let role = ['reader', 'commenter', 'member'].includes(invite.role || '') ? invite.role! : 'reader'
     if (role === 'member') {
@@ -630,13 +643,13 @@ async function applyInviteJoin(inviteToken: string, email: string, name: string,
 
 /** The share link for one thread: anyone who opens it joins as a guest on
  *  that thread only. One live link per thread, renewed when close to expiry. */
-async function threadShareLink(collective: Collective, threadId: number, memberId: number): Promise<string> {
-  let inv = await get<Invite>('SELECT * FROM invites WHERE collective_id = ? AND thread_id = ? AND revoked_at IS NULL AND expires_at > ? ORDER BY id DESC LIMIT 1',
-    [collective.id, threadId, now() + 86400])
+async function threadShareLink(collective: Collective, threadId: number, memberId: number, canSend = false): Promise<string> {
+  let inv = await get<Invite>('SELECT * FROM invites WHERE collective_id = ? AND thread_id = ? AND can_send = ? AND revoked_at IS NULL AND expires_at > ? ORDER BY id DESC LIMIT 1',
+    [collective.id, threadId, canSend ? 1 : 0, now() + 86400])
   if (!inv) {
     const token = randomToken(18)
-    await run('INSERT INTO invites (collective_id, token, role, thread_id, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [collective.id, token, 'guest', threadId, memberId, now(), now() + 14 * 86400])
+    await run('INSERT INTO invites (collective_id, token, role, thread_id, can_send, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [collective.id, token, 'guest', threadId, canSend ? 1 : 0, memberId, now(), now() + 14 * 86400])
     inv = (await get<Invite>('SELECT * FROM invites WHERE token = ?', [token]))!
   }
   return `${cfg.baseUrl}/${collective.slug}/join/${inv.token}`
@@ -657,12 +670,22 @@ app.get('/join/:token', async (c) => {
   const inviter = invite.created_by ? await getMember(invite.created_by) : null
   const accounts = c.get('accounts')
   const shared = invite.thread_id ? await getThread(invite.thread_id) : undefined
+  if (shared && shared.collective_id === collective.id) {
+    // already in this collective: the link just opens the thread (a guest
+    // also picks up what this link grants — send rights, say)
+    for (const a of accounts) {
+      const m = await getMemberIn(collective.id, a.email)
+      if (!m || m.removed_at) continue
+      if (m.role === 'guest') await grantThreadAccess(m.id, shared.id, !!invite.can_send)
+      return c.redirect(`/inbox/${collective.slug}/thread/${shared.id}`)
+    }
+  }
   return c.html(
     <AuthCard title={`Join ${collective.name}`} flash={c.req.query('m')}>
       <h1>{shared ? <>Collaborate on “{shared.subject}”</> : <>Join {collective.name}</>}</h1>
       {shared ? (
         <p class="muted">
-          {inviter ? `${memberName(inviter)} invited you` : 'You were invited'} to read and comment on one email
+          {inviter ? `${memberName(inviter)} invited you` : 'You were invited'} to read{invite.can_send ? ', comment on and answer' : ' and comment on'} one email
           thread of <b>{collective.name}</b> ({collective.slug}@{cfg.emailDomain}). You'll see this thread only.
         </p>
       ) : (
@@ -671,10 +694,17 @@ app.get('/join/:token', async (c) => {
         sent to <b>{collective.slug}@{cfg.emailDomain}</b>.
       </p>
       )}
-      <p class="muted">You'll join as {/^[aeiou]/i.test(ROLE_LABELS[(invite.role || 'reader') as Member['role']]) ? 'an' : 'a'} <b>{ROLE_LABELS[(invite.role || 'reader') as Member['role']]}</b> — {ROLE_HINTS[(invite.role || 'reader') as Member['role']].charAt(0).toLowerCase()}{ROLE_HINTS[(invite.role || 'reader') as Member['role']].slice(1)}</p>
+      {shared ? (
+        <p class="muted">Tell us who you are, so the team knows who wrote what: you can add notes and draft a reply
+          {invite.can_send ? <>, and <b>send it from {collective.slug}@{cfg.emailDomain}</b></> : <> for a teammate to send</>}.</p>
+      ) : <p class="muted">You'll join as {/^[aeiou]/i.test(ROLE_LABELS[(invite.role || 'reader') as Member['role']]) ? 'an' : 'a'} <b>{ROLE_LABELS[(invite.role || 'reader') as Member['role']]}</b> — {ROLE_HINTS[(invite.role || 'reader') as Member['role']].charAt(0).toLowerCase()}{ROLE_HINTS[(invite.role || 'reader') as Member['role']].slice(1)}</p>}
       <form method="post" action={`/join/${token}`}>
         <label class="lbl">Your name</label>
-        <input class="input" name="name" placeholder="First name (as teammates know you)" required />
+        <input class="input" name="name" placeholder={shared ? 'Your name' : 'First name (as teammates know you)'} required />
+        {shared ? (
+          // one thread: hear about it as it moves, nothing to choose
+          <input type="hidden" name="level" value="every" />
+        ) : (<>
         <label class="lbl">How do you want to hear about new requests?</label>
         <div class="level-cards">
           {LEVELS.map((l, i) => (
@@ -684,7 +714,8 @@ app.get('/join/:token', async (c) => {
             </label>
           ))}
         </div>
-        <label class="lbl">Where should we send them?</label>
+        </>)}
+        <label class="lbl">{shared ? 'Your email' : 'Where should we send them?'}</label>
         {accounts.length ? (
           <div class="level-cards">
             {/* already signed in: those addresses are verified, so joining with
@@ -1105,6 +1136,7 @@ app.get('/admin', async (c) => {
         FROM messages m JOIN threads t ON t.id = m.thread_id JOIN collectives c ON c.id = t.collective_id
         JOIN members s ON s.id = m.sent_by_member_id
         WHERE m.direction = 'outbound' AND m.sent_at IS NOT NULL AND s.role = 'guest'
+          AND NOT EXISTS (SELECT 1 FROM thread_access ta WHERE ta.member_id = s.id AND ta.thread_id = m.thread_id AND ta.can_send = 1)
         ORDER BY m.sent_at DESC LIMIT 100` },
   ]) as { created_at: number; thread_id: number; slug: string; actor: string | null; actor_role: string | null; target: string | null; target_role: string | null }[][]
   const clocks = new Map(rows.map((r) => [r.id, planClock(r)]))
@@ -1985,6 +2017,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   const base = `/inbox/${collective.slug}`
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
+  const sends = canSendHere(member)
 
   // one batched round-trip for everything knowable from the ids alone; a
   // second, below, for what depends on this batch's results. On a remote
@@ -2220,7 +2253,40 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                 ))}</> : null}
               </p>
             </div>
+            {canSendRole(member.role) && !thread.deleted_at ? (
+              <button class="icon-btn share-btn" type="button" data-dialog="#share-modal" title="Share this thread" aria-label="Share this thread"><Icon name="share" /></button>
+            ) : null}
           </div>
+          {canSendRole(member.role) && !thread.deleted_at ? (
+            <dialog id="share-modal" class="modal share-modal" data-share={`${base}/thread/${thread.id}/share`}>
+              <h2>Share this thread</h2>
+              <p class="fineprint">Post the link in a WhatsApp group or a Discord channel and let someone pick it up. Whoever opens it gives their name and email, and sees <b>this thread only</b>.</p>
+              <div class="level-cards">
+                <label class="level-card">
+                  <input type="radio" name="share_mode" value="comment" checked />
+                  <span><b>Can comment</b><small>add notes and draft a reply for a teammate to send</small></span>
+                </label>
+                <label class="level-card">
+                  <input type="radio" name="share_mode" value="send" />
+                  <span><b>Can also send</b><small>answer from {collective.slug}@{cfg.emailDomain} — on this thread only</small></span>
+                </label>
+              </div>
+              <div class="share-row">
+                <span class="copy-field">
+                  <code data-share-link>…</code>
+                </span>
+                <button class="btn small ghost" type="button" data-copy="" disabled>Copy</button>
+                <button class="btn small" type="button" data-share-native hidden>Share…</button>
+              </div>
+              <p class="fineprint">Links work for 14 days.</p>
+              <div class="modal-foot">
+                <form method="post" action={`${base}/thread/${thread.id}/share/revoke`} class="inline">
+                  <button class="linkish danger" type="submit" data-confirm="Turn off this thread's share links? People who already joined keep their access.">Turn off the links</button>
+                </form>
+                <button class="btn small ghost" type="button" data-close>Done</button>
+              </div>
+            </dialog>
+          ) : null}
           {contributed.size > 0 || reads.length > 0 ? (
             <div class="head-people">
               {contributed.size > 0 ? (
@@ -2250,11 +2316,14 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
           <div class="thread-sub">
             <div class="chip-scroll">
             {thread.deleted_at ? <span class="chip deleted-tag">deleted</span> : null}
-            {canSendRole(member.role) && !thread.deleted_at && (thread.status === 'needs_reply' || thread.status === 'answered') ? (
+            {sends && !thread.deleted_at && (thread.status === 'needs_reply' || thread.status === 'answered') ? (
               // one tap flips needs reply ⇄ answered (answered elsewhere, or by phone)
-              <form method="post" action={`${base}/thread/${thread.id}/status`}>
+              // submitted after a second: a second tap in between cancels it
+              <form method="post" action={`${base}/thread/${thread.id}/status`} data-delay="1000">
                 <input type="hidden" name="status" value={thread.status === 'needs_reply' ? 'answered' : 'needs_reply'} />
                 <button class={`chip status-btn status-${thread.status}`} type="submit"
+                  data-pending-class={`chip status-btn status-${thread.status === 'needs_reply' ? 'answered' : 'needs_reply'} pending`}
+                  data-pending-label={thread.status === 'needs_reply' ? 'answered' : 'needs reply'}
                   title={thread.status === 'needs_reply' ? 'Mark as answered' : 'Mark as needing a reply'}>
                   <span class="dot" />{thread.status === 'needs_reply' ? 'needs reply' : 'answered'}
                 </button>
@@ -2483,8 +2552,8 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                       <summary title="Message options" aria-label="Message options">⋯</summary>
                       <div class="menu-pop">
                         <button class="menu-item" type="button" data-copy={`${cfg.baseUrl}${base}/thread/${thread.id}?focus=${g.id}#m${g.id}`}>Copy link</button>
-                        {canSendRole(member.role) ? <a class="menu-item" href="#composer">Reply</a> : null}
-                        {canSendRole(member.role) ? (
+                        {sends ? <a class="menu-item" href="#composer">Reply</a> : null}
+                        {sends ? (
                           <details class="menu-sub">
                             <summary class="menu-item">Forward…</summary>
                             <form method="post" action={`${base}/thread/${thread.id}/forward`} class="fwd-form">
@@ -2596,7 +2665,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                     <div class="pd-body" data-draft-body={String(d.id)}>{d.body}</div>
                     {/* the action AFTER the text — you read a proposal before acting on it */}
                     <div class="pd-foot">
-                      {canSendRole(member.role) ? (
+                      {sends ? (
                         <button class="linkish pd-use" type="button" data-use-draft={String(d.id)}
                           title="Copy this draft into the reply box below, where you can edit and send it">Use this draft ↓</button>
                       ) : null}
@@ -2613,7 +2682,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             <div class="reader-note">👀 You have read access. Ask an admin to let you comment or send.</div>
           ) : (
           <div class="composer" id="composer">
-            {canSendRole(member.role) ? (
+            {sends ? (
               <div class="tabs">
                 <button class="tab on" data-tab="reply" type="button"><Icon name="mail" /> {draftMsg ? 'Edit draft' : `Reply to ${replyFirst}`}</button>
                 <button class="tab" data-tab="note" type="button"><Icon name="note" /> Internal note</button>
@@ -2624,7 +2693,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                 <button class="tab" data-tab="propose" type="button"><Icon name="mail" /> Propose a reply</button>
               </div>
             )}
-            {canSendRole(member.role) && draftMsg ? (
+            {sends && draftMsg ? (
             <form method="post" action={`${base}/thread/${thread.id}/draft`} data-pane="reply" enctype="multipart/form-data">
               <div class="to note-to">✎ Draft — nothing has been sent yet. Teammates with this link can add internal notes below.</div>
               <div class="c-row">
@@ -2654,7 +2723,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                 note={<><span>Sending to <b>{JSON.parse(draftMsg.to_json || '[]').join(', ') || 'nobody yet'}</b></span><span>as <b>{collectiveAddr}</b></span></>} />
             </form>
             ) : null}
-            {canSendRole(member.role) && !draftMsg ? (
+            {sends && !draftMsg ? (
             <form method="post" action={`${base}/thread/${thread.id}/reply`} data-pane="reply" enctype="multipart/form-data">
               <div class="c-row"><span class="c-k">To</span><span class="c-static c-to" title={replyTo.name || undefined}>{replyTo.email || 'unknown'}</span></div>
               {/* same quiet line as compose; open when the thread carries a
@@ -2674,7 +2743,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               </>} />
             </form>
             ) : null}
-            <form method="post" action={`${base}/thread/${thread.id}/note`} data-pane="note" class={canSendRole(member.role) ? 'hidden' : ''}>
+            <form method="post" action={`${base}/thread/${thread.id}/note`} data-pane="note" class={sends ? 'hidden' : ''}>
               <textarea
                 name="body" rows={4} placeholder="Add context, ask a teammate, leave a note… type @ to pull someone in"
                 data-draft="note" required
@@ -2688,7 +2757,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               ></textarea>
               <ComposerBar label="Add internal note" busy="Saving…" attach={false} hint="@mention a member to email them this note right away." />
             </form>
-            {!canSendRole(member.role) ? (
+            {!sends ? (
               <form method="post" action={`${base}/thread/${thread.id}/propose`} data-pane="propose" class="hidden">
                 <div class="c-row"><span class="c-k">To</span><span class="c-static c-to">{replyTo.email || 'unknown'}</span></div>
                 <textarea name="body" rows={6} placeholder={`Write the reply you'd send to ${replyFirst}…`} data-draft="propose" required>{
@@ -2698,13 +2767,13 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                   note={<span>Nothing is sent: a teammate who can send reviews it and sends it as <b>{collectiveAddr}</b>.</span>} />
               </form>
             ) : null}
-            {!canSendRole(member.role) ? (
+            {!sends ? (
               <p class="role-note">You're signed in as a <b>{member.role === 'guest' ? 'guest on this thread' : 'commenter'}</b>: you can add internal notes and <b>propose a reply</b>, which a teammate with sending rights reviews and sends.</p>
             ) : null}
           </div>
           )}
 
-          {canSendRole(member.role) ? (
+          {sends ? (
           <div class="thread-actions">
             {thread.status === 'closed' || thread.status === 'spam' ? (
               <form method="post" action={`${base}/thread/${thread.id}/status`}>
@@ -2716,13 +2785,13 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                 <input type="hidden" name="status" value="closed" />
                 <button class="btn small ghost" type="submit" data-kbd="c" title="Close thread (c)"><Icon name="check" /> Close thread</button>
               </form>
-              <form method="post" action={`${base}/thread/${thread.id}/status`}>
+              {canSendRole(member.role) ? <form method="post" action={`${base}/thread/${thread.id}/status`}>
                 <input type="hidden" name="status" value="spam" />
                 <button class="linkish spam-link" type="submit" data-kbd="s" title="Mark as spam (s)" data-confirm="Mark this thread as spam?">mark as spam</button>
-              </form>
+              </form> : null}
             </>)}
             {/* deleting is for any state — pruning old closed threads most of all */}
-            {!thread.deleted_at ? (
+            {!thread.deleted_at && canSendRole(member.role) ? (
               <form method="post" action={`${base}/thread/${thread.id}/delete`}>
                 <button data-kbd="d" title="Delete thread (d)" class="linkish danger" type="submit" data-confirm="Delete this thread? It moves to Deleted for 30 days, then is removed permanently.">delete</button>
               </form>
@@ -2755,7 +2824,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                   </form>
                 ) : null}
               </div>
-              {canSendRole(member.role) ? (<details class="assign-else">
+              {sends ? (<details class="assign-else">
                 <summary class="assign-row"><span class="avatar empty">+</span><span>Someone else…</span></summary>
                 <form method="post" action={`${base}/thread/${thread.id}/assign-new`} class="assign-else-form">
                   <input class="input" type="email" name="email" placeholder="their@email.com" required />
@@ -2819,7 +2888,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               // one action, and when the last message landed. A thread that has
               // been sitting a while is a fact, not something to be warned about.
               const when = dayPhrase(thread.last_message_at)
-              const closeIt = canSendRole(member.role) && thread.status !== 'closed' ? (
+              const closeIt = sends && thread.status !== 'closed' ? (
                 <form method="post" action={`${base}/thread/${thread.id}/status`} class="next-close">
                   <input type="hidden" name="status" value="closed" />
                   or <button class="linkish" type="submit">mark as closed</button>
@@ -2840,7 +2909,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               )
               return (
                 <>
-                  {canSendRole(member.role)
+                  {sends
                     ? <a class="next-link" href="#composer">Reply to {replyFirst} →</a>
                     : null}
                   <p class="next-when">
@@ -2975,7 +3044,7 @@ const ComposerBar: FC<{
 app.post('/inbox/:addr/thread/:id/reply', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
-  const blocked = senderBlock(c, t)
+  const blocked = threadSendBlock(c, t)
   if (blocked) return blocked
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
@@ -3006,7 +3075,7 @@ const parseEmails = (raw: string): string[] => [...new Set(
 app.post('/inbox/:addr/thread/:id/forward', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
-  const blocked = senderBlock(c, t)
+  const blocked = threadSendBlock(c, t)
   if (blocked) return blocked
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
@@ -3184,7 +3253,7 @@ const sigParam = (drift: string | null) => (drift ? '&sig=' + encodeURIComponent
 app.post('/inbox/:addr/thread/:id/draft', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
-  const blocked = senderBlock(c, t)
+  const blocked = threadSendBlock(c, t)
   if (blocked) return blocked
   const thread = await threadOf(c, t)
   if (!thread || thread.status !== 'draft') return c.notFound()
@@ -3245,6 +3314,8 @@ app.post('/inbox/:addr/thread/:id/draft', async (c) => {
 // hold websockets; a 10s beacon + poll gives near-real-time without infra.)
 
 const TYPING_TTL = 30 // seconds
+/** seconds in which flipping a status back counts as a mis-click */
+const STATUS_UNDO_WINDOW = 10
 
 app.post('/inbox/:addr/thread/:id/typing', async (c) => {
   const t = await tenant(c)
@@ -3398,16 +3469,54 @@ app.post('/inbox/:addr/thread/:id/sender', async (c) => {
 app.post('/inbox/:addr/thread/:id/status', async (c) => {
   const t = await tenant(c)
   if (t instanceof Response) return t
-  const blocked = triageBlock(c, t)
+  // a guest with a send link answers and closes their thread; spam is a
+  // verdict on the sender, which stays a member's call
+  const blocked = archivedBlock(c, t) ?? (!canSendHere(t.member) ? c.text('Only members who can send can close, mark as spam or delete a thread.', 403) : null)
   if (blocked) return blocked
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
   const body = await c.req.parseBody()
   const status = String(body.status || '')
-  if (['needs_reply', 'answered', 'closed', 'spam'].includes(status)) {
-    await setStatus(thread.id, status as Thread['status'], t.member.id)
+  const allowed = canSendRole(t.member.role) ? ['needs_reply', 'answered', 'closed', 'spam'] : ['needs_reply', 'answered', 'closed']
+  if (allowed.includes(status) && status !== thread.status) {
+    // taken back within a few seconds by the same person: a slip, not a
+    // decision — restore it quietly and drop the first log line
+    const last = await get<{ id: number; actor_member_id: number | null; data_json: string | null; created_at: number }>(
+      "SELECT id, actor_member_id, data_json, created_at FROM events WHERE thread_id = ? AND type = 'status' ORDER BY id DESC LIMIT 1", [thread.id])
+    const was = last?.data_json ? JSON.parse(last.data_json) : {}
+    if (last && last.actor_member_id === t.member.id && now() - last.created_at <= STATUS_UNDO_WINDOW && was.to === thread.status && was.from === status) {
+      await run('UPDATE threads SET status = ?, updated_at = ? WHERE id = ?', [status, now(), thread.id])
+      await run('DELETE FROM events WHERE id = ?', [last.id])
+    } else {
+      await setStatus(thread.id, status as Thread['status'], t.member.id)
+    }
   }
   return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}`)
+})
+
+// The share dialog asks for its link when opened: one live link per thread
+// and mode, minted on demand — viewing a thread never creates invites.
+app.post('/inbox/:addr/thread/:id/share', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  if (archivedBlock(c, t) || !canSendRole(t.member.role)) return c.json({ error: 'Only members who can send can share a thread.' }, 403)
+  const thread = await threadOf(c, t)
+  if (!thread) return c.notFound()
+  const body = await c.req.parseBody()
+  return c.json({ url: await threadShareLink(t.collective, thread.id, t.member.id, body.mode === 'send') })
+})
+
+// Turn the links off. Whoever already joined keeps their access — remove
+// them from Members for that.
+app.post('/inbox/:addr/thread/:id/share/revoke', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const blocked = senderBlock(c, t)
+  if (blocked) return blocked
+  const thread = await threadOf(c, t)
+  if (!thread) return c.notFound()
+  await run('UPDATE invites SET revoked_at = ? WHERE collective_id = ? AND thread_id = ? AND revoked_at IS NULL', [now(), t.collective.id, thread.id])
+  return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}?m=` + encodeURIComponent('Share links turned off — people who already joined keep their access.'))
 })
 
 // A proposed draft that served its purpose (or missed the mark) goes away.

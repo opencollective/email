@@ -43,6 +43,7 @@ document.addEventListener('click', (e) => {
   if (dlgBtn) {
     const dlg = document.querySelector(dlgBtn.getAttribute('data-dialog'));
     if (dlg) {
+      if (dlg.dataset.share) shareLink(dlg);
       dlg.showModal();
       // showModal focuses the first field, which pops the picker on iOS —
       // park focus on the dialog itself instead
@@ -64,6 +65,24 @@ document.addEventListener('click', (e) => {
     const r = e.target.getBoundingClientRect();
     if (e.clientY < r.top || e.clientY > r.bottom || e.clientX < r.left || e.clientX > r.right) e.target.close();
   }
+});
+// The thread share dialog: fetch the link for the chosen access, on demand.
+function shareLink(dlg) {
+  const mode = dlg.querySelector('input[name="share_mode"]:checked')?.value || 'comment';
+  const code = dlg.querySelector('[data-share-link]');
+  const copyBtn = dlg.querySelector('[data-copy]');
+  const native = dlg.querySelector('[data-share-native]');
+  code.textContent = '…'; copyBtn.disabled = true;
+  fetch(dlg.dataset.share, { method: 'POST', body: new URLSearchParams({ mode }), credentials: 'same-origin' })
+    .then((r) => r.json()).then((d) => {
+      if (!d.url) { code.textContent = d.error || 'Could not make a link.'; return; }
+      code.textContent = d.url; code.title = d.url;
+      copyBtn.setAttribute('data-copy', d.url); copyBtn.disabled = false;
+      if (native && navigator.share) { native.hidden = false; native.onclick = () => navigator.share({ url: d.url }).catch(() => {}); }
+    }, () => { code.textContent = 'Could not make a link.'; });
+}
+document.addEventListener('change', (e) => {
+  if (e.target.name === 'share_mode') shareLink(e.target.closest('dialog'));
 });
 const wantedPane = new URLSearchParams(location.search).get('pane');
 if (wantedPane === 'note') document.querySelector('[data-tab="note"]')?.click();
@@ -860,6 +879,24 @@ document.querySelectorAll('.wl-addr input, .claim .addr input').forEach((a) => {
 // Instant feedback on every submit: disable the button and show progress,
 // so a slow network never invites a double tap.
 document.addEventListener('submit', (e) => {
+  // a delayed form (the status chip) shows its new state at once and posts a
+  // moment later; a second tap in that moment takes it back, and nothing is sent
+  const f = e.target;
+  if (f.dataset.delay && !f.dataset.go) {
+    e.preventDefault();
+    const b = f.querySelector('button[type="submit"]');
+    if (f._timer) {
+      clearTimeout(f._timer); f._timer = null;
+      b.className = f._cls; b.innerHTML = f._html; b.title = f._title;
+      return;
+    }
+    f._cls = b.className; f._html = b.innerHTML; f._title = b.title;
+    b.className = b.dataset.pendingClass;
+    b.innerHTML = '<span class="dot"></span>' + b.dataset.pendingLabel;
+    b.title = 'Tap again to undo';
+    f._timer = setTimeout(() => { f._timer = null; f.dataset.go = '1'; f.requestSubmit(); }, Number(f.dataset.delay));
+    return;
+  }
   if (e.target.dataset.sent) { e.preventDefault(); return; } // a form only submits once
   e.target.dataset.sent = '1';
   const btn = e.target.querySelector('button[type="submit"]');
@@ -872,6 +909,7 @@ document.addEventListener('submit', (e) => {
 });
 window.addEventListener('pageshow', () => {
   document.querySelectorAll('form[data-sent]').forEach((f) => { delete f.dataset.sent; });
+  document.querySelectorAll('form[data-go]').forEach((f) => { delete f.dataset.go; });
   document.querySelectorAll('button.busy').forEach((b) => {
     b.disabled = false; b.classList.remove('busy');
     if (b.dataset.label) b.textContent = b.dataset.label;
@@ -976,6 +1014,7 @@ const ICON_PATHS: Record<string, string> = {
   rotate: '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>',
   warn: '<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
   clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  share: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>',
   copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
   chevron: '<polyline points="6 9 12 15 18 9"/>',
   hand: '<path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>',
@@ -1064,7 +1103,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '104'
+export const ASSET_V = '105'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">
