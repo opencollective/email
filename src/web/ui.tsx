@@ -1046,7 +1046,7 @@ export function eventText(
     case 'status': {
       if (data.to === 'needs_reply' && data.auto) return 'Reopened — new message from the sender'
       if (data.to === 'answered' && data.auto) return 'Marked answered'
-      return `${a ?? 'Someone'} marked this ${String(data.to).replace('_', ' ')}`
+      return `${a ?? 'Someone'} changed the status to "${String(data.to).replace('_', ' ')}"`
     }
     case 'tag_added': return data.auto ? `Automatically tagged #${data.tag}` : `${a ?? 'Someone'} added #${data.tag}`
     case 'tag_removed': return `${a ?? 'Someone'} removed #${data.tag}`
@@ -1064,7 +1064,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '103'
+export const ASSET_V = '104'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">

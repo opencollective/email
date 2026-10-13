@@ -2250,7 +2250,16 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
           <div class="thread-sub">
             <div class="chip-scroll">
             {thread.deleted_at ? <span class="chip deleted-tag">deleted</span> : null}
-            <StatusChip status={thread.status} />
+            {canSendRole(member.role) && !thread.deleted_at && (thread.status === 'needs_reply' || thread.status === 'answered') ? (
+              // one tap flips needs reply ⇄ answered (answered elsewhere, or by phone)
+              <form method="post" action={`${base}/thread/${thread.id}/status`}>
+                <input type="hidden" name="status" value={thread.status === 'needs_reply' ? 'answered' : 'needs_reply'} />
+                <button class={`chip status-btn status-${thread.status}`} type="submit"
+                  title={thread.status === 'needs_reply' ? 'Mark as answered' : 'Mark as needing a reply'}>
+                  <span class="dot" />{thread.status === 'needs_reply' ? 'needs reply' : 'answered'}
+                </button>
+              </form>
+            ) : <StatusChip status={thread.status} />}
             {rule?.close && !thread.assignee_member_id ? (
               <span class="chip" title={`Filed by ${rule.tag ? `the #${rule.tag}` : 'a'} rule — no assignment needed`}>⚡ auto-filed</span>
             ) : member.role === 'reader' ? (

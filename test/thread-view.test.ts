@@ -405,3 +405,19 @@ test('c / s / d shortcuts: the thread page marks its close, spam and delete butt
   assert.match(html, /<kbd>c<\/kbd><\/span><span>Close the open or highlighted thread/)
   assert.match(html, /<kbd>d<\/kbd><\/span><span>Delete it/)
 })
+
+test('the needs reply chip marks the thread answered in one tap, and says who did it', async () => {
+  const fx = await fixture()
+  const before = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.alice.sid)).text()
+  assert.match(before, /<button class="chip status-btn status-needs_reply" type="submit" title="Mark as answered">/)
+
+  const res = await post(`/inbox/${fx.slug}/thread/${fx.threadId}/status`, fx.alice.sid, 'status=answered')
+  assert.equal(res.status, 302)
+  assert.equal((await get<{ status: string }>('SELECT status FROM threads WHERE id = ?', [fx.threadId]))?.status, 'answered')
+
+  const after = await (await page(`/inbox/${fx.slug}/thread/${fx.threadId}`, fx.bob.sid)).text()
+  assert.ok(after.includes('Alice changed the status to &quot;answered&quot;') || after.includes('Alice changed the status to "answered"'),
+    'the change is logged by name')
+  // and the chip flips back, in case it was a mistake
+  assert.match(after, /<button class="chip status-btn status-answered" type="submit" title="Mark as needing a reply">/)
+})

@@ -961,7 +961,7 @@ label.att-pick:has(input:checked) .att-pick-name { text-decoration: line-through
   padding: 10px 24px 12px; border-bottom: 1.5px solid var(--line-soft);
 }
 .thread-sub > *, .thread-sub form, .thread-sub .inline { display: inline-flex; align-items: center; margin: 0; }
-.thread-sub .chip, .thread-sub .assign-btn, .thread-sub .tag-add summary.chip, .thread-sub .chip.removable {
+.thread-sub .chip, .thread-sub .assign-btn, .thread-sub .status-btn, .thread-sub .tag-add summary.chip, .thread-sub .chip.removable {
   height: 26px; display: inline-flex; align-items: center; box-sizing: border-box; margin: 0; line-height: 1;
 }
 /* who's in this thread, at a glance, above the chips */
@@ -974,6 +974,8 @@ label.att-pick:has(input:checked) .att-pick-name { text-decoration: line-through
 .assign-btn { cursor: pointer; font: inherit; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
 .assign-btn .caret { color: var(--muted); font-size: 9px; }
 .assign-btn:hover { border-color: var(--accent); }
+.status-btn { cursor: pointer; font: inherit; font-family: var(--mono); font-size: 11px; }
+.status-btn:hover { background: var(--fill); }
 .tag-add { position: relative; display: inline-block; }
 .tag-add summary { list-style: none; cursor: pointer; color: var(--muted); }
 .tag-add summary::-webkit-details-marker { display: none; }
