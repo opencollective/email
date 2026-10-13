@@ -706,7 +706,7 @@ app.get('/join/:token', async (c) => {
       )}
       {shared ? (
         <p class="muted">Tell us who you are, so the team knows who wrote what: you can add notes and draft a reply
-          {invite.can_send ? <>, and <b>send it from {collective.slug}@{cfg.emailDomain}</b></> : <> for a teammate to send</>}.</p>
+          {invite.can_send ? <>, and <b>send it as {outboundFrom(collective).fromAddress}</b></> : <> for a teammate to send</>}.</p>
       ) : <p class="muted">You'll join as {/^[aeiou]/i.test(ROLE_LABELS[(invite.role || 'reader') as Member['role']]) ? 'an' : 'a'} <b>{ROLE_LABELS[(invite.role || 'reader') as Member['role']]}</b> — {ROLE_HINTS[(invite.role || 'reader') as Member['role']].charAt(0).toLowerCase()}{ROLE_HINTS[(invite.role || 'reader') as Member['role']].slice(1)}</p>}
       <form method="post" action={`/join/${token}`}>
         <label class="lbl">Your name</label>
@@ -2271,7 +2271,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             </div>
           </div>
           {canSendRole(member.role) && !thread.deleted_at ? (
-            <dialog id="share-modal" class="modal share-modal" data-share={`${base}/thread/${thread.id}/share`}>
+            <dialog id="share-modal" class="modal sheet share-modal" data-share={`${base}/thread/${thread.id}/share`}>
               <h2>Share this thread</h2>
               <p class="fineprint">Post the link in a WhatsApp group or a Discord channel and let someone pick it up. Whoever opens it gives their name and email, and sees <b>this thread only</b>.</p>
               <div class="level-cards">
@@ -2281,7 +2281,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                 </label>
                 <label class="level-card">
                   <input type="radio" name="share_mode" value="send" />
-                  <span><b>Can also send</b><small>answer from {collective.slug}@{cfg.emailDomain} — on this thread only</small></span>
+                  <span><b>Can also send</b><small>answer as {collectiveAddr} — on this thread only</small></span>
                 </label>
               </div>
               {/* the post as it will read in the group chat — editable; the link
@@ -2289,7 +2289,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               <textarea class="input share-text" rows={4} data-share-text
                 data-intro={`Join the thread “${thread.subject}” started by ${startedBy}`}>{`Join the thread “${thread.subject}” started by ${startedBy}`}</textarea>
               <div class="share-row">
-                <button class="btn small" type="button" data-copy="" data-copy-text disabled>Copy text</button>
+                <button class="btn small" type="button" data-copy="" data-copy-text disabled>Copy</button>
                 <button class="btn small ghost" type="button" data-copy="" data-copy-url disabled>Copy URL only</button>
                 <button class="btn small ghost" type="button" data-share-native hidden>Share…</button>
               </div>
@@ -2302,22 +2302,6 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               </div>
             </dialog>
           ) : null}
-          {contributed.size > 0 || reads.length > 0 ? (
-            <div class="head-people">
-              {contributed.size > 0 ? (
-                <span class="hp-group" title={[...contributed].map((id) => memberName(members.get(id))).join(', ')}>
-                  <span class="participants">{[...contributed].slice(0, 5).map((id) => <Avatar member={members.get(id)} />)}</span>
-                  <small>participated</small>
-                </span>
-              ) : null}
-              {reads.length > 0 ? (
-                <span class="hp-group" title={reads.map((r) => `${memberName(members.get(r.member_id))} · ${relTime(r.last_seen_at)}`).join('\n')}>
-                  <span class="participants">{reads.slice(0, 5).map((r) => <Avatar member={members.get(r.member_id)} />)}</span>
-                  <small>seen by {nameList(reads.map((r) => members.get(r.member_id)))}</small>
-                </span>
-              ) : null}
-            </div>
-          ) : null}
           {thread.deleted_at ? (
             <div class="deleted-note thread-deleted">
               This thread is deleted — it will be removed permanently on <b>{fmtDate(thread.deleted_at + 30 * 86400)}</b>.
@@ -2328,60 +2312,81 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               ) : null}
             </div>
           ) : null}
-          <div class="thread-sub">
-            <div class="chip-scroll">
-            {thread.deleted_at ? <span class="chip deleted-tag">deleted</span> : null}
-            {sends && !thread.deleted_at && (thread.status === 'needs_reply' || thread.status === 'answered') ? (
-              // one tap flips needs reply ⇄ answered (answered elsewhere, or by phone)
-              // submitted after a second: a second tap in between cancels it
-              <form method="post" action={`${base}/thread/${thread.id}/status`} data-delay="1000">
-                <input type="hidden" name="status" value={thread.status === 'needs_reply' ? 'answered' : 'needs_reply'} />
-                <button class={`chip status-btn status-${thread.status}`} type="submit"
-                  data-pending-class={`chip status-btn status-${thread.status === 'needs_reply' ? 'answered' : 'needs_reply'} pending`}
-                  data-pending-label={thread.status === 'needs_reply' ? 'answered' : 'needs reply'}
-                  title={thread.status === 'needs_reply' ? 'Mark as answered' : 'Mark as needing a reply'}>
-                  <span class="dot" />{thread.status === 'needs_reply' ? 'needs reply' : 'answered'}
-                </button>
-              </form>
-            ) : <StatusChip status={thread.status} />}
-            {rule?.close && !thread.assignee_member_id ? (
-              <span class="chip" title={`Filed by ${rule.tag ? `the #${rule.tag}` : 'a'} rule — no assignment needed`}>⚡ auto-filed</span>
-            ) : member.role === 'reader' ? (
-              <AssigneeChip thread={thread} members={members} />
-            ) : (
-              // one tap to the one-click assignment picker (sheet on mobile)
-              <button class={`chip assign-btn ${assignee ? 'assignee' : 'unassigned'}`} type="button" data-dialog="#assign-modal"
-                title="Change who has this">
-                {assignee ? <><Avatar member={assignee} /> {memberName(assignee)}</> : 'unassigned'} <span class="caret">▾</span>
-              </button>
-            )}
-            {member.role === 'reader'
-              ? tags.map((tg) => <span class="chip">#{tg.name}</span>)
-              : tags.map((tg) => (
-                <form method="post" action={`${base}/thread/${thread.id}/tags/remove`} class="inline">
-                  <input type="hidden" name="tag_id" value={String(tg.id)} />
-                  <button class="chip removable" type="submit" title="Remove tag">#{tg.name} ×</button>
-                </form>
-              ))}
-              {member.role !== 'reader' ? (
-                <details class="tag-add">
-                  <summary class="chip" title="Add a tag">+ tag</summary>
-                  <form method="post" action={`${base}/thread/${thread.id}/tags`} class="tag-pop" data-tagpop>
-                    <div class="tag-row">
-                      <input class="input small" name="name" placeholder="add-a-tag" autocomplete="off" />
-                      <button class="btn small ghost" type="submit">Add</button>
-                    </div>
-                    {/* each suggestion submits itself, so the list works with JS off too */}
-                    {tagSugs.length ? (
-                      <div class="tag-sugs">
-                        {tagSugs.map((s) => (
-                          <button class="chip tag-sug" type="submit" name="pick" value={s.name} data-find={s.name}>{s.name}</button>
-                        ))}
-                      </div>
-                    ) : null}
-                  </form>
-                </details>
+          {/* who's here + the chips, with share spanning both rows on the right */}
+          <div class="thread-bar">
+            <div class="thread-bar-rows">
+              {contributed.size > 0 || reads.length > 0 ? (
+                <div class="head-people">
+                  {contributed.size > 0 ? (
+                    <span class="hp-group" title={[...contributed].map((id) => memberName(members.get(id))).join(', ')}>
+                      <span class="participants">{[...contributed].slice(0, 5).map((id) => <Avatar member={members.get(id)} />)}</span>
+                      <small>participated</small>
+                    </span>
+                  ) : null}
+                  {reads.length > 0 ? (
+                    <span class="hp-group" title={reads.map((r) => `${memberName(members.get(r.member_id))} · ${relTime(r.last_seen_at)}`).join('\n')}>
+                      <span class="participants">{reads.slice(0, 5).map((r) => <Avatar member={members.get(r.member_id)} />)}</span>
+                      <small>seen by {nameList(reads.map((r) => members.get(r.member_id)))}</small>
+                    </span>
+                  ) : null}
+                </div>
               ) : null}
+              <div class="thread-sub">
+                <div class="chip-scroll">
+                {thread.deleted_at ? <span class="chip deleted-tag">deleted</span> : null}
+                {sends && !thread.deleted_at && (thread.status === 'needs_reply' || thread.status === 'answered') ? (
+                  // one tap flips needs reply ⇄ answered (answered elsewhere, or by phone)
+                  // submitted after a second: a second tap in between cancels it
+                  <form method="post" action={`${base}/thread/${thread.id}/status`} data-delay="1000">
+                    <input type="hidden" name="status" value={thread.status === 'needs_reply' ? 'answered' : 'needs_reply'} />
+                    <button class={`chip status-btn status-${thread.status}`} type="submit"
+                      data-pending-class={`chip status-btn status-${thread.status === 'needs_reply' ? 'answered' : 'needs_reply'} pending`}
+                      data-pending-label={thread.status === 'needs_reply' ? 'answered' : 'needs reply'}
+                      title={thread.status === 'needs_reply' ? 'Mark as answered' : 'Mark as needing a reply'}>
+                      <span class="dot" />{thread.status === 'needs_reply' ? 'needs reply' : 'answered'}
+                    </button>
+                  </form>
+                ) : <StatusChip status={thread.status} />}
+                {rule?.close && !thread.assignee_member_id ? (
+                  <span class="chip" title={`Filed by ${rule.tag ? `the #${rule.tag}` : 'a'} rule — no assignment needed`}>⚡ auto-filed</span>
+                ) : member.role === 'reader' ? (
+                  <AssigneeChip thread={thread} members={members} />
+                ) : (
+                  // one tap to the one-click assignment picker (sheet on mobile)
+                  <button class={`chip assign-btn ${assignee ? 'assignee' : 'unassigned'}`} type="button" data-dialog="#assign-modal"
+                    title="Change who has this">
+                    {assignee ? <><Avatar member={assignee} /> {memberName(assignee)}</> : 'unassigned'} <span class="caret">▾</span>
+                  </button>
+                )}
+                {member.role === 'reader'
+                  ? tags.map((tg) => <span class="chip">#{tg.name}</span>)
+                  : tags.map((tg) => (
+                    <form method="post" action={`${base}/thread/${thread.id}/tags/remove`} class="inline">
+                      <input type="hidden" name="tag_id" value={String(tg.id)} />
+                      <button class="chip removable" type="submit" title="Remove tag">#{tg.name} ×</button>
+                    </form>
+                  ))}
+                  {member.role !== 'reader' ? (
+                    <details class="tag-add">
+                      <summary class="chip" title="Add a tag">+ tag</summary>
+                      <form method="post" action={`${base}/thread/${thread.id}/tags`} class="tag-pop" data-tagpop>
+                        <div class="tag-row">
+                          <input class="input small" name="name" placeholder="add-a-tag" autocomplete="off" />
+                          <button class="btn small ghost" type="submit">Add</button>
+                        </div>
+                        {/* each suggestion submits itself, so the list works with JS off too */}
+                        {tagSugs.length ? (
+                          <div class="tag-sugs">
+                            {tagSugs.map((s) => (
+                              <button class="chip tag-sug" type="submit" name="pick" value={s.name} data-find={s.name}>{s.name}</button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </form>
+                    </details>
+                  ) : null}
+                </div>
+              </div>
             </div>
             {canSendRole(member.role) && !thread.deleted_at ? (
               <button class="icon-btn share-btn" type="button" data-dialog="#share-modal" title="Share this thread" aria-label="Share this thread"><Icon name="share" /></button>

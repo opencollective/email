@@ -160,7 +160,7 @@ test('thread share links: comment by default, send on request — on that one th
   assert.match(join, /name="name"/)
   assert.match(join, /type="email" name="email"/)
   assert.doesNotMatch(join, /name="level" value="daily"/, 'no notification choices for one thread')
-  assert.match(join, /send it from/)
+  assert.match(join, /send it as/)
 
   // a commenter guest can propose but not send
   const joinAs = async (token: string) => {
