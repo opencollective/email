@@ -492,6 +492,9 @@ document.querySelectorAll('.composer textarea, .compose-form textarea').forEach(
   const post = (upTo) => {
     if (!upTo || upTo <= sent) return;
     sent = upTo;
+    // read to the latest message: tell the list we came from, which the back
+    // button restores from cache without asking the server again
+    if (upTo >= lastTs) try { sessionStorage.setItem('read:' + location.pathname, String(Date.now())); } catch (e) {}
     fetch(url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: 'up_to=' + upTo, keepalive: true }).catch(() => {});
   };
@@ -502,6 +505,8 @@ document.querySelectorAll('.composer textarea, .compose-form textarea').forEach(
     });
     return ts;
   };
+  let lastTs = 0;
+  document.querySelectorAll('[data-msg][data-ts]').forEach((m) => { lastTs = Math.max(lastTs, +m.dataset.ts || 0); });
   const atBottom = () => innerHeight + scrollY >= document.documentElement.scrollHeight - 60;
   let fullSent = false;
   const report = () => {
@@ -779,13 +784,14 @@ wireLive(document);
     return !!document.querySelector('.tl details[open], .thread-sub details[open], dialog[open], [data-person].open');
   };
   let inflight = false;
-  const tick = () => {
+  // force: refetch even when the stamp hasn't moved (read state isn't in it)
+  const tick = (force) => {
     if (document.hidden || inflight) return;
     inflight = true;
     fetch(url, { headers: { accept: 'text/plain' } })
       .then((r) => (r.ok ? r.text() : Promise.reject()))
       .then((nv) => {
-        if (nv === v || busy()) return; // busy: leave v so the next tick retries
+        if ((nv === v && force !== true) || busy()) return; // busy: leave v so the next tick retries
         return fetch(location.href).then((r) => (r.ok ? r.text() : Promise.reject())).then((html) => {
           const doc = new DOMParser().parseFromString(html, 'text/html');
           REGIONS.forEach((sel) => {
@@ -799,6 +805,7 @@ wireLive(document);
             }
           });
           v = nv;
+          markRead();
         });
       })
       .catch(() => {})
@@ -806,7 +813,24 @@ wireLive(document);
   };
   setInterval(tick, 8000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+  // back from a thread: the cached page shows it unread — refresh the list
+  // (the reading beacon may still be landing, so once more a moment later)
+  addEventListener('pageshow', (e) => {
+    if (!e.persisted || !document.querySelector('.rows')) return;
+    tick(true); setTimeout(() => tick(true), 1500);
+  });
 })();
+
+// Rows of threads just read in this tab lose their unread mark at once — on a
+// back navigation the page (or the server's answer) can predate the read.
+const markRead = () => {
+  document.querySelectorAll('a.row.unread').forEach((a) => {
+    // a minute's grace covers the beacon landing; after that the server knows
+    try { if (Date.now() - Number(sessionStorage.getItem('read:' + a.pathname) || 0) < 60000) a.classList.remove('unread'); } catch (e) {}
+  });
+};
+markRead();
+addEventListener('pageshow', markRead);
 
 // Attachments: every pick adds to the list (picking again doesn't replace),
 // each file shows as a chip with × to take it back before sending.
@@ -1122,7 +1146,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '108'
+export const ASSET_V = '109'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">
