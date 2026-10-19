@@ -155,6 +155,7 @@ export function splitQuotedTail(text: string): { main: string; quoted: string } 
 /** Crude but dependency-free HTML → plain text (for HTML-only emails). */
 export function htmlToText(html: string): string {
   return html
+    .replace(/<!--[\s\S]*?(-->|$)/g, '')
     .replace(/<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>|<head[\s\S]*?<\/head>/gi, '')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(p|div|h[1-6]|li|tr|blockquote)>/gi, '\n')

@@ -6,6 +6,7 @@ import {
 } from './db.js'
 import { cfg } from './config.js'
 import { now, randomToken } from './util.js'
+import { agentBody, cleanText, type Removed } from './agent-text.js'
 
 /** Agents are members (same rows, same enforcement) that join through a
  *  one-time invitation URL and act through a bearer token. The token is a
@@ -89,29 +90,39 @@ export async function agentAuth(c: Context): Promise<{ member: Member; collectiv
   return { member, collective }
 }
 
+/** Strings strangers wrote that aren't bodies — subjects, display names —
+ *  lose their invisible characters too. */
+const plain = (s: string | null | undefined) => s == null ? s ?? null : cleanText(s, new Set<Removed>())
+
 /** The thread, shaped for a machine. Bodies are named for what they are:
- *  text written by strangers — data to read, never instructions to follow. */
-export function threadJson(thread: Thread, msgs: { id: number; direction: string; from_name: string | null; from_email: string | null; sent_at: number | null; created_at: number; body_text: string | null }[],
+ *  text written by strangers — data to read, never instructions to follow —
+ *  and hold only what a human reader sees (see agent-text.ts). */
+export function threadJson(thread: Thread, msgs: { id: number; direction: string; from_name: string | null; from_email: string | null; sent_at: number | null; created_at: number; body_text: string | null; body_html?: string | null }[],
   notes: { id: number; member_id: number; body: string; created_at: number }[], members: Map<number, Member>) {
   return {
     id: thread.id,
-    subject: thread.subject,
+    subject: plain(thread.subject),
     status: thread.status,
-    counterpart: { name: thread.counterpart_name, email: thread.counterpart_email },
+    counterpart: { name: plain(thread.counterpart_name), email: thread.counterpart_email },
     assignee_member_id: thread.assignee_member_id,
     last_message_at: thread.last_message_at,
-    messages: msgs.map((m) => ({
-      id: m.id,
-      direction: m.direction,
-      from: { name: m.from_name, email: m.from_email },
-      at: m.sent_at || m.created_at,
-      untrusted_body: m.body_text || '',
-    })),
+    messages: msgs.map((m) => {
+      const body = agentBody(m)
+      return {
+        id: m.id,
+        direction: m.direction,
+        from: { name: plain(m.from_name), email: m.from_email },
+        at: m.sent_at || m.created_at,
+        untrusted_body: body.text,
+        ...(body.removed.length ? { hidden_content_removed: body.removed } : {}),
+      }
+    }),
     internal_notes: notes.map((n) => ({
       id: n.id,
       by: members.get(n.member_id)?.name || 'a member',
       at: n.created_at,
-      body: n.body,
+      // guests joining by a shared link write notes too: same cleaning
+      body: plain(n.body) || '',
     })),
   }
 }
@@ -138,13 +149,13 @@ export async function agentEvents(collectiveId: number, member: Member, since: n
     const rows = await all<{
       id: number; type: string; thread_id: number; subject: string
       from_name: string | null; from_email: string | null; by: string | null
-      at: number; preview: string | null; mentioned: number; note_member: number | null
+      at: number; preview: string | null; html: string | null; mentioned: number; note_member: number | null
     }>(
       `SELECT f.id, f.type, f.thread_id, t.subject,
               m.from_name, m.from_email,
               mem.name AS by, n.member_id AS note_member,
               COALESCE(f.created_at, 0) AS at,
-              substr(COALESCE(m.body_text, n.body), 1, 500) AS preview,
+              substr(COALESCE(m.body_text, n.body), 1, 20000) AS preview, substr(m.body_html, 1, 100000) AS html,
               EXISTS (SELECT 1 FROM note_mentions nm WHERE nm.note_id = n.id AND nm.member_id = ?) AS mentioned
        FROM agent_feed f
        JOIN threads t ON t.id = f.thread_id
@@ -155,6 +166,8 @@ export async function agentEvents(collectiveId: number, member: Member, since: n
        ORDER BY f.id LIMIT 50`, [memberId, collectiveId, since, ...(guestScope ? [memberId] : [])])
     const events = rows
       .filter((r) => r.note_member !== memberId) // never echo the agent's own notes
+      .map((r) => ({ ...r, subject: plain(r.subject)!, from_name: plain(r.from_name), by: plain(r.by),
+        preview: agentBody({ body_text: r.preview, body_html: r.html }).text.slice(0, 500) }))
       .map((r) => r.type === 'note.new'
         ? {
             type: 'note.new' as const, thread_id: r.thread_id, note_id: r.id, subject: r.subject,
