@@ -66,3 +66,41 @@ test('the thread header keeps people and chips on one line each', async () => {
   const sub = html.slice(html.indexOf('class="thread-sub"'), html.indexOf('class="tag-add"'))
   assert.match(sub, /<div class="chip-scroll">/, 'status, assignee and tags scroll sideways; + tag stays put after them')
 })
+
+test('whoever the thread is assigned to answers, writes on and closes it, whatever their role', async () => {
+  const fx = await fixture()
+  const url = `/inbox/${fx.slug}/thread/${fx.threadId}`
+  const col = (await get<any>('SELECT id FROM collectives WHERE slug = ?', [fx.slug]))!
+  const email = `rita-${uniq()}@t.test`
+  const reader = { id: (await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [col.id, email, 'Rita', 'reader', 'every', now()])).lastId, cookie: { cookie: `requests_sid=${await createSession(email)}` } }
+  const where = (r: Response) => decodeURIComponent(r.headers.get('location') || '')
+
+  // not theirs: a reader reads, a commenter discusses
+  assert.match(where(await post(`${url}/reply`, reader.cookie, { body: 'Hi' })), /comment but not send/)
+  assert.match(where(await post(`${url}/note`, reader.cookie, { body: 'Hm' })), /read access/)
+  assert.equal((await post(`${url}/status`, reader.cookie, { status: 'closed' })).status, 403)
+
+  // assigned to the reader: the thread is theirs to answer and close
+  await run('UPDATE threads SET assignee_member_id = ? WHERE id = ?', [reader.id, fx.threadId])
+  const html = await (await app.request(url, { headers: reader.cookie })).text()
+  assert.match(html, /action="[^"]*\/thread\/\d+\/reply"/, 'the reply composer is there')
+  assert.match(html, /class="thread-actions"/)
+  assert.doesNotMatch(html, /\/delete"/, 'deleting stays a sender\'s call')
+  assert.match(where(await post(`${url}/note`, reader.cookie, { body: 'Taking this one' })), new RegExp(`/thread/${fx.threadId}`))
+  assert.equal((await get<any>('SELECT COUNT(*) AS n FROM notes WHERE thread_id = ?', [fx.threadId]))!.n, 1)
+  assert.match(where(await post(`${url}/reply`, reader.cookie, { body: 'Dear Cain, yes.' })), /Reply sent/)
+  assert.equal((await post(`${url}/status`, reader.cookie, { status: 'spam' })).status, 302)
+  assert.notEqual((await get<any>('SELECT status FROM threads WHERE id = ?', [fx.threadId]))!.status, 'spam', 'spam stays a sender\'s call')
+  assert.equal((await post(`${url}/status`, reader.cookie, { status: 'closed' })).status, 302)
+  assert.equal((await get<any>('SELECT status FROM threads WHERE id = ?', [fx.threadId]))!.status, 'closed')
+
+  // handed to the commenter: now they close and reopen, and the reader is back to reading
+  await run('UPDATE threads SET assignee_member_id = ? WHERE id = ?', [fx.commenter.id, fx.threadId])
+  assert.equal((await post(`${url}/status`, fx.commenter.cookie, { status: 'needs_reply' })).status, 302)
+  assert.equal((await get<any>('SELECT status FROM threads WHERE id = ?', [fx.threadId]))!.status, 'needs_reply')
+  assert.equal((await post(`${url}/status`, reader.cookie, { status: 'closed' })).status, 403)
+  // and the list hands everyone the swipe template, the close left to the row
+  const list = await (await app.request(`/inbox/${fx.slug}`, { headers: fx.commenter.cookie })).text()
+  assert.match(list, /<template class="swipe-tpl" data-close=""[^>]*data-me="\d+"/)
+})

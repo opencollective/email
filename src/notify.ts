@@ -198,7 +198,7 @@ export async function notifyInbound(
     const assignLine = `<p style="margin:0 0 4px"><a href="${threadUrl(collective, thread.id)}" style="text-decoration:none"><img src="${cfg.baseUrl}/aimg/${badgeToken}" height="30" style="vertical-align:middle;border:0;height:30px;width:auto;max-width:80%" alt="${assignee ? `Assigned to ${escapeHtml(memberLabel(assignee))} when this was sent` : 'Unassigned when this was sent'}"></a> <a href="${threadUrl(collective, thread.id)}" style="font-size:12px;color:#6b7280;vertical-align:middle;margin-left:6px">change →</a></p>`
     const spamUrl = `${cfg.baseUrl}/a/${signToken({ a: 'spam', th: thread.id, by: m.id }, 60 * 60 * 24 * 14)}`
     // what this recipient may do from the email — the same rules as the app
-    const canSend = m.role === 'member' || m.role === 'admin'
+    const canSend = m.role === 'member' || m.role === 'admin' || assignee?.id === m.id
     const canAssign = m.role !== 'guest' && m.role !== 'reader'
     const noteUrl = `${threadUrl(collective, thread.id)}?pane=note#composer`
     // one-click, member-scoped: only this member stops hearing from this sender

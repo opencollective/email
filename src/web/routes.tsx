@@ -8,7 +8,7 @@ import {
   activeMembers, addEvent, addTag, all, allCollectives, attachmentsByMessage, batchAll, contactsFor, createCollective, get, getCollective, getCollectiveByCustomDomain, messageAttachments, storeAttachment, siblingsOnDomain, messageFoldsQuery, popularTagsQuery, setMessageFold,
   getCollectiveBySlug, getMember, getMemberIn, getThread, kvGet, kvGetMany, kvSet, lastMessageQuery, memberMap, recordThreadSeenUpTo,
   renameCollectiveSlug,
-  backfillGuestAccess, canSeeThread, grantThreadAccess, guestCanSend, markThreadSeen, membershipsByEmail, readsForMember, removeTag, run, setAssignee, setStatus, tagsByThread, threadMessages, threadReads, threadTags,
+  backfillGuestAccess, canSeeThread, grantThreadAccess, markThreadSeen, sendsOnThread, membershipsByEmail, readsForMember, removeTag, run, setAssignee, setStatus, tagsByThread, threadMessages, threadReads, threadTags,
   type ThreadRead,
   type Attachment, type Collective, type Invite, type Member, type Message, type Thread,
 } from '../db.js'
@@ -63,21 +63,23 @@ app.use('*', async (c, next) => {
 const SID = 'requests_sid'
 /** Roles: reader (can read) → commenter (can comment) → member (can send) → admin.
  *  Readers see everything but act on nothing; commenters do everything except
- *  send external email; senders + admins are the paid contributor seats. */
+ *  send external email; senders + admins are the paid contributor seats. On a
+ *  thread assigned to them, anyone answers, writes and closes (see tenant). */
 const canSendRole = (r: Member['role']) => r === 'member' || r === 'admin'
-/** Sending on the thread at hand: a sender's role, or a guest whose share
- *  link gave them send rights on exactly this thread. */
+/** Sending on the thread at hand: a sender's role, the thread's assignee
+ *  (whatever their role), or a guest whose share link gave them send rights
+ *  on exactly this thread. */
 const canSendHere = (m: Member) => canSendRole(m.role) || !!m.send_thread
 const ROLE_LABELS: Record<Member['role'], string> = { reader: 'reader', commenter: 'commenter', member: 'sender', admin: 'admin', guest: 'guest' }
 /** "a sender" but "an admin" — only 'admin' starts with a vowel today, but the
  *  rule is cheap and survives the next role we name. */
 const withArticle = (label: string) => `${/^[aeiou]/i.test(label) ? 'an' : 'a'} ${label}`
 const ROLE_HINTS: Record<Member['role'], string> = {
-  reader: 'Reads everything and gets the digests — takes no actions.',
-  commenter: 'Discusses internally: notes, assigning, tags — cannot email the outside world.',
+  reader: 'Reads everything and gets the digests — acts only on threads assigned to them.',
+  commenter: 'Discusses internally: notes, assigning, tags — emails the outside world only on threads assigned to them.',
   member: 'Answers senders as the collective — uses a paid seat.',
   admin: 'Everything a sender can, plus members, billing and settings.',
-  guest: 'Only sees the threads shared with them or where they are @mentioned.',
+  guest: 'Only sees the threads shared with them or where they are @mentioned — and answers those assigned to them.',
 }
 /** Nothing may be written to an archived inbox — it is on its way out, and the
  *  outside world is already being told so by the bounces. */
@@ -87,7 +89,7 @@ const archivedBlock = (c: Context<Env>, t: { collective: Collective }) =>
     : null
 const readerBlock = (c: Context<Env>, t: { collective: Collective; member: Member }) =>
   archivedBlock(c, t) ??
-  (t.member.role === 'reader'
+  (t.member.role === 'reader' && !t.member.send_thread
     ? c.redirect(`/inbox/${t.collective.slug}?m=` + encodeURIComponent('You have read access — ask an admin to let you comment or send.'))
     : null)
 /** Closing, spamming, deleting, restoring: a sender's call. Commenters
@@ -271,9 +273,10 @@ async function tenant(c: Context<Env>): Promise<{ collective: Collective; member
   if (!member.last_seen_at || now() - member.last_seen_at > 300) {
     run('UPDATE members SET last_seen_at = ? WHERE id = ?', [now(), member.id]).catch(() => {})
   }
-  // a guest's send link lifts them on that one thread, for this request only
-  const onThread = member.role === 'guest' ? /^\/inbox\/[^/]+\/thread\/(\d+)(\/|$)/.exec(c.req.path) : null
-  if (onThread && await guestCanSend(member, Number(onThread[1]))) member.send_thread = Number(onThread[1])
+  // the thread's assignee, or a guest's send link, lifts a non-sender on that
+  // one thread, for this request only: they answer it, write on it, close it
+  const onThread = !canSendRole(member.role) ? /^\/inbox\/[^/]+\/thread\/(\d+)(\/|$)/.exec(c.req.path) : null
+  if (onThread && await sendsOnThread(member, Number(onThread[1]))) member.send_thread = Number(onThread[1])
   return { collective, member }
 }
 
@@ -1146,6 +1149,7 @@ app.get('/admin', async (c) => {
         FROM messages m JOIN threads t ON t.id = m.thread_id JOIN collectives c ON c.id = t.collective_id
         JOIN members s ON s.id = m.sent_by_member_id
         WHERE m.direction = 'outbound' AND m.sent_at IS NOT NULL AND s.role = 'guest'
+          AND t.assignee_member_id IS NOT s.id
           AND NOT EXISTS (SELECT 1 FROM thread_access ta WHERE ta.member_id = s.id AND ta.thread_id = m.thread_id AND ta.can_send = 1)
         ORDER BY m.sent_at DESC LIMIT 100` },
   ]) as { created_at: number; thread_id: number; slug: string; actor: string | null; actor_role: string | null; target: string | null; target_role: string | null }[][]
@@ -1475,8 +1479,9 @@ app.get('/inbox/:addr', async (c) => {
   const tagRows = batch1[1 + filterKeys.length] as { name: string; n: number }[]
   const members = new Map((batch1[2 + filterKeys.length] as Member[]).map((m) => [m.id, m]))
   const liveV = listVersion((batch1[3 + filterKeys.length] as any[])[0])
-  // swipe actions (phones): close/reopen for senders; assign for anyone who
-  // may assign — yourself first, then the people you assign to most lately
+  // swipe actions (phones): close/reopen for senders, and for anyone on the
+  // threads assigned to them; assign for anyone who may assign — yourself
+  // first, then the people you assign to most lately
   const canSwipeClose = canSendRole(member.role) && collective.status !== 'archived'
   const canSwipeAssign = member.role !== 'reader' && member.role !== 'guest' && collective.status !== 'archived'
   const swipePeople = canSwipeAssign ? [member, ...(batch1[4 + filterKeys.length] as { mid: number }[])
@@ -1626,7 +1631,7 @@ app.get('/inbox/:addr', async (c) => {
       </dialog>
       <div class="rows" data-live={`${base}/ping`} data-live-v={liveV}>
         {/* inside .rows so a pill-cache swap carries it along */}
-        {(canSwipeClose || swipePeople.length) && !isDraftsView(f) && f !== 'deleted' && f !== 'spam' ? (
+        {collective.status !== 'archived' && !isDraftsView(f) && f !== 'deleted' && f !== 'spam' ? (
           <template class="swipe-tpl" data-close={canSwipeClose ? '1' : ''}
             data-view={assignedTo ? `${f}:a${assignedTo}` : f} data-me={member.id}>
             {swipePeople.map((m) => (
@@ -2061,6 +2066,8 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
   const sends = canSendHere(member)
+  // a reader only reads, unless the thread is theirs to answer
+  const readOnly = member.role === 'reader' && !sends
 
   // one batched round-trip for everything knowable from the ids alone; a
   // second, below, for what depends on this batch's results. On a remote
@@ -2287,7 +2294,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
 
   return c.html(
     <Shell member={member} collective={collective} active={thread.status === 'draft' ? 'drafts' : 'inbox'} flash={c.req.query('m')}
-      bundle={member.role === 'reader' ? undefined : 'composer.js'}
+      bundle={readOnly ? undefined : 'composer.js'}
       back={{ href: base, label: 'Back to inbox' }}>
       <div class="thread-wrap">
         <div class="thread-main">
@@ -2382,7 +2389,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                 ) : <StatusChip status={thread.status} />}
                 {rule?.close && !thread.assignee_member_id ? (
                   <span class="chip" title={`Filed by ${rule.tag ? `the #${rule.tag}` : 'a'} rule — no assignment needed`}>⚡ auto-filed</span>
-                ) : member.role === 'reader' ? (
+                ) : readOnly ? (
                   <AssigneeChip thread={thread} members={members} />
                 ) : (
                   // one tap to the one-click assignment picker (sheet on mobile)
@@ -2391,7 +2398,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                     {assignee ? <><Avatar member={assignee} /> {memberName(assignee)}</> : 'unassigned'} <span class="caret">▾</span>
                   </button>
                 )}
-                {member.role === 'reader'
+                {readOnly
                   ? tags.map((tg) => <span class="chip">#{tg.name}</span>)
                   : tags.map((tg) => (
                     <form method="post" action={`${base}/thread/${thread.id}/tags/remove`} class="inline">
@@ -2399,7 +2406,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                       <button class="chip removable" type="submit" title="Remove tag">#{tg.name} ×</button>
                     </form>
                   ))}
-                  {member.role !== 'reader' ? (
+                  {!readOnly ? (
                     <details class="tag-add">
                       <summary class="chip" title="Add a tag">+ tag</summary>
                       <form method="post" action={`${base}/thread/${thread.id}/tags`} class="tag-pop" data-tagpop>
@@ -2689,7 +2696,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                   : act === 'kept' && lastAssign ? <p><b>⚠ {byName} already assigned this to {toName}</b> {relTime(lastAssign.created_at)} — nothing was changed.</p>
                   : act === 'spam' ? <p><b>🚫 Marked as spam.</b> It won't count as needing a reply.</p>
                   : null}
-                {member.role !== 'reader' ? (
+                {!readOnly ? (
                   <form method="post" action={`${base}/thread/${thread.id}/assign`} class="assign-form">
                     <select name="member_id">
                       <option value="">— Unassigned —</option>
@@ -2707,7 +2714,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
             )
           })()}
 
-          {proposedDrafts.length && member.role !== 'reader' ? (
+          {proposedDrafts.length && !readOnly ? (
             <div class="proposed">
               {proposedDrafts.map((d) => {
                 const by = members.get(d.member_id)
@@ -2734,7 +2741,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
 
           <div class="typing" id="typing" data-url={`${base}/thread/${thread.id}/typing`} hidden></div>
 
-          {member.role === 'reader' ? (
+          {readOnly ? (
             <div class="reader-note">👀 You have read access. Ask an admin to let you comment or send.</div>
           ) : (
           <div class="composer" id="composer">
@@ -2855,7 +2862,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
           </div>
           ) : null}
 
-          {member.role !== 'reader' && member.role !== 'guest' ? (
+          {!readOnly && member.role !== 'guest' ? (
             <dialog id="assign-modal" class="modal assign-modal">
               <h2>Who has this?</h2>
               {assignee && lastAssignEvent ? (

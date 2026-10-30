@@ -178,6 +178,27 @@ test('plain-text reply is sent to the sender, assigns the member, answers the th
   assert.equal(after.assignee_member_id, memberId)
 })
 
+test('a commenter answers by email only the threads assigned to them', async () => {
+  const col = await createCollective(`r9-${Date.now() % 100000}`, 'Reply Col')
+  const memberId = await addMember(col.id, 'commenter@personal.test', 'commenter')
+  await addMember(col.id, 'sender@personal.test') // not alone: no one-member auto-assign
+  await inboundEmail(col.slug)
+  const thread = await lastThread(col.id)
+  const msg = (await threadMessages(thread.id))[0]
+  const send = (text: string) => webhook({
+    email_id: `test-${uniq()}`, from: 'commenter@personal.test', to: [replyAddress(col.slug, thread.id, memberId, msg.id)],
+    subject: 'Re: Booking', message_id: `<r9-${uniq()}@personal.test>`, text,
+  })
+  await send('Not mine to answer')
+  assert.equal((await threadMessages(thread.id)).length, 1, 'not assigned: refused')
+  await run('UPDATE threads SET assignee_member_id = ? WHERE id = ?', [memberId, thread.id])
+  await send('Yes the room is free!')
+  const msgs = await threadMessages(thread.id)
+  assert.equal(msgs.length, 2)
+  assert.equal(msgs[1].direction, 'outbound')
+  assert.equal(msgs[1].sent_by_member_id, memberId)
+})
+
 test('HTML-only reply with image attachment is delivered (the Apple Mail regression)', async () => {
   const { col, memberId, thread, addr } = await replySetup('r2')
   const parsed = await simpleParser(rawHtmlWithImage(addr, 'Well received. Here is a picture.'))

@@ -430,7 +430,7 @@ test('the needs reply chip marks the thread answered in one tap, and says who di
   assert.match(after, /<button class="chip status-btn status-answered" type="submit"[^>]*title="Mark as needing a reply">/)
 })
 
-test('inbox rows carry swipe actions: you first, then whoever you assign to; readers get none', async () => {
+test('inbox rows carry swipe actions: you first, then whoever you assign to; readers only close their own', async () => {
   const fx = await fixture()
   const carol = await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
     [fx.collective.id, `carol-${uniq()}@example.org`, 'Carol Reader', 'reader', 'none', now()])
@@ -445,8 +445,10 @@ test('inbox rows carry swipe actions: you first, then whoever you assign to; rea
   assert.deepEqual(order.slice(0, 2), [fx.alice.id, fx.bob.id], 'yourself first, then the people you assign to')
   assert.ok(!order.includes(carol.lastId) || order.indexOf(carol.lastId) > 1)
   assert.match(html, new RegExp(`data-status="needs_reply" data-assignee="${fx.bob.id}"`))
-  // a reader can't close or assign: no actions at all
+  // a reader assigns no one and closes only what is assigned to them (the row decides)
   const readerSid = await createSession((await get<any>('SELECT email FROM members WHERE id = ?', [carol.lastId])).email)
   const rh = await (await page(`/inbox/${fx.slug}`, readerSid)).text()
-  assert.doesNotMatch(rh, /<template class="swipe-tpl"/)
+  const rtpl = rh.slice(rh.indexOf('<template class="swipe-tpl"'), rh.indexOf('</template>'))
+  assert.match(rtpl, new RegExp(`data-close="" [^>]*data-me="${carol.lastId}"`))
+  assert.doesNotMatch(rtpl, /swipe-person/)
 })

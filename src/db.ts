@@ -426,8 +426,9 @@ export interface Member {
   created_at: number
   last_seen_at: number | null
   removed_at: number | null
-  /** request-scoped: a guest whose share link lets them send on the thread
-   *  this request is about (never stored on the row) */
+  /** request-scoped: the thread this request is about, when a non-sender
+   *  may send on it — assigned to them, or a guest's send link (never stored
+   *  on the row) */
   send_thread?: number
 }
 
@@ -513,10 +514,14 @@ export const grantThreadAccess = (memberId: number, threadId: number, canSend = 
        ON CONFLICT(member_id, thread_id) DO UPDATE SET can_send = MAX(can_send, excluded.can_send)`,
     [memberId, threadId, now(), canSend ? 1 : 0])
 
-/** Whether a guest may send replies on this one thread. */
-export async function guestCanSend(member: Member, threadId: number): Promise<boolean> {
-  if (member.role !== 'guest') return false
-  return !!(await get('SELECT 1 FROM thread_access WHERE member_id = ? AND thread_id = ? AND can_send = 1', [member.id, threadId]))
+/** Whether a member without a sender's role may still send on this one
+ *  thread: it is assigned to them, or they are a guest whose share link gave
+ *  them send rights on it. */
+export async function sendsOnThread(member: Member, threadId: number): Promise<boolean> {
+  return !!(await get(`SELECT 1 FROM threads t WHERE t.id = ? AND t.collective_id = ? AND t.deleted_at IS NULL
+      AND (t.assignee_member_id = ? OR (? = 'guest' AND EXISTS (
+        SELECT 1 FROM thread_access ta WHERE ta.member_id = ? AND ta.thread_id = t.id AND ta.can_send = 1)))`,
+    [threadId, member.collective_id, member.id, member.role, member.id]))
 }
 
 /** Becoming a guest keeps the conversations that were already theirs: every

@@ -795,6 +795,9 @@ root.querySelectorAll('[data-copy]').forEach((b) => {
     const t = tplOf(row);
     const st = row.dataset.status;
     if (!t || !st || st === 'spam' || st === 'draft') return null;
+    // close: a sender's swipe, or anyone's on a thread assigned to them
+    const closes = !!t.dataset.close || row.dataset.assignee === t.dataset.me;
+    if (!closes && !t.content.querySelector('.swipe-person')) return null;
     const w = document.createElement('div');
     w.className = 'swipe';
     const L = document.createElement('div');
@@ -806,7 +809,7 @@ root.querySelectorAll('[data-copy]').forEach((b) => {
     });
     const R = document.createElement('div');
     R.className = 'swipe-acts swipe-r' + (st === 'closed' ? ' reopen' : '');
-    if (t.dataset.close) {
+    if (closes) {
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'swipe-close';
@@ -1399,7 +1402,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '111'
+export const ASSET_V = '112'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">

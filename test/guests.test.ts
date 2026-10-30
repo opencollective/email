@@ -56,8 +56,8 @@ test('assign to someone else: guest by default, sees exactly the shared thread, 
   const inbox = await (await page(`/inbox/${fx.slug}?f=all`, gsid)).text()
   assert.match(inbox, /Shared thread/)
   assert.doesNotMatch(inbox, /Private thread/)
-  // and she can note but not send
-  assert.doesNotMatch(await (await page(`/inbox/${fx.slug}/thread/${fx.t1}`, gsid)).text(), /data-pane="reply"/)
+  // and, the thread being assigned to her, she answers it as the collective
+  assert.match(await (await page(`/inbox/${fx.slug}/thread/${fx.t1}`, gsid)).text(), /data-pane="reply"/)
 
   // assigning her another thread through the normal picker shares it
   await post(`/inbox/${fx.slug}/thread/${fx.t2}/assign`, fx.sid, `member_id=${guest.id}`)

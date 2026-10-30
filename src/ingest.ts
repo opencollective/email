@@ -344,7 +344,7 @@ export async function handleEmailNote(parsed: ParsedMail, ref: ReplyRef) {
     return
   }
 
-  if (writer.role === 'reader') {
+  if (writer.role === 'reader' && thread.assignee_member_id !== writer.id) {
     await sendReplyFailure(collective, writer, thread,
       'You have read access to this collective, so you cannot add internal notes. Ask an admin to let you comment.',
       plainText(parsed, true))
@@ -430,8 +430,9 @@ export async function handleEmailReply(
     return
   }
 
-  // the same rule as the web: only senders answer the outside world
-  if (member.role !== 'member' && member.role !== 'admin') {
+  // the same rule as the web: only senders answer the outside world — and
+  // whoever the thread is assigned to, whatever their role
+  if (member.role !== 'member' && member.role !== 'admin' && thread.assignee_member_id !== member.id) {
     await sendReplyFailure(collective, member, thread,
       member.role === 'reader'
         ? 'You have read access to this collective. Ask an admin to let you comment or send.'
