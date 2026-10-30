@@ -11,6 +11,7 @@
   --warn: #b05619;
   --warn-bg: #f9ede1;
   --danger: #c04343;
+  --swipe-close: #6a5acd;
   --hatch: rgba(38, 40, 44, 0.05);
   --shadow: 0 1px 2px rgba(20, 21, 23, 0.05), 0 6px 18px rgba(20, 21, 23, 0.04);
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -29,6 +30,7 @@
     --warn: #d98e4f;
     --warn-bg: #33261b;
     --danger: #e07070;
+    --swipe-close: #8b7cf0;
     --hatch: rgba(230, 229, 225, 0.06);
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 6px 18px rgba(0, 0, 0, 0.3);
   }
@@ -1564,3 +1566,46 @@ kbd {
 /* phones: "sent by …" clipped to a lone letter reads as a glitch; the avatar
    already says who sent it */
 @media (max-width: 560px) { .msg-head .who .sentby { display: none; } }
+
+/* ---------- swipe a row (phones), à la Apple Mail ---------- */
+.swipe { position: relative; overflow: hidden; transition: height .24s ease; }
+.swipe > a.row {
+  position: relative; z-index: 1; background: var(--paper);
+  transition: transform .26s cubic-bezier(.2, .8, .2, 1); touch-action: pan-y;
+}
+.swipe.dragging > a.row { transition: none; }
+.swipe-acts { position: absolute; top: 0; bottom: 0; left: 0; right: 0; display: none; align-items: center; }
+.swipe.show-l .swipe-l, .swipe.show-r .swipe-r { display: flex; }
+/* right: assignees, yourself first */
+.swipe-l { justify-content: flex-start; gap: 2px; padding: 0 6px; background: var(--fill); }
+.swipe-person {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  background: none; border: none; padding: 4px 6px; color: var(--ink); font: inherit; cursor: pointer;
+}
+.swipe-person .avatar {
+  width: 36px; height: 36px; min-width: 36px; max-width: 36px; min-height: 36px; max-height: 36px;
+  font-size: 13px; transition: transform .15s ease, box-shadow .15s ease;
+}
+.swipe-person small { font-size: 10px; color: var(--muted); max-width: 52px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.swipe-person.current .avatar { box-shadow: 0 0 0 2px var(--paper), 0 0 0 4px var(--accent); }
+.swipe-person:active .avatar { transform: scale(.92); }
+.swipe.armed .swipe-l .swipe-person:first-child .avatar { transform: scale(1.15); box-shadow: 0 0 0 2px var(--paper), 0 0 0 4px var(--accent); }
+/* left: close (or reopen) */
+.swipe-r { justify-content: flex-end; background: var(--swipe-close); }
+.swipe-r.reopen { background: var(--accent); }
+.swipe-close {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  width: 88px; height: 100%; background: none; border: none; color: #fff;
+  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; transition: width .26s cubic-bezier(.2, .8, .2, 1);
+}
+.swipe.dragging .swipe-close { transition: none; }
+.swipe-ico { font-size: 20px; line-height: 1; }
+/* past the threshold, the label hugs the row's edge */
+.swipe.armed .swipe-close { align-items: flex-start; padding-left: 26px; }
+.swipe-toast { display: flex; align-items: center; justify-content: space-between; gap: 14px; text-align: left; }
+.swipe-toast span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* the toast is ink-on-paper inverted: Undo in the toast's own text colour */
+.swipe-toast button {
+  background: none; border: none; color: inherit; font: inherit; font-weight: 700;
+  text-decoration: underline; text-underline-offset: 3px; padding: 4px 0; cursor: pointer; flex: none;
+}

@@ -1459,6 +1459,13 @@ app.get('/inbox/:addr', async (c) => {
     },
     { sql: 'SELECT * FROM members WHERE collective_id = ?', args: [collective.id] },
     listVersionQuery(collective.id, guestArgs[0]),
+    // who this member hands threads to, most recent first — the swipe-right
+    // shortcuts on a phone (topped up with whoever the team assigns to)
+    { sql: `SELECT CAST(json_extract(data_json, '$.to') AS INTEGER) AS mid, MAX(id) AS last,
+              MAX(actor_member_id = ?) AS mine
+            FROM events WHERE type = 'assigned' AND actor_member_id IS NOT NULL
+              AND thread_id IN (SELECT id FROM threads WHERE collective_id = ?)
+            GROUP BY mid ORDER BY mine DESC, last DESC LIMIT 20`, args: [member.id, collective.id] },
   ])
   const threads = batch1[0] as Thread[]
   const counts: Record<string, number> = {}
@@ -1466,6 +1473,14 @@ app.get('/inbox/:addr', async (c) => {
   const tagRows = batch1[1 + filterKeys.length] as { name: string; n: number }[]
   const members = new Map((batch1[2 + filterKeys.length] as Member[]).map((m) => [m.id, m]))
   const liveV = listVersion((batch1[3 + filterKeys.length] as any[])[0])
+  // swipe actions (phones): close/reopen for senders; assign for anyone who
+  // may assign — yourself first, then the people you assign to most lately
+  const canSwipeClose = canSendRole(member.role) && collective.status !== 'archived'
+  const canSwipeAssign = member.role !== 'reader' && member.role !== 'guest' && collective.status !== 'archived'
+  const swipePeople = canSwipeAssign ? [member, ...(batch1[4 + filterKeys.length] as { mid: number }[])
+    .map((r) => members.get(r.mid))
+    .filter((m): m is Member => !!m && !m.removed_at && m.id !== member.id)
+    .slice(0, 4)] : []
 
   // round-trip 2: everything the listed rows show — tags, read state, the
   // participant stacks, note counts and last-message snippets, all together
@@ -1606,6 +1621,16 @@ app.get('/inbox/:addr', async (c) => {
       </dialog>
       <div class="rows" data-live={`${base}/ping`} data-live-v={liveV}>
         {/* inside .rows so a pill-cache swap carries it along */}
+        {(canSwipeClose || swipePeople.length) && !isDraftsView(f) && f !== 'deleted' && f !== 'spam' ? (
+          <template class="swipe-tpl" data-close={canSwipeClose ? '1' : ''}
+            data-view={assignedTo ? `${f}:a${assignedTo}` : f} data-me={member.id}>
+            {swipePeople.map((m) => (
+              <button type="button" class="swipe-person" data-member={m.id} data-name={m.id === member.id ? 'you' : memberName(m)}>
+                <Avatar member={m} /><small>{m.id === member.id ? 'Me' : memberName(m).split(/\s+/)[0]}</small>
+              </button>
+            ))}
+          </template>
+        ) : null}
         {sharedWith ? (
           <div class="deleted-note">Threads shared with <b>{memberName(members.get(sharedWith))}</b> — what they can see, assigned to them or not. <a href={`${base}?f=all`}>Show all threads</a></div>
         ) : null}
@@ -1803,7 +1828,8 @@ const ThreadRow: FC<{
   // a REAL two-row grid (named areas), so line 1 aligns across every column
   // and line 2 does too — stacked cells only pretend to be rows
   return (
-    <a class={`row${showSender ? '' : ' no-sender'}${p.unread ? ' unread' : ''}`} href={`${p.base}/thread/${th.id}`}>
+    <a class={`row${showSender ? '' : ' no-sender'}${p.unread ? ' unread' : ''}`} href={`${p.base}/thread/${th.id}`}
+      data-status={th.status} data-assignee={th.assignee_member_id ?? ''}>
       <span class={`dot ${th.status === 'needs_reply' ? 'open' : 'done'}`} />
       <span class="r-d1">{sameDay ? '' : shortDate(th.first_message_at)}</span>
       <b class="r-d2">{shortDate(th.last_message_at)}</b>

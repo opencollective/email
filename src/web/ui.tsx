@@ -767,6 +767,256 @@ root.querySelectorAll('[data-copy]').forEach((b) => {
   });
 });
 }
+// Swipe a row on a phone, as in Apple Mail: left reveals Close (Reopen on a
+// closed thread), right reveals who to hand it to — you first, then the
+// people you assign to most. A long swipe does the first action outright.
+// Nothing is sent for 4 seconds: Undo in the toast takes it back for free.
+(() => {
+  if (!matchMedia('(hover: none) and (pointer: coarse)').matches) return;
+  const WAIT = 4000;
+  const tplOf = (row) => { const r = row.closest('.rows'); return r && r.querySelector('template.swipe-tpl'); };
+  let open = null, g = null, suppress = false;
+  const panels = (w) => [w.querySelector('.swipe-l'), w.querySelector('.swipe-r')];
+  // how far a row slides open: just past its actions (the panels span the row)
+  const reach = (panel) => { const b = panel.lastElementChild; return b ? b.offsetLeft + b.offsetWidth + 6 : 0; };
+  const CLOSE_W = 88; // the close action's resting width
+  const reachR = (panel) => (panel.querySelector('button') ? CLOSE_W : 0);
+  const isOpen = (w) => w.classList.contains('open-l') || w.classList.contains('open-r');
+  const shut = (w) => {
+    if (!w) return;
+    w.classList.remove('dragging', 'armed', 'open-l', 'open-r');
+    w.querySelector('a.row').style.transform = '';
+    if (open === w) open = null;
+    // the panels stay painted until the row has slid back over them
+    setTimeout(() => { if (!isOpen(w) && !w.classList.contains('dragging')) w.classList.remove('show-l', 'show-r'); }, 260);
+  };
+  const wrap = (row) => {
+    if (row.parentElement.classList.contains('swipe')) return row.parentElement;
+    const t = tplOf(row);
+    const st = row.dataset.status;
+    if (!t || !st || st === 'spam' || st === 'draft') return null;
+    const w = document.createElement('div');
+    w.className = 'swipe';
+    const L = document.createElement('div');
+    L.className = 'swipe-acts swipe-l';
+    t.content.querySelectorAll('.swipe-person').forEach((p) => {
+      const b = p.cloneNode(true);
+      if (b.dataset.member === row.dataset.assignee) b.classList.add('current');
+      L.appendChild(b);
+    });
+    const R = document.createElement('div');
+    R.className = 'swipe-acts swipe-r' + (st === 'closed' ? ' reopen' : '');
+    if (t.dataset.close) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'swipe-close';
+      b.dataset.status = st === 'closed' ? 'needs_reply' : 'closed';
+      b.innerHTML = '<span class="swipe-ico">' + (st === 'closed' ? '↺' : '✓') + '</span><span>' + (st === 'closed' ? 'Reopen' : 'Close') + '</span>';
+      R.appendChild(b);
+    }
+    row.parentElement.insertBefore(w, row);
+    w.appendChild(L); w.appendChild(R); w.appendChild(row);
+    return w;
+  };
+  const moveTo = (w, x) => {
+    w.querySelector('a.row').style.transform = x ? 'translateX(' + x + 'px)' : '';
+    // the close action fills the gap the row leaves, its label riding the edge
+    const cb = w.querySelector('.swipe-close');
+    if (cb) cb.style.width = x < 0 ? Math.max(CLOSE_W, -x) + 'px' : '';
+    if (x > 0) { w.classList.add('show-l'); w.classList.remove('show-r'); }
+    if (x < 0) { w.classList.add('show-r'); w.classList.remove('show-l'); }
+  };
+
+  // ---- acting: on screen now, sent after the undo window ----
+  const pending = new Set();
+  const flushAll = () => pending.forEach((p) => p.send());
+  addEventListener('pagehide', flushAll);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) flushAll(); });
+  const post = (url, body) => fetch(url, {
+    method: 'POST', redirect: 'manual', credentials: 'same-origin', keepalive: true,
+    headers: { 'content-type': 'application/x-www-form-urlencoded' }, body,
+  });
+  const settled = () => {
+    try { Object.keys(sessionStorage).filter((k) => k.indexOf('pillcache:') === 0).forEach((k) => sessionStorage.removeItem(k)); } catch (e) {}
+    if (window.liveRefresh) window.liveRefresh();
+  };
+  const toast = (msg, undo) => {
+    document.querySelectorAll('.swipe-toast').forEach((f) => f.remove());
+    const f = document.createElement('div');
+    f.className = 'flash swipe-toast';
+    const s = document.createElement('span');
+    s.textContent = msg;
+    f.appendChild(s);
+    if (undo) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.textContent = 'Undo';
+      b.addEventListener('click', () => { undo(); f.remove(); });
+      f.appendChild(b);
+    }
+    document.body.appendChild(f);
+    setTimeout(() => f.remove(), WAIT);
+  };
+  // does the row still belong in the list on screen after this change?
+  const stays = (t, change) => {
+    const parts = (t.dataset.view || 'all').split(':a');
+    const view = parts[0], only = parts[1] || '';
+    if (change.status) return change.status === 'closed' ? view === 'all' || view === 'closed' : view !== 'closed';
+    if (only && change.assignee !== only) return false;
+    if (view === 'unassigned') return false;
+    if (view === 'mine') return change.assignee === t.dataset.me;
+    return true;
+  };
+  const act = (w, btn) => {
+    flushAll();
+    const row = w.querySelector('a.row');
+    const t = tplOf(row);
+    const subjEl = row.querySelector('.r-subj');
+    const subject = ((subjEl && subjEl.firstChild && subjEl.firstChild.textContent) || 'Thread').trim().slice(0, 40);
+    let change, msg;
+    if (btn.classList.contains('swipe-person')) {
+      if (btn.dataset.member === row.dataset.assignee) { shut(w); toast('Already assigned to ' + btn.dataset.name); return; }
+      change = { assignee: btn.dataset.member, body: 'member_id=' + btn.dataset.member, undo: 'member_id=' + (row.dataset.assignee || '') };
+      msg = 'Assigned to ' + btn.dataset.name + ': ' + subject;
+    } else {
+      change = { status: btn.dataset.status, body: 'status=' + btn.dataset.status, undo: 'status=' + row.dataset.status };
+      msg = (change.status === 'closed' ? 'Closed: ' : 'Reopened: ') + subject;
+    }
+    const snap = { html: row.innerHTML, status: row.dataset.status, assignee: row.dataset.assignee };
+    if (stays(t, change)) {
+      // updated in place; the live refresh then brings the server's version
+      if (change.status) {
+        row.dataset.status = change.status;
+        const dot = row.querySelector(':scope > .dot');
+        if (dot) dot.className = 'dot ' + (change.status === 'needs_reply' ? 'open' : 'done');
+        const chip = row.querySelector('.r-meta1 .chip[class*="status-"]');
+        if (chip) { chip.className = 'chip status-' + change.status; chip.innerHTML = '<span class="dot"></span>' + (change.status === 'closed' ? 'closed' : 'needs reply'); }
+        if (change.status === 'closed') row.querySelectorAll('.r-meta1 .chip.unassigned').forEach((c) => c.remove());
+      } else {
+        row.dataset.assignee = change.assignee;
+        const meta = row.querySelector('.r-meta1');
+        if (meta) {
+          meta.querySelectorAll('.chip.assignee, .chip.unassigned').forEach((c) => c.remove());
+          const chip = document.createElement('span');
+          chip.className = 'chip assignee';
+          const av = btn.querySelector('.avatar');
+          if (av) chip.appendChild(av.cloneNode(true));
+          chip.appendChild(document.createTextNode(' ' + btn.querySelector('small').textContent));
+          meta.insertBefore(chip, meta.firstChild);
+        }
+      }
+      shut(w);
+      // unwrapped, so the next touch builds actions that match the new state
+      setTimeout(() => { if (w.parentElement && !isOpen(w)) { w.parentElement.insertBefore(row, w); w.remove(); } }, 260);
+    } else {
+      // out it slides, then the gap closes — as in Mail
+      w.classList.add('leaving');
+      moveTo(w, (change.status ? -1 : 1) * w.offsetWidth);
+      w.style.height = w.offsetHeight + 'px';
+      setTimeout(() => { w.style.height = '0px'; }, 180);
+      setTimeout(() => { if (w.classList.contains('leaving')) w.hidden = true; }, 420);
+    }
+    if (navigator.vibrate) navigator.vibrate(8);
+    const url = row.getAttribute('href') + (change.status ? '/status' : '/assign');
+    const restore = () => {
+      row.innerHTML = snap.html; row.dataset.status = snap.status; row.dataset.assignee = snap.assignee;
+      if (w.parentElement) { w.hidden = false; w.classList.remove('leaving'); w.style.height = ''; shut(w); }
+    };
+    const p = {
+      done: false,
+      send: () => {
+        if (p.done) return;
+        p.done = true; clearTimeout(p.timer); pending.delete(p);
+        if (!pending.size) document.body.classList.remove('swipe-pending');
+        post(url, change.body).then((r) => {
+          if (!(r.ok || r.type === 'opaqueredirect')) throw new Error();
+          settled();
+        }).catch(() => { restore(); toast('Could not update that thread — try again.'); });
+      },
+    };
+    p.timer = setTimeout(p.send, WAIT);
+    pending.add(p);
+    document.body.classList.add('swipe-pending');
+    toast(msg, () => {
+      restore();
+      // already sent (the page was hidden meanwhile): send the reverse
+      if (p.done) { post(url, change.undo).then(settled, settled); return; }
+      p.done = true; clearTimeout(p.timer); pending.delete(p);
+      if (!pending.size) document.body.classList.remove('swipe-pending');
+    });
+  };
+
+  // ---- the gesture ----
+  document.addEventListener('touchstart', (e) => {
+    const row = e.target.closest('.rows a.row');
+    if (open && (!row || row.parentElement !== open) && !e.target.closest('.swipe-acts')) shut(open);
+    g = null;
+    if (!row || e.touches.length > 1) return;
+    const tt = e.touches[0];
+    // the left edge belongs to the browser's own swipe-back
+    if (tt.clientX < 24) return;
+    const w = wrap(row);
+    if (!w) return;
+    const [L, R] = panels(w);
+    g = { w, x: tt.clientX, y: tt.clientY, dx: 0, lock: null, hasL: L.children.length > 0, hasR: R.children.length > 0,
+      base: w.classList.contains('open-l') ? reach(L) : w.classList.contains('open-r') ? -reachR(R) : 0 };
+  }, { passive: true });
+
+  document.addEventListener('touchmove', (e) => {
+    if (!g) return;
+    const tt = e.touches[0];
+    const dx = tt.clientX - g.x, dy = tt.clientY - g.y;
+    if (!g.lock) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      g.lock = Math.abs(dx) > Math.abs(dy) * 1.2 ? 'x' : 'y';
+      if (g.lock === 'x') g.w.classList.add('dragging');
+    }
+    if (g.lock !== 'x') return;
+    e.preventDefault();
+    let x = g.base + dx;
+    if ((x > 0 && !g.hasL) || (x < 0 && !g.hasR)) x = x / 6; // nothing there: resist
+    g.dx = x;
+    moveTo(g.w, x);
+    const armed = Math.abs(x) > g.w.offsetWidth * 0.6 && (x > 0 ? g.hasL : g.hasR);
+    if (armed !== g.w.classList.contains('armed')) {
+      g.w.classList.toggle('armed', armed);
+      if (armed && navigator.vibrate) navigator.vibrate(8);
+    }
+  }, { passive: false });
+
+  const end = () => {
+    if (!g) return;
+    const { w, dx, lock } = g;
+    g = null;
+    if (lock !== 'x') return;
+    suppress = true;
+    setTimeout(() => { suppress = false; }, 350);
+    w.classList.remove('dragging');
+    const [L, R] = panels(w);
+    if (w.classList.contains('armed')) {
+      const first = (dx > 0 ? L : R).querySelector('button');
+      if (first) { act(w, first); return; }
+    }
+    if (dx > 50 && L.children.length) {
+      w.classList.add('open-l'); w.classList.remove('open-r');
+      moveTo(w, reach(L)); open = w;
+    } else if (dx < -50 && R.children.length) {
+      w.classList.add('open-r'); w.classList.remove('open-l');
+      moveTo(w, -reachR(R)); open = w;
+    } else shut(w);
+  };
+  document.addEventListener('touchend', end);
+  document.addEventListener('touchcancel', end);
+
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.swipe-acts button');
+    if (btn) { e.preventDefault(); act(btn.closest('.swipe'), btn); return; }
+    if (suppress && e.target.closest('.rows a.row')) { e.preventDefault(); e.stopPropagation(); return; }
+    // with a row open, a tap anywhere just closes it
+    if (open) { if (e.target.closest('.rows')) { e.preventDefault(); e.stopPropagation(); } shut(open); }
+  }, true);
+  addEventListener('scroll', () => { if (open) shut(open); }, { passive: true });
+})();
+
 wireLive(document);
 
 // Live view: poll a cheap version stamp; when it moves, refetch this page and
@@ -781,7 +1031,8 @@ wireLive(document);
   const busy = () => {
     const a = document.activeElement;
     if (a && (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && a.type !== 'submit') || a.tagName === 'SELECT')) return true;
-    return !!document.querySelector('.tl details[open], .thread-sub details[open], dialog[open], [data-person].open');
+    return !!document.querySelector('.tl details[open], .thread-sub details[open], dialog[open], [data-person].open, .swipe.open-l, .swipe.open-r, .swipe.dragging')
+      || document.body.classList.contains('swipe-pending');
   };
   let inflight = false;
   // force: refetch even when the stamp hasn't moved (read state isn't in it)
@@ -812,6 +1063,8 @@ wireLive(document);
       .then(() => { inflight = false; });
   };
   setInterval(tick, 8000);
+  // a change made from the list (a swipe): show the server's version now
+  window.liveRefresh = () => tick(true);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
   // back from a thread: the cached page shows it unread — refresh the list
   // (the reading beacon may still be landing, so once more a moment later)
@@ -1146,7 +1399,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '109'
+export const ASSET_V = '110'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">

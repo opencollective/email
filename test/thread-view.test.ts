@@ -422,3 +422,24 @@ test('the needs reply chip marks the thread answered in one tap, and says who di
   // and the chip flips back, in case it was a mistake
   assert.match(after, /<button class="chip status-btn status-answered" type="submit"[^>]*title="Mark as needing a reply">/)
 })
+
+test('inbox rows carry swipe actions: you first, then whoever you assign to; readers get none', async () => {
+  const fx = await fixture()
+  const carol = await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [fx.collective.id, `carol-${uniq()}@example.org`, 'Carol Reader', 'reader', 'none', now()])
+  // Alice hands the thread to Bob, from the list's own route
+  const r = await post(`/inbox/${fx.slug}/thread/${fx.threadId}/assign`, fx.alice.sid, `member_id=${fx.bob.id}`)
+  assert.equal(r.status, 302)
+  const html = await (await page(`/inbox/${fx.slug}?f=needs_reply`, fx.alice.sid)).text()
+  const tpl = html.slice(html.indexOf('<template class="swipe-tpl"'), html.indexOf('</template>'))
+  assert.match(tpl, /data-close="1"/)
+  assert.match(tpl, /data-view="needs_reply"/)
+  const order = [...tpl.matchAll(/data-member="(\d+)"/g)].map((m) => Number(m[1]))
+  assert.deepEqual(order.slice(0, 2), [fx.alice.id, fx.bob.id], 'yourself first, then the people you assign to')
+  assert.ok(!order.includes(carol.lastId) || order.indexOf(carol.lastId) > 1)
+  assert.match(html, new RegExp(`data-status="needs_reply" data-assignee="${fx.bob.id}"`))
+  // a reader can't close or assign: no actions at all
+  const readerSid = await createSession((await get<any>('SELECT email FROM members WHERE id = ?', [carol.lastId])).email)
+  const rh = await (await page(`/inbox/${fx.slug}`, readerSid)).text()
+  assert.doesNotMatch(rh, /<template class="swipe-tpl"/)
+})
