@@ -912,14 +912,14 @@ root.querySelectorAll('[data-copy]').forEach((b) => {
       w.classList.add('leaving');
       moveTo(w, (change.status ? -1 : 1) * w.offsetWidth);
       w.style.height = w.offsetHeight + 'px';
-      setTimeout(() => { w.style.height = '0px'; }, 180);
-      setTimeout(() => { if (w.classList.contains('leaving')) w.hidden = true; }, 420);
+      setTimeout(() => { if (w.classList.contains('leaving')) { w.classList.add('folding'); w.style.height = '0px'; } }, 220);
+      setTimeout(() => { if (w.classList.contains('leaving')) w.hidden = true; }, 560);
     }
     if (navigator.vibrate) navigator.vibrate(8);
     const url = row.getAttribute('href') + (change.status ? '/status' : '/assign');
     const restore = () => {
       row.innerHTML = snap.html; row.dataset.status = snap.status; row.dataset.assignee = snap.assignee;
-      if (w.parentElement) { w.hidden = false; w.classList.remove('leaving'); w.style.height = ''; shut(w); }
+      if (w.parentElement) { w.hidden = false; w.classList.remove('leaving', 'folding'); w.style.height = ''; shut(w); }
     };
     const p = {
       done: false,
@@ -1399,7 +1399,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '110'
+export const ASSET_V = '111'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">

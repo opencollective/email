@@ -1346,7 +1346,9 @@ app.post('/admin/collectives', async (c) => {
 // ---------- tenant: inbox ----------
 
 const FILTERS: Record<string, { label: string; where: string }> = {
-  all: { label: 'Inbox', where: "t.status != 'spam' AND t.deleted_at IS NULL" },
+  // the inbox is what is still open; closing a thread takes it out of here
+  inbox: { label: 'Inbox', where: "t.status IN ('needs_reply','answered') AND t.deleted_at IS NULL" },
+  all: { label: 'All', where: "t.status != 'spam' AND t.deleted_at IS NULL" },
   needs_reply: { label: 'Needs reply', where: "t.status = 'needs_reply' AND t.deleted_at IS NULL" },
   mine: { label: 'Mine', where: "t.assignee_member_id = ? AND t.status IN ('needs_reply','answered') AND t.deleted_at IS NULL" },
   answered: { label: 'Answered', where: "t.status = 'answered' AND t.deleted_at IS NULL" },
@@ -1387,7 +1389,7 @@ app.get('/inbox/:addr', async (c) => {
     }
   } else {
     const remembered = await kvGet(`lastfilter:${member.id}`)
-    f = remembered && Object.hasOwn(FILTERS, remembered) ? remembered : 'needs_reply'
+    f = remembered && Object.hasOwn(FILTERS, remembered) ? remembered : 'inbox'
   }
   const tag = c.req.query('tag') || ''
   const q = (c.req.query('q') || '').trim()
@@ -1549,7 +1551,7 @@ app.get('/inbox/:addr', async (c) => {
               {pill('drafts_mine', 'Assigned to me', counts.drafts_mine)}
               {pill('drafts_unassigned', 'Unassigned', counts.drafts_unassigned)}
             </> : <>
-              {pill('all', 'All')}
+              {pill('inbox', 'Inbox')}
               {pill('needs_reply', 'Needs reply', counts.needs_reply)}
               {pill('mine', 'Assigned to me', counts.mine)}
               {pill('unassigned', 'Unassigned', counts.unassigned)}
@@ -1565,6 +1567,8 @@ app.get('/inbox/:addr', async (c) => {
                 deleted <span class="count">{counts.deleted}</span>
               </a>
             ) : null}
+            {/* everything, closed included — last, the place you look back */}
+            {!drafts ? pill('all', 'All') : null}
           </div>
         )
       })()}
@@ -1582,6 +1586,7 @@ app.get('/inbox/:addr', async (c) => {
           </select>
           <label class="lbl" for="ff-f">Status</label>
           <select class="input" name="f" id="ff-f">
+            <option value="inbox" selected={f === 'inbox'}>Inbox (open)</option>
             <option value="all" selected={f === 'all'}>All</option>
             <option value="needs_reply" selected={f === 'needs_reply'}>Needs reply</option>
             <option value="answered" selected={f === 'answered'}>Answered</option>
@@ -1641,6 +1646,8 @@ app.get('/inbox/:addr', async (c) => {
           <div class="empty-state">
             {f === 'needs_reply'
               ? '🎉 Nothing needs a reply. The inbox is at zero.'
+              : f === 'inbox' && !q && !tag && !assignedTo
+                ? (counts.all ? '🎉 Nothing open. Closed threads are under All.' : `No conversations yet — email ${collective.slug}@${cfg.emailDomain} to start one.`)
               : f === 'all'
                 ? `No conversations yet — email ${collective.slug}@${cfg.emailDomain} to start one.`
                 : 'No threads here.'}

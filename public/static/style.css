@@ -1568,7 +1568,10 @@ kbd {
 @media (max-width: 560px) { .msg-head .who .sentby { display: none; } }
 
 /* ---------- swipe a row (phones), à la Apple Mail ---------- */
-.swipe { position: relative; overflow: hidden; transition: height .24s ease; }
+.swipe { position: relative; overflow: hidden; }
+/* a closed row leaves the inbox: slides out, then the gap folds shut */
+.swipe.leaving { transition: height .32s cubic-bezier(.4, 0, .2, 1), opacity .32s ease; }
+.swipe.leaving.folding { opacity: 0; }
 .swipe > a.row {
   position: relative; z-index: 1; background: var(--paper);
   transition: transform .26s cubic-bezier(.2, .8, .2, 1); touch-action: pan-y;

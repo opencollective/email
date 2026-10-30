@@ -294,16 +294,23 @@ test('the assign modal carries the create-a-rule form; the sidebar no longer doe
   assert.doesNotMatch(aside, /Create a rule for similar messages/)
 })
 
-test('the inbox opens on needs-reply; pills reach mine, unassigned, and tags without a #', async () => {
+test('the inbox opens on what is open; closed waits under All, last; pills reach mine, unassigned, tags without a #', async () => {
   const fx = await fixture()
-  // fixture thread needs a reply; add an answered one and an assigned one
+  // fixture thread needs a reply; add an answered one, a closed one, and an assigned one
   await run(`INSERT INTO threads (collective_id, subject, status, counterpart_email, first_message_at, last_message_at, last_direction, created_at, updated_at)
-    VALUES (?, 'Old news', 'answered', 'x@y.test', ?, ?, 'inbound', ?, ?)`, [fx.collective.id, now(), now(), now(), now()])
+    VALUES (?, 'Old news', 'closed', 'x@y.test', ?, ?, 'inbound', ?, ?)`, [fx.collective.id, now(), now(), now(), now()])
+  await run(`INSERT INTO threads (collective_id, subject, status, counterpart_email, first_message_at, last_message_at, last_direction, created_at, updated_at)
+    VALUES (?, 'Replied already', 'answered', 'z@y.test', ?, ?, 'inbound', ?, ?)`, [fx.collective.id, now(), now(), now(), now()])
   await run('UPDATE threads SET assignee_member_id = ? WHERE id = ?', [fx.bob.id, fx.threadId])
 
   const dflt = await (await page(`/inbox/${fx.slug}`, fx.alice.sid)).text()
   assert.match(dflt, /Room booking/, 'the open thread is there')
-  assert.doesNotMatch(dflt, /Old news/, 'the answered one waits behind the All pill')
+  assert.match(dflt, /Replied already/, 'answered is still open: in the inbox')
+  assert.doesNotMatch(dflt, /Old news/, 'the closed one waits behind the All pill')
+  const pills = [...dflt.slice(dflt.indexOf('class="tag-bar"'), dflt.indexOf('<dialog id="filter-modal"'))
+    .matchAll(/class="chip tag-chip[^"]*" href="[^"]*\?f=(\w+)/g)].map((m) => m[1])
+  assert.equal(pills[0], 'inbox', 'Inbox comes first')
+  assert.equal(pills[pills.length - 1], 'all', 'All sits at the far right')
   assert.match(dflt, /class="chip tag-chip[^>]*>Assigned to me</, 'the mine pill says what it is')
   assert.match(dflt, />Unassigned</, 'without a warning sign')
   assert.doesNotMatch(dflt, /⚠ Unassigned/)
