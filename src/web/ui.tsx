@@ -5,6 +5,7 @@ import { cfg } from '../config.js'
 import type { Collective, Member, Thread } from '../db.js'
 import { fmtDate, initials, relTime } from '../util.js'
 import { billingState, trialDaysLeft } from '../billing.js'
+import { publicAddress } from '../outbound.js'
 
 /** Report this browser's time zone once (~1 year) so prices show in euros for
  *  European visitors even when the edge can't resolve the IP country. Included
@@ -1402,7 +1403,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '112'
+export const ASSET_V = '113'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">
@@ -1536,7 +1537,7 @@ export const Shell: FC<{
   children?: Child
 }> = (props) => {
   const base = `/inbox/${props.collective.slug}`
-  const addr = `${props.collective.slug}@${cfg.emailDomain}`
+  const addr = publicAddress(props.collective)
   const isAdmin = props.member.role === 'admin'
   const canSend = props.member.role === 'admin' || props.member.role === 'member'
   const userBlock = (
@@ -1669,7 +1670,7 @@ const SWITCHER_SCRIPT = `
         if(b.needsReply>0) badges+='<span class="ob-badge ob-wait" title="conversations waiting for a reply">'+b.needsReply+' waiting</span>';
         if(b.mine>0) badges+='<span class="ob-badge ob-mine" title="assigned to you">'+b.mine+' yours</span>';
         return '<a class="org-item'+(b.slug===current?' on':'')+'" href="/inbox/'+encodeURIComponent(b.slug)+'">'+
-          '<span class="oi-main"><b>'+esc(b.name)+'</b><small>'+esc(b.slug)+'@collective.email</small>'+
+          '<span class="oi-main"><b>'+esc(b.name)+'</b><small>'+esc(b.address)+'</small>'+
           (multi?'<small class="oi-acct">'+esc(b.email||'')+'</small>':'')+'</span>'+
           '<span class="oi-badges">'+badges+'</span></a>';
       }).join('')+

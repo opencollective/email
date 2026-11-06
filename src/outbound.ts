@@ -10,14 +10,17 @@ import { assertCanSend, assertRecipientCap } from './billing.js'
  *  address in the display name (honest, deliverable, no DMARC spoofing). */
 export function outboundFrom(collective: Collective): { fromAddress: string; fromHeader: string } {
   const custom = collective.plan === 'pro' && collective.custom_domain && collective.custom_local
-  if (custom && collective.domain_status === 'verified') {
-    const addr = `${collective.custom_local}@${collective.custom_domain}`
-    return { fromAddress: addr, fromHeader: `${collective.name} <${addr}>` }
-  }
-  const addr = `${collective.slug}@${cfg.emailDomain}`
+  const addr = publicAddress(collective)
+  if (custom && collective.domain_status === 'verified') return { fromAddress: addr, fromHeader: `${collective.name} <${addr}>` }
   const name = custom ? `${collective.name} · ${collective.custom_local}@${collective.custom_domain}` : collective.name
   return { fromAddress: addr, fromHeader: `${name} <${addr}>` }
 }
+
+/** The collective's address as the world sees it: the custom one once its
+ *  domain is verified, slug@ otherwise. What the app shows everywhere. */
+export const publicAddress = (collective: Pick<Collective, 'slug' | 'plan' | 'custom_domain' | 'custom_local' | 'domain_status'>) =>
+  collective.plan === 'pro' && collective.custom_domain && collective.custom_local && collective.domain_status === 'verified'
+    ? `${collective.custom_local}@${collective.custom_domain}` : `${collective.slug}@${cfg.emailDomain}`
 
 /** The sign-off appended to replies. The web composer pre-fills it into the
  *  textarea so it can be edited or removed before sending — which is why the

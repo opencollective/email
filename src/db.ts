@@ -653,8 +653,10 @@ export const activeMembers = (collectiveId: number) =>
 
 /** All active memberships for a verified email, joined with their collective. */
 export const membershipsByEmail = (email: string) =>
-  all<Member & { collective_slug: string; collective_name: string }>(`
-    SELECT m.*, c.slug AS collective_slug, c.name AS collective_name FROM members m
+  all<Member & { collective_slug: string; collective_name: string; collective_plan: Collective['plan']; collective_custom_domain: string | null
+    collective_custom_local: string | null; collective_domain_status: Collective['domain_status'] }>(`
+    SELECT m.*, c.slug AS collective_slug, c.name AS collective_name, c.plan AS collective_plan, c.custom_domain AS collective_custom_domain,
+      c.custom_local AS collective_custom_local, c.domain_status AS collective_domain_status FROM members m
     JOIN collectives c ON c.id = m.collective_id AND c.status = 'active'
     WHERE m.email = ? AND m.removed_at IS NULL
     ORDER BY c.name

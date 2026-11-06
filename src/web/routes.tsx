@@ -16,7 +16,7 @@ import {
   accountsFromCookie, checkCode, createSession, destroySession, issueCode,
   type Account, type LoginCodeRow,
 } from '../auth.js'
-import { forwardMessage, outboundFrom, replyAllCc, replyTarget, sendCollectiveReply, sendComposed, signatureFor, signOffDrift } from '../outbound.js'
+import { forwardMessage, outboundFrom, publicAddress, replyAllCc, replyTarget, sendCollectiveReply, sendComposed, signatureFor, signOffDrift } from '../outbound.js'
 import { digestTick, receivingAddress, sendOnboarding, trialTick } from '../notify.js'
 import { mentionLabels, noteParts } from '../mentions.js'
 import { addNote } from '../notes.js'
@@ -333,7 +333,8 @@ app.get('/', async (c) => {
               {memberships.map((m) => (
                 <a class="chooser-item" href={`/inbox/${m.collective_slug}`}>
                   <b>{m.collective_name}</b>
-                  <small>{m.collective_slug}@{cfg.emailDomain}</small>
+                  <small>{publicAddress({ slug: m.collective_slug, plan: m.collective_plan, custom_domain: m.collective_custom_domain,
+                    custom_local: m.collective_custom_local, domain_status: m.collective_domain_status })}</small>
                 </a>
               ))}
             </div>
@@ -569,8 +570,8 @@ app.get('/logout', (c) => doLogout(c)) // force sign-out by URL — everything
 app.get('/mailboxes', async (c) => {
   const emails = c.get('accounts').map((a) => a.email)
   if (emails.length === 0) return c.json({ mailboxes: [] })
-  const rows = await all<{ slug: string; name: string; email: string; needs_reply: number; mine: number }>(`
-    SELECT c.slug, c.name, m.email,
+  const rows = await all<{ slug: string; name: string; email: string; needs_reply: number; mine: number } & Pick<Collective, 'plan' | 'custom_domain' | 'custom_local' | 'domain_status'>>(`
+    SELECT c.slug, c.name, c.plan, c.custom_domain, c.custom_local, c.domain_status, m.email,
       (SELECT COUNT(*) FROM threads t WHERE t.collective_id = c.id AND t.status = 'needs_reply') AS needs_reply,
       (SELECT COUNT(*) FROM threads t WHERE t.collective_id = c.id AND t.assignee_member_id = m.id AND t.status IN ('needs_reply','answered')) AS mine
     FROM members m JOIN collectives c ON c.id = m.collective_id
@@ -580,7 +581,8 @@ app.get('/mailboxes', async (c) => {
   // two signed-in accounts can share a collective — one entry is enough
   const seen = new Set<string>()
   const mailboxes = rows.filter((r) => !seen.has(r.slug) && seen.add(r.slug))
-    .map((r) => ({ slug: r.slug, name: r.name, email: r.email, needsReply: r.needs_reply, mine: r.mine }))
+    
+    .map((r) => ({ slug: r.slug, name: r.name, address: publicAddress(r), email: r.email, needsReply: r.needs_reply, mine: r.mine }))
   return c.json({ mailboxes, accounts: emails.length })
 })
 
@@ -699,12 +701,12 @@ app.get('/join/:token', async (c) => {
       {shared ? (
         <p class="muted">
           {inviter ? `${memberName(inviter)} invited you` : 'You were invited'} to read{invite.can_send ? ', comment on and answer' : ' and comment on'} one email
-          thread of <b>{collective.name}</b> ({collective.slug}@{cfg.emailDomain}). You'll see this thread only.
+          thread of <b>{collective.name}</b> ({publicAddress(collective)}). You'll see this thread only.
         </p>
       ) : (
       <p class="muted">
         {inviter ? `${memberName(inviter)} invited you to follow` : 'You were invited to follow'} email
-        sent to <b>{collective.slug}@{cfg.emailDomain}</b>.
+        sent to <b>{publicAddress(collective)}</b>.
       </p>
       )}
       {shared ? (
@@ -851,7 +853,7 @@ app.post('/a/:token', async (c) => {
     return c.html(
       <AuthCard title="Sent">
         <h1>✓ Sent to {thread.counterpart_email}</h1>
-        <p class="muted">Your reply went out as {collective.slug}@{cfg.emailDomain}, and is now in the thread.</p>
+        <p class="muted">Your reply went out as {publicAddress(collective)}, and is now in the thread.</p>
         <a class="btn" href={`/inbox/${collective.slug}/thread/${thread.id}`}>Open the thread</a>
       </AuthCard>,
     )
@@ -907,7 +909,7 @@ async function oneClick(c: Context<Env>): Promise<Response> {
           {data.files?.length ? (
             <p class="fineprint">Attached: {data.files.map((f) => f.filename).join(', ')}</p>
           ) : null}
-          <p class="fineprint">Goes to {thread.counterpart_email} as {collective.slug}@{cfg.emailDomain}, signed by {memberName(member)}.</p>
+          <p class="fineprint">Goes to {thread.counterpart_email} as {publicAddress(collective)}, signed by {memberName(member)}.</p>
           <div class="btn-row">
             <button class="btn" type="submit" name="action" value="send" data-busy="Sending…">Send it now</button>
             <button class="linkish danger" type="submit" name="action" value="discard"
@@ -1652,9 +1654,9 @@ app.get('/inbox/:addr', async (c) => {
             {f === 'needs_reply'
               ? '🎉 Nothing needs a reply. The inbox is at zero.'
               : f === 'inbox' && !q && !tag && !assignedTo
-                ? (counts.all ? '🎉 Nothing open. Closed threads are under All.' : `No conversations yet — email ${collective.slug}@${cfg.emailDomain} to start one.`)
+                ? (counts.all ? '🎉 Nothing open. Closed threads are under All.' : `No conversations yet — email ${publicAddress(collective)} to start one.`)
               : f === 'all'
-                ? `No conversations yet — email ${collective.slug}@${cfg.emailDomain} to start one.`
+                ? `No conversations yet — email ${publicAddress(collective)} to start one.`
                 : 'No threads here.'}
           </div>
         ) : threads.map((th) => (
@@ -4583,7 +4585,7 @@ app.get('/inbox/:addr/notifications', async (c) => {
               <button class="btn small" type="submit" data-busy="Saving…">Save</button>
             </div>
           </form>
-          <p class="fineprint">Whatever the level, you're always notified immediately on threads assigned to you. Notification emails can be answered directly: replying sends your answer to the original sender as {collective.slug}@{cfg.emailDomain} and assigns the thread to you.</p>
+          <p class="fineprint">Whatever the level, you're always notified immediately on threads assigned to you. Notification emails can be answered directly: replying sends your answer to the original sender as {publicAddress(collective)} and assigns the thread to you.</p>
         </section>
 
         {mutes.length ? (
@@ -4651,11 +4653,11 @@ app.get('/inbox/:addr/profile', async (c) => {
         </section>
         <section class="card">
           <h2>Your membership in {collective.name}</h2>
-          <p class="muted">You're {withArticle(ROLE_LABELS[member.role])} here. Leaving removes your access to {collective.slug}@{cfg.emailDomain} until someone invites you back — the collective's mail stays untouched.</p>
+          <p class="muted">You're {withArticle(ROLE_LABELS[member.role])} here. Leaving removes your access to {publicAddress(collective)} until someone invites you back — the collective's mail stays untouched.</p>
           <div class="btn-row">
             <form method="post" action={`${base}/leave`}>
               <button class="btn small ghost danger-btn" type="submit" disabled={lastAdmin}
-                data-confirm={`Leave ${collective.name}? You'll lose access to ${collective.slug}@${cfg.emailDomain} until someone invites you back.`}>
+                data-confirm={`Leave ${collective.name}? You'll lose access to ${publicAddress(collective)} until someone invites you back.`}>
                 Leave this collective
               </button>
             </form>

@@ -452,3 +452,17 @@ test('inbox rows carry swipe actions: you first, then whoever you assign to; rea
   assert.match(rtpl, new RegExp(`data-close="" [^>]*data-me="${carol.lastId}"`))
   assert.doesNotMatch(rtpl, /swipe-person/)
 })
+
+test('the header shows the custom address once its domain is verified', async () => {
+  const fx = await fixture()
+  const head = async () => {
+    const html = await (await app.request(`/inbox/${fx.slug}`, { headers: { cookie: `requests_sid=${fx.alice.sid}` } })).text()
+    return html.match(/class="m-addr"[^>]*>([^<]+)</)![1]
+  }
+  await run("UPDATE collectives SET plan = 'pro', custom_local = 'hello', custom_domain = 'tv.example', domain_status = 'pending' WHERE id = ?", [fx.collective.id])
+  assert.equal(await head(), `${fx.slug}@collective.email`, 'not verified yet: mail still goes out as slug@')
+  await run("UPDATE collectives SET domain_status = 'verified' WHERE id = ?", [fx.collective.id])
+  assert.equal(await head(), 'hello@tv.example')
+  const boxes = await (await app.request('/mailboxes', { headers: { cookie: `requests_sid=${fx.alice.sid}` } })).json() as any
+  assert.equal(boxes.mailboxes.find((b: any) => b.slug === fx.slug).address, 'hello@tv.example')
+})
