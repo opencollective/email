@@ -481,3 +481,114 @@ test('the skill tells cron-shaped runners to never long-poll', async () => {
   await json(`/${fx.slug}/api/agent/events?since=999999&wait=0`, { headers: { authorization: `Bearer ${a.token}` } })
   assert.ok(Date.now() - t0 < 1500, 'an empty wait=0 poll answers at once')
 })
+
+test('a draft carries files: the agent attaches them, "Use this draft" takes them into the reply', async () => {
+  const fx = await fixture()
+  const a = await joinedAgent(fx)
+  const H = { authorization: `Bearer ${a.token}` }
+  const api = `/${fx.slug}/api/agent/threads/${fx.thread.id}/draft`
+  const cookie = { cookie: `requests_sid=${fx.sid}` }
+
+  // the skill says how
+  const skill = await (await app.request('/skill.md')).text()
+  assert.match(skill, /## Preparing a draft reply \(text, files, images\)/)
+  assert.match(skill, /draft\/attachments\?filename=/)
+  assert.match(skill, /"Hi Marie,\\n\\nYes/, 'the JSON example keeps its escaped newlines')
+
+  // no draft, no attachment
+  const early = await json(`${api}/attachments?filename=a.pdf`, { method: 'POST', headers: { ...H, 'content-type': 'application/pdf' }, body: 'PDF' })
+  assert.equal(early.status, 409)
+
+  const d1 = await json(api, { method: 'POST', headers: { ...H, 'content-type': 'application/json' }, body: JSON.stringify({ body: 'Hi Miriam, see attached.' }) })
+  assert.equal(d1.status, 200)
+  assert.deepEqual(d1.body.attachments, [])
+
+  // raw bytes, one file per request — and a multipart form for several
+  const pdf = await json(`${api}/attachments?filename=${encodeURIComponent('invoice 42.pdf')}`, { method: 'POST', headers: { ...H, 'content-type': 'application/pdf' }, body: '%PDF-1.4 fake' })
+  assert.equal(pdf.status, 200)
+  assert.equal(pdf.body.attachments[0].filename, 'invoice 42.pdf')
+  const form = new FormData()
+  form.append('files', new File([new Uint8Array([137, 80, 78, 71])], 'plan.png', { type: 'image/png' }))
+  form.append('files', new File(['a,b\n1,2\n'], 'statement.csv', { type: 'text/csv' }))
+  const multi = await json(`${api}/attachments`, { method: 'POST', headers: H, body: form })
+  assert.deepEqual(multi.body.attachments.map((x: any) => x.filename), ['invoice 42.pdf', 'plan.png', 'statement.csv'])
+  // the mistakes an agent makes are answered in words
+  assert.equal((await json(`${api}/attachments`, { method: 'POST', headers: { ...H, 'content-type': 'application/pdf' }, body: 'x' })).status, 400)
+  assert.equal((await json(`${api}/attachments?filename=a.pdf`, { method: 'POST', headers: { ...H, 'content-type': 'application/json' }, body: '{"file":"…"}' })).status, 415)
+  assert.equal((await json(`${api}/attachments?filename=big.bin`, { method: 'POST', headers: { ...H, 'content-type': 'application/octet-stream' }, body: new Uint8Array(4 * 1024 * 1024 + 1) })).status, 413)
+
+  // one taken back; a new text keeps the files
+  const csv = multi.body.attachments[2]
+  const less = await json(`${api}/attachments/${csv.id}`, { method: 'DELETE', headers: H })
+  assert.deepEqual(less.body.attachments.map((x: any) => x.filename), ['invoice 42.pdf', 'plan.png'])
+  const d2 = await json(api, { method: 'POST', headers: { ...H, 'content-type': 'application/json' }, body: JSON.stringify({ body: 'Hi Miriam, the invoice and the plan are attached.' }) })
+  assert.notEqual(d2.body.draft_id, d1.body.draft_id)
+  assert.deepEqual(d2.body.attachments.map((x: any) => x.filename), ['invoice 42.pdf', 'plan.png'])
+  const mine = await json(api, { headers: H })
+  assert.equal(mine.body.body, 'Hi Miriam, the invoice and the plan are attached.')
+  assert.equal(mine.body.attachments.length, 2)
+
+  // the human sees the files on the proposal, and can open them
+  const page = await (await app.request(`/inbox/${fx.slug}/thread/${fx.thread.id}`, { headers: cookie })).text()
+  const ids = [...page.matchAll(/data-draft-att="\d+" data-att-id="(\d+)" data-att-name="([^"]+)"/g)].map((m) => ({ id: m[1], name: m[2] }))
+  assert.deepEqual(ids.map((x) => x.name), ['invoice 42.pdf', 'plan.png'])
+  const dl = await app.request(`/draft-attachment/${ids[0].id}`, { headers: cookie })
+  assert.equal(await dl.text(), '%PDF-1.4 fake')
+  assert.equal((await app.request(`/draft-attachment/${ids[0].id}`)).status, 302, 'signed out: to the login')
+
+  // "Use this draft" posts their ids with the reply; a foreign id is ignored
+  const other = await fixture()
+  const stray = await run('INSERT INTO thread_drafts (thread_id, member_id, body, created_at) VALUES (?, ?, ?, ?)', [other.thread.id, other.adminId, 'x', now()])
+  const strayAtt = await run("INSERT INTO draft_attachments (draft_id, filename, content_type, size, path, created_at) VALUES (?, 'secret.txt', 'text/plain', 1, '/nope', ?)", [stray.lastId, now()])
+  const reply = new FormData()
+  reply.append('body', 'Hi Miriam, the invoice and the plan are attached.')
+  for (const x of ids) reply.append('draft_att', x.id)
+  reply.append('draft_att', String(strayAtt.lastId))
+  reply.append('files', new File(['by hand'], 'extra.txt', { type: 'text/plain' }))
+  const sent = await app.request(`/inbox/${fx.slug}/thread/${fx.thread.id}/reply`, { method: 'POST', headers: cookie, body: reply })
+  assert.match(decodeURIComponent(sent.headers.get('location')!), /Reply sent/)
+  const out = (await get<any>("SELECT id FROM messages WHERE thread_id = ? AND direction = 'outbound'", [fx.thread.id]))!
+  const atts = await all<any>('SELECT filename, content_type FROM attachments WHERE message_id = ? ORDER BY id', [out.id])
+  assert.deepEqual(atts.map((x) => x.filename), ['invoice 42.pdf', 'plan.png', 'extra.txt'])
+  assert.equal(atts[1].content_type, 'image/png')
+  // the reply settled the draft, files included
+  assert.equal((await json(api, { headers: H })).status, 404)
+  assert.equal((await get<any>('SELECT COUNT(*) AS n FROM draft_attachments WHERE draft_id = ?', [d2.body.draft_id]))!.n, 0)
+  assert.equal((await app.request(`/draft-attachment/${ids[0].id}`, { headers: cookie })).status, 404)
+})
+
+test('a commenter proposes a reply with files, and withdrawing a draft takes its files along', async () => {
+  const fx = await fixture()
+  const email = `com-${uniq()}@example.org`
+  const com = await run('INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [fx.collective.id, email, 'Cedric', 'commenter', 'every', now()])
+  const cookie = { cookie: `requests_sid=${await createSession(email)}` }
+  const url = `/inbox/${fx.slug}/thread/${fx.thread.id}`
+  const form = new FormData()
+  form.append('body', 'Dear Miriam, here is the floor plan.')
+  form.append('files', new File(['plan'], 'floor.pdf', { type: 'application/pdf' }))
+  await app.request(`${url}/propose`, { method: 'POST', headers: cookie, body: form })
+  const draft = (await get<any>('SELECT id FROM thread_drafts WHERE thread_id = ? AND member_id = ?', [fx.thread.id, com.lastId]))!
+  const att = (await get<any>('SELECT id, filename FROM draft_attachments WHERE draft_id = ?', [draft.id]))!
+  assert.equal(att.filename, 'floor.pdf')
+  // their own form comes back with the file, removable
+  const own = await (await app.request(url, { headers: cookie })).text()
+  assert.match(own, new RegExp(`name="remove_att" value="${att.id}"`))
+  // proposing again without it removes it
+  const again = new FormData()
+  again.append('body', 'Dear Miriam, never mind the plan.')
+  again.append('remove_att', String(att.id))
+  await app.request(`${url}/propose`, { method: 'POST', headers: cookie, body: again })
+  const d2 = (await get<any>('SELECT id FROM thread_drafts WHERE thread_id = ? AND member_id = ?', [fx.thread.id, com.lastId]))!
+  assert.equal((await get<any>('SELECT COUNT(*) AS n FROM draft_attachments WHERE draft_id IN (?, ?)', [draft.id, d2.id]))!.n, 0)
+
+  // an agent withdraws: draft and files gone
+  const a = await joinedAgent(fx)
+  const H = { authorization: `Bearer ${a.token}` }
+  const api = `/${fx.slug}/api/agent/threads/${fx.thread.id}/draft`
+  const d = await json(api, { method: 'POST', headers: { ...H, 'content-type': 'application/json' }, body: '{"body":"Draft"}' })
+  await json(`${api}/attachments?filename=a.txt`, { method: 'POST', headers: { ...H, 'content-type': 'text/plain' }, body: 'hello' })
+  assert.equal((await json(api, { method: 'DELETE', headers: H })).status, 200)
+  assert.equal((await get<any>('SELECT COUNT(*) AS n FROM draft_attachments WHERE draft_id = ?', [d.body.draft_id]))!.n, 0)
+  assert.equal((await json(api, { headers: H })).status, 404)
+})

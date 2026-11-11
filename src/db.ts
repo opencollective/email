@@ -226,6 +226,14 @@ const SCHEMA = [
     created_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_thread_drafts_thread ON thread_drafts(thread_id)`,
+  // files a proposed reply carries; they go out with the reply that uses it
+  `CREATE TABLE IF NOT EXISTS draft_attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    draft_id INTEGER NOT NULL,
+    filename TEXT, content_type TEXT, size INTEGER, path TEXT,
+    created_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_draft_attachments_draft ON draft_attachments(draft_id)`,
   // one ordered feed of things an agent can be woken by — a single sequence,
   // so the API has ONE cursor and new event types are just new rows
   // which threads a GUEST member may see — guests are commenters whose world

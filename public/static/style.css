@@ -1419,6 +1419,8 @@ button.row.new-thread-row {
 .pd-head { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-bottom: 1.5px solid var(--line-soft); font-size: 13px; flex-wrap: wrap; }
 .pd-who small { color: var(--muted); }
 .pd-body { padding: 12px 14px; font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 72ch; }
+.pd-atts { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 14px 12px; }
+.proposed-draft.folded .pd-atts { display: none; }
 .pd-foot { display: flex; align-items: center; gap: 16px; padding: 8px 14px 10px; border-top: 1.5px solid var(--line-soft); }
 .pd-use { font-size: 13px; font-weight: 600; }
 /* the head is the fold control, like a message's */

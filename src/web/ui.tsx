@@ -701,6 +701,27 @@ root.querySelectorAll('[data-use-draft]').forEach((b) => {
     const tab = document.querySelector('[data-tab="reply"]');
     if (tab) tab.click();
     ta.value = body.textContent.trim() + '\\n\\n' + (ta.getAttribute('data-signature') || '');
+    // its files come along: each a chip in the reply's attachments, × to leave one out
+    const slot = ta.form.querySelector('[data-att-draft]');
+    if (slot) {
+      slot.innerHTML = '';
+      document.querySelectorAll('[data-draft-att="' + b.getAttribute('data-use-draft') + '"]').forEach((f) => {
+        const chip = document.createElement('span');
+        chip.className = 'att-pick';
+        chip.title = f.getAttribute('data-att-name');
+        const inp = document.createElement('input');
+        inp.type = 'hidden'; inp.name = 'draft_att'; inp.value = f.getAttribute('data-att-id');
+        const name = document.createElement('span');
+        name.className = 'att-pick-name';
+        name.textContent = f.getAttribute('data-att-name');
+        const x = document.createElement('button');
+        x.type = 'button'; x.className = 'att-x'; x.textContent = '×';
+        x.setAttribute('aria-label', 'Remove ' + f.getAttribute('data-att-name'));
+        x.addEventListener('click', () => chip.remove());
+        chip.append(inp, name, x);
+        slot.appendChild(chip);
+      });
+    }
     autoGrow(ta);
     ta.focus();
     ta.scrollIntoView({ block: 'center' });
@@ -1403,7 +1424,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '113'
+export const ASSET_V = '114'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">

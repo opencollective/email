@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import { cfg } from './config.js'
 import { addEvent, all, get, getThread, lastInboundMessage, messageAttachments, run, setStatus, storeAttachment, type Collective, type Member, type Message, type Thread } from './db.js'
 import { readBlob } from './storage.js'
+import { deleteDrafts } from './drafts.js'
 import { escapeHtml, now, splitQuotedTail } from './util.js'
 import { assertCanSend, assertRecipientCap } from './billing.js'
 
@@ -203,7 +204,7 @@ export async function sendCollectiveReply(
   await setStatus(threadId, 'answered', member.id, true)
   await addEvent(threadId, member.id, 'replied', { via })
   // any proposed drafts are settled the moment a real reply goes out
-  await run('DELETE FROM thread_drafts WHERE thread_id = ?', [threadId]).catch(() => {})
+  await deleteDrafts({ threadId }).catch(() => {})
 
   return (await get<Message>('SELECT * FROM messages WHERE id = ?', [r.lastId]))!
 }

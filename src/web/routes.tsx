@@ -16,6 +16,7 @@ import {
   accountsFromCookie, checkCode, createSession, destroySession, issueCode,
   type Account, type LoginCodeRow,
 } from '../auth.js'
+import { addDraftAttachment, deleteDrafts, draftAttachments, loadDraftFiles, proposeDraft, removeDraftAttachment, type DraftAttachment } from '../drafts.js'
 import { forwardMessage, outboundFrom, publicAddress, replyAllCc, replyTarget, sendCollectiveReply, sendComposed, signatureFor, signOffDrift } from '../outbound.js'
 import { digestTick, receivingAddress, sendOnboarding, trialTick } from '../notify.js'
 import { mentionLabels, noteParts } from '../mentions.js'
@@ -1098,6 +1099,24 @@ app.get('/attachment/:id', async (c) => {
   })
 })
 
+/** A file carried by a proposed draft — for whoever can see its thread. */
+app.get('/draft-attachment/:id', async (c) => {
+  if (c.get('accounts').length === 0) return c.redirect('/login')
+  const att = await get<DraftAttachment & { thread_id: number }>(
+    'SELECT da.*, d.thread_id FROM draft_attachments da JOIN thread_drafts d ON d.id = da.draft_id WHERE da.id = ?', [Number(c.req.param('id'))])
+  const thread = att ? await getThread(att.thread_id) : undefined
+  if (!att || !thread) return c.notFound()
+  const viewer = await memberAmongAccounts(c, thread.collective_id)
+  if (!viewer || !(await canSeeThread(viewer, thread.id))) return c.notFound()
+  const content = await readBlob(att.path)
+  if (!content) return c.notFound()
+  return c.body(new Uint8Array(content), 200, {
+    'Content-Type': att.content_type,
+    'Content-Disposition': `attachment; filename="${att.filename.replace(/"/g, '')}"`,
+    'Cache-Control': 'private, no-store',
+  })
+})
+
 // ---------- platform admin ----------
 
 type AdminRow = Collective & { members: number; threads: number; last_sent: number | null; last_received: number | null }
@@ -1767,10 +1786,11 @@ const threadVersionQuery = (threadId: number) => ({
   sql: `SELECT (SELECT COALESCE(MAX(id), 0) FROM messages WHERE thread_id = ?) AS m,
                (SELECT COALESCE(MAX(id), 0) FROM notes WHERE thread_id = ?) AS n,
                (SELECT COALESCE(MAX(id), 0) FROM events WHERE thread_id = ?) AS e,
-               (SELECT COALESCE(MAX(id), 0) FROM thread_drafts WHERE thread_id = ?) AS d`,
-  args: [threadId, threadId, threadId, threadId] as (string | number)[],
+               (SELECT COALESCE(MAX(id), 0) FROM thread_drafts WHERE thread_id = ?) AS d,
+               (SELECT COALESCE(SUM(da.id), 0) FROM draft_attachments da JOIN thread_drafts td ON td.id = da.draft_id WHERE td.thread_id = ?) AS a`,
+  args: [threadId, threadId, threadId, threadId, threadId] as (string | number)[],
 })
-const threadVersion = (r: { m: number; n: number; e: number; d: number }) => `${r.m}-${r.n}-${r.e}-${r.d}`
+const threadVersion = (r: { m: number; n: number; e: number; d: number; a: number }) => `${r.m}-${r.n}-${r.e}-${r.d}-${r.a}`
 
 const listVersionQuery = (collectiveId: number, guestId = 0) => ({
   sql: `SELECT COUNT(*) AS c, COALESCE(MAX(updated_at), 0) AS u, COALESCE(MAX(last_message_at), 0) AS l
@@ -2121,6 +2141,9 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   const rulesAll = batch[9] as Rule[]
   // replies proposed by agents (or teammates), waiting for a human to send
   const proposedDrafts = batch[11] as { id: number; member_id: number; body: string; created_at: number }[]
+  // the files they carry — they follow the draft into the reply that uses it
+  const draftAtts = await draftAttachments(proposedDrafts.map((d) => d.id))
+  const myProposal = proposedDrafts.find((d) => d.member_id === member.id)
   // every other thread this contact is part of — sender OR merely Cc'd (the
   //  Odoo pattern: a quote emailed to the contact with the collective in copy)
   const otherAll = invQ ? (batch[10] as Thread[]) : []
@@ -2469,6 +2492,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               n: Math.max(0, ...notes.map((n) => n.id)),
               e: Math.max(0, ...(batch[2] as { id?: number }[]).map((ev) => ev.id ?? 0)),
               d: Math.max(0, ...proposedDrafts.map((d) => d.id)),
+              a: [...draftAtts.values()].flat().reduce((sum, x) => sum + x.id, 0),
             })}>
             {(() => { return null })()}
             {groups.map((g, gi) => <>
@@ -2728,11 +2752,20 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                     </div>
                     <div class="pd-peek">{excerpt(d.body, 120)}</div>
                     <div class="pd-body" data-draft-body={String(d.id)}>{d.body}</div>
+                    {(draftAtts.get(d.id) ?? []).length ? (
+                      <div class="pd-atts">
+                        {(draftAtts.get(d.id) ?? []).map((a) => (
+                          <a class="chip att" href={`/draft-attachment/${a.id}`} title={a.filename} data-draft-att={String(d.id)} data-att-id={String(a.id)} data-att-name={a.filename}>
+                            <Icon name="clip" /><span class="att-name">{a.filename}</span> <small>{Math.ceil(a.size / 1024)} KB</small>
+                          </a>
+                        ))}
+                      </div>
+                    ) : null}
                     {/* the action AFTER the text — you read a proposal before acting on it */}
                     <div class="pd-foot">
                       {sends ? (
                         <button class="linkish pd-use" type="button" data-use-draft={String(d.id)}
-                          title="Copy this draft into the reply box below, where you can edit and send it">Use this draft ↓</button>
+                          title="Copy this draft and its attachments into the reply box below, where you can edit and send it">Use this draft ↓</button>
                       ) : null}
                     </div>
                   </div>
@@ -2823,12 +2856,12 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
               <ComposerBar label="Add internal note" busy="Saving…" attach={false} hint="@mention a member to email them this note right away." />
             </form>
             {!sends ? (
-              <form method="post" action={`${base}/thread/${thread.id}/propose`} data-pane="propose" class="hidden">
+              <form method="post" action={`${base}/thread/${thread.id}/propose`} data-pane="propose" class="hidden" enctype="multipart/form-data">
                 <div class="c-row"><span class="c-k">To</span><span class="c-static c-to">{replyTo.email || 'unknown'}</span></div>
                 <textarea name="body" rows={6} placeholder={`Write the reply you'd send to ${replyFirst}…`} data-draft="propose" required>{
-                  proposedDrafts.find((d) => d.member_id === member.id)?.body ?? `\n\n${signature}`
+                  myProposal?.body ?? `\n\n${signature}`
                 }</textarea>
-                <ComposerBar label="Propose this reply" busy="Proposing…" attach={false}
+                <ComposerBar label="Propose this reply" busy="Proposing…" existing={myProposal ? draftAtts.get(myProposal.id) ?? [] : []}
                   note={<span>Nothing is sent: a teammate who can send reviews it and sends it as <b>{collectiveAddr}</b>.</span>} />
               </form>
             ) : null}
@@ -3072,10 +3105,17 @@ async function uploadedFiles(body: Record<string, unknown>, already = 0) {
   })))
 }
 
+/** The files of a proposed draft that "Use this draft" carried into the form
+ *  (`draft_att` = their ids) — only those of drafts on this very thread. */
+const draftFilesOf = (threadId: number, body: Record<string, unknown>) => {
+  const raw = body['draft_att']
+  return loadDraftFiles(threadId, [...new Set((Array.isArray(raw) ? raw : raw ? [raw] : []).map((x) => Number(x)).filter((n) => n > 0))])
+}
+
 /** One attachment field for every composer (new email, draft, reply): pick
  *  files, see each one, take any back before sending. Files already stored
  *  on a draft come with a remove toggle (a checkbox, so it works without JS). */
-const AttachField: FC<{ existing?: Attachment[] }> = ({ existing }) => (
+const AttachField: FC<{ existing?: { id: number; filename: string }[] }> = ({ existing }) => (
   <span class="attach-field" data-attach>
     <label class="file-label"><Icon name="clip" /><span class="file-text">Attach</span><input type="file" name="files" multiple class="file-input" /></label>
     {(existing ?? []).map((a) => (
@@ -3084,6 +3124,8 @@ const AttachField: FC<{ existing?: Attachment[] }> = ({ existing }) => (
         <span class="att-pick-name">{a.filename}</span><span class="att-x" aria-hidden="true">×</span>
       </label>
     ))}
+    {/* a proposed draft's files, once "Use this draft" brought them along */}
+    <span class="att-new" data-att-draft></span>
     <span class="att-new" data-att-list></span>
   </span>
 )
@@ -3094,7 +3136,7 @@ const AttachField: FC<{ existing?: Attachment[] }> = ({ existing }) => (
 const ComposerBar: FC<{
   label?: string; busy?: string
   save?: { label: string; value: string }
-  attach?: boolean; existing?: Attachment[]
+  attach?: boolean; existing?: { id: number; filename: string }[]
   note?: Child; hint?: string
 }> = (p) => (
   <div class="composer-bar">
@@ -3116,7 +3158,9 @@ app.post('/inbox/:addr/thread/:id/reply', async (c) => {
   const base = `/inbox/${t.collective.slug}`
   const body = await c.req.parseBody({ all: true })
   try {
-    const attachments = await uploadedFiles(body)
+    // a used draft's files first, then whatever was added by hand
+    const fromDraft = await draftFilesOf(thread.id, body)
+    const attachments = [...fromDraft, ...await uploadedFiles(body, fromDraft.reduce((n, f) => n + f.content.length, 0))]
     const cc = parseEmails(String(body.cc || ''))
     const bcc = parseEmails(String(body.bcc || ''))
     await sendCollectiveReply(t.collective, thread.id, String(body.body || ''), t.member, 'web', attachments, cc, bcc)
@@ -3166,11 +3210,24 @@ app.post('/inbox/:addr/thread/:id/propose', async (c) => {
   if (blocked) return blocked
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
-  const text = String((await c.req.parseBody()).body || '').trim().slice(0, 50_000)
+  const body = await c.req.parseBody({ all: true })
+  const text = String(body.body || '').trim().slice(0, 50_000)
   const back = `/inbox/${t.collective.slug}/thread/${thread.id}`
   if (!text) return c.redirect(back)
-  await run('DELETE FROM thread_drafts WHERE thread_id = ? AND member_id = ?', [thread.id, t.member.id])
-  await run('INSERT INTO thread_drafts (thread_id, member_id, body, created_at) VALUES (?, ?, ?, ?)', [thread.id, t.member.id, text, now()])
+  const draftId = await proposeDraft(thread.id, t.member.id, text)
+  // its files: drop the ticked ones, add the new — they go out with the reply
+  const rawRemove = body['remove_att']
+  const removeIds = new Set((Array.isArray(rawRemove) ? rawRemove : rawRemove ? [rawRemove] : []).map((x) => Number(x)))
+  const kept: DraftAttachment[] = []
+  for (const a of (await draftAttachments([draftId])).get(draftId) ?? []) {
+    if (removeIds.has(a.id)) await removeDraftAttachment(a)
+    else kept.push(a)
+  }
+  try {
+    for (const f of await uploadedFiles(body, kept.reduce((n, a) => n + a.size, 0))) await addDraftAttachment(draftId, f.filename, f.contentType, f.content)
+  } catch (err) {
+    return c.redirect(`${back}?m=` + encodeURIComponent(`Reply proposed, but ${err instanceof Error ? err.message : 'the attachments could not be read.'}`))
+  }
   return c.redirect(`${back}?m=` + encodeURIComponent('Reply proposed ✓ — a teammate who can send will review it and send it.'))
 })
 
@@ -3339,7 +3396,8 @@ app.post('/inbox/:addr/thread/:id/draft', async (c) => {
     } else kept.push(a)
   }
   try {
-    const added = await uploadedFiles(body, kept.reduce((s, a) => s + a.size, 0))
+    const fromDraft = await draftFilesOf(thread.id, body)
+    const added = [...fromDraft, ...await uploadedFiles(body, [...kept.map((a) => a.size), ...fromDraft.map((f) => f.content.length)].reduce((s, n) => s + n, 0))]
     for (const [i, f] of added.entries()) await storeAttachment(draft.id, f.filename, f.contentType, f.content, kept.length + i)
   } catch (err) {
     return c.redirect(`${base}/thread/${thread.id}?m=` + encodeURIComponent(err instanceof Error ? err.message : 'Could not read the attachments.'))
@@ -3592,8 +3650,9 @@ app.post('/inbox/:addr/thread/:id/draft/:draftId/dismiss', async (c) => {
   if (blocked) return blocked
   const thread = await threadOf(c, t)
   if (!thread) return c.notFound()
-  await run(`DELETE FROM thread_drafts WHERE id = ? AND thread_id = ?${canSendRole(t.member.role) ? '' : ' AND member_id = ?'}`,
+  const own = await get<{ id: number }>(`SELECT id FROM thread_drafts WHERE id = ? AND thread_id = ?${canSendRole(t.member.role) ? '' : ' AND member_id = ?'}`,
     canSendRole(t.member.role) ? [Number(c.req.param('draftId')), thread.id] : [Number(c.req.param('draftId')), thread.id, t.member.id])
+  if (own) await deleteDrafts({ draftId: own.id })
   return c.redirect(`/inbox/${t.collective.slug}/thread/${thread.id}`)
 })
 

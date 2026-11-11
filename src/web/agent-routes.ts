@@ -1,11 +1,12 @@
 import { escapeHtml } from '../util.js'
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import {
   AGENT_ROLES, agentAuth, agentCursor, agentEvents, claimAgentInvite, findInvite, threadJson,
 } from '../agents.js'
 import { all, canSeeThread, get, getThread, memberMap, recordThreadSeenUpTo, run, type Message, type Thread } from '../db.js'
 import { saveBlob } from '../storage.js'
 import { addNote } from '../notes.js'
+import { addDraftAttachment, deleteDrafts, draftAttachments, memberDraft, proposeDraft, removeDraftAttachment, type DraftAttachment } from '../drafts.js'
 import { cfg } from '../config.js'
 import { now } from '../util.js'
 
@@ -18,7 +19,8 @@ const SKILL_MD = `# collective.email — agent skill
 
 collective.email gives a collective one shared email address. You are (or can
 become) a MEMBER of one collective: you see its threads, and depending on your
-role you can add internal notes and prepare draft replies for a human to send.
+role you can add internal notes and prepare draft replies — with their
+attachments — for a human to send.
 
 ## Joining
 
@@ -106,6 +108,60 @@ returns.
 A note is internal discussion. A draft is a proposed reply: it appears on the
 thread for a human to review and send — nothing you write leaves the
 collective by itself.
+
+## Preparing a draft reply (text, files, images)
+
+A draft is the reply you propose to the person who wrote in. A teammate who
+can send reads it on the thread, presses "Use this draft", edits if needed,
+and sends it as the collective. You have ONE draft per thread.
+
+**1. Write the text**
+
+    POST ${cfg.baseUrl}/<slug>/api/agent/threads/<id>/draft
+    Content-Type: application/json
+    {"body": "Hi Marie,\\n\\nYes, the room is free on Friday…"}
+
+Plain text, exactly as it should be sent (no Markdown, no HTML — it goes out
+as written). Posting again REPLACES the text and keeps the files already
+attached. The reply goes to the thread's sender, with the thread's subject:
+you cannot change the recipients or the subject — if they must change, say so
+in an internal note. Don't add a signature: the member who sends it signs.
+
+**2. Attach files and images** (the draft must exist first)
+
+    POST ${cfg.baseUrl}/<slug>/api/agent/threads/<id>/draft/attachments?filename=invoice-42.pdf
+    Content-Type: application/pdf
+    <the raw bytes of the file>
+
+One file per request: the RAW bytes as the request body, its media type in
+Content-Type, its name in \`filename\` (URL-encoded). With curl:
+
+    curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/pdf" \\
+      --data-binary @invoice-42.pdf \\
+      "${cfg.baseUrl}/<slug>/api/agent/threads/<id>/draft/attachments?filename=invoice-42.pdf"
+
+(A \`multipart/form-data\` body with one or more \`files\` fields works too:
+\`curl -F files=@a.pdf -F files=@b.csv …/draft/attachments\`.)
+
+- Any file type. **Images** (image/png, image/jpeg, image/gif, image/webp)
+  are attached the same way and are shown INSIDE the email, under your text,
+  in the order you attached them; other files arrive as normal attachments.
+  There is no way to place an image between two paragraphs.
+- Limits: 4 MB per request, 15 MB for all the files of one draft.
+- The response lists the draft's attachments, each with an \`id\`.
+- If your text says "attached you'll find…", attach it. A draft that
+  promises files it does not carry makes the human do your work.
+
+**3. Check, fix, withdraw**
+
+    GET    …/threads/<id>/draft                        → your draft: body + attachments
+    DELETE …/threads/<id>/draft/attachments/<att_id>   → remove one file
+    DELETE …/threads/<id>/draft                        → withdraw the draft and its files
+
+**4. Tell the humans** — leave an internal note @mentioning whoever asked,
+saying the draft is ready and what to check before sending. When someone
+uses your draft, its text AND its attachments go into their reply; once a
+reply is sent, the draft is gone.
 
 ## Acknowledge what you have seen
 
@@ -297,18 +353,91 @@ agentApp.post('/:slug/api/agent/avatar', async (c) => {
   return c.json({ ok: true })
 })
 
-agentApp.post('/:slug/api/agent/threads/:id/draft', async (c) => {
+/** The caller's thread for a draft call, or the error to answer with. */
+async function draftScope(c: Context, write = true) {
   const a = await slugAuth(c)
-  if (!a) return c.json({ error: 'Invalid token for this collective.' }, 401)
-  if (a.member.role === 'reader') return c.json({ error: 'Your role is read-only.' }, 403)
+  if (!a) return { error: c.json({ error: 'Invalid token for this collective.' }, 401) }
+  if (write && a.member.role === 'reader') return { error: c.json({ error: 'Your role is read-only.' }, 403) }
   const thread = await getThread(Number(c.req.param('id')))
-  if (!thread || thread.collective_id !== a.collective.id || !(await canSeeThread(a.member, thread.id))) return c.json({ error: 'No such thread.' }, 404)
+  if (!thread || thread.collective_id !== a.collective.id || !(await canSeeThread(a.member, thread.id))) return { error: c.json({ error: 'No such thread.' }, 404) }
+  return { a, thread }
+}
+const attJson = (a: DraftAttachment) => ({ id: a.id, filename: a.filename, content_type: a.content_type, size: a.size })
+const draftJson = async (slug: string, threadId: number, draft: { id: number; body: string; created_at: number }) => ({
+  draft_id: draft.id, body: draft.body, at: draft.created_at,
+  attachments: ((await draftAttachments([draft.id])).get(draft.id) ?? []).map(attJson),
+  thread_url: `${cfg.baseUrl}/inbox/${slug}/thread/${threadId}`,
+})
+
+agentApp.post('/:slug/api/agent/threads/:id/draft', async (c) => {
+  const s = await draftScope(c)
+  if (s.error) return s.error
   const body = await c.req.json().catch(() => ({}))
   const text = typeof body.body === 'string' ? body.body.trim().slice(0, 50_000) : ''
   if (!text) return c.json({ error: 'body is required.' }, 400)
-  // one live draft per agent per thread: a newer proposal replaces the old
-  await run('DELETE FROM thread_drafts WHERE thread_id = ? AND member_id = ?', [thread.id, a.member.id])
-  const r = await run('INSERT INTO thread_drafts (thread_id, member_id, body, created_at) VALUES (?, ?, ?, ?)',
-    [thread.id, a.member.id, text, now()])
-  return c.json({ ok: true, draft_id: r.lastId, thread_url: `${cfg.baseUrl}/inbox/${a.collective.slug}/thread/${thread.id}` })
+  // one live draft per agent per thread: a newer proposal replaces the text
+  // and keeps the files already attached
+  await proposeDraft(s.thread.id, s.a.member.id, text)
+  return c.json({ ok: true, ...await draftJson(s.a.collective.slug, s.thread.id, (await memberDraft(s.thread.id, s.a.member.id))!) })
+})
+
+agentApp.get('/:slug/api/agent/threads/:id/draft', async (c) => {
+  const s = await draftScope(c, false)
+  if (s.error) return s.error
+  const draft = await memberDraft(s.thread.id, s.a.member.id)
+  if (!draft) return c.json({ error: 'You have no draft on this thread.' }, 404)
+  return c.json(await draftJson(s.a.collective.slug, s.thread.id, draft))
+})
+
+agentApp.delete('/:slug/api/agent/threads/:id/draft', async (c) => {
+  const s = await draftScope(c)
+  if (s.error) return s.error
+  const draft = await memberDraft(s.thread.id, s.a.member.id)
+  if (draft) await deleteDrafts({ draftId: draft.id })
+  return c.json({ ok: true })
+})
+
+// A file for the draft: raw bytes (one file, named by ?filename=) or a
+// multipart form with `files` fields. Images are shown inline when sent.
+const MAX_AGENT_UPLOAD = 4 * 1024 * 1024
+agentApp.post('/:slug/api/agent/threads/:id/draft/attachments', async (c) => {
+  const s = await draftScope(c)
+  if (s.error) return s.error
+  const draft = await memberDraft(s.thread.id, s.a.member.id)
+  if (!draft) return c.json({ error: 'Create the draft first: POST …/draft {"body": …}, then attach files to it.' }, 409)
+  const type = (c.req.header('content-type') || '').split(';')[0].trim().toLowerCase()
+  const files: { filename: string; contentType: string; content: Buffer }[] = []
+  if (type === 'multipart/form-data') {
+    const raw = (await c.req.parseBody({ all: true }))['files']
+    for (const f of (Array.isArray(raw) ? raw : raw ? [raw] : [])) {
+      if (f instanceof File && f.size > 0) files.push({ filename: f.name, contentType: f.type || 'application/octet-stream', content: Buffer.from(await f.arrayBuffer()) })
+    }
+    if (files.length === 0) return c.json({ error: 'No file found: send one or more `files` fields.' }, 400)
+  } else {
+    const filename = (c.req.query('filename') || '').trim()
+    if (!filename) return c.json({ error: 'Name the file: …/draft/attachments?filename=report.pdf' }, 400)
+    if (type === 'application/json' || type === 'application/x-www-form-urlencoded') {
+      return c.json({ error: "Send the RAW bytes of the file as the body, with the file's own Content-Type (e.g. application/pdf, image/png) — not JSON or a form." }, 415)
+    }
+    const content = Buffer.from(await c.req.arrayBuffer())
+    if (content.length === 0) return c.json({ error: 'Empty body.' }, 400)
+    files.push({ filename, contentType: type || 'application/octet-stream', content })
+  }
+  if (files.reduce((n, f) => n + f.content.length, 0) > MAX_AGENT_UPLOAD) return c.json({ error: 'Too large — 4 MB per request. Send big files one by one, or compress them.' }, 413)
+  try {
+    for (const f of files) await addDraftAttachment(draft.id, f.filename, f.contentType, f.content)
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : 'Could not store the file.' }, 413)
+  }
+  return c.json({ ok: true, ...await draftJson(s.a.collective.slug, s.thread.id, draft) })
+})
+
+agentApp.delete('/:slug/api/agent/threads/:id/draft/attachments/:attId', async (c) => {
+  const s = await draftScope(c)
+  if (s.error) return s.error
+  const draft = await memberDraft(s.thread.id, s.a.member.id)
+  const att = draft ? ((await draftAttachments([draft.id])).get(draft.id) ?? []).find((x) => x.id === Number(c.req.param('attId'))) : undefined
+  if (!draft || !att) return c.json({ error: 'No such attachment on your draft.' }, 404)
+  await removeDraftAttachment(att)
+  return c.json({ ok: true, ...await draftJson(s.a.collective.slug, s.thread.id, draft) })
 })

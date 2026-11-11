@@ -1,5 +1,6 @@
 import { all, allCollectives, get, run, type Collective } from './db.js'
 import { deleteBlob } from './storage.js'
+import { deleteDrafts } from './drafts.js'
 import { now } from './util.js'
 
 /** Closing an inbox is two separate things.
@@ -37,8 +38,16 @@ export async function deleteCollectiveForever(collective: Collective): Promise<v
     JOIN threads t ON t.id = m.thread_id
     WHERE t.collective_id = ? AND a.path IS NOT NULL`, [id])
   for (const b of blobs) await deleteBlob(b.path)
+  const draftBlobs = await all<{ path: string }>(`
+    SELECT da.path FROM draft_attachments da
+    JOIN thread_drafts d ON d.id = da.draft_id
+    JOIN threads t ON t.id = d.thread_id
+    WHERE t.collective_id = ? AND da.path IS NOT NULL`, [id])
+  for (const b of draftBlobs) await deleteBlob(b.path)
 
   const threadScoped = [
+    'DELETE FROM draft_attachments WHERE draft_id IN (SELECT d.id FROM thread_drafts d JOIN threads t ON t.id = d.thread_id WHERE t.collective_id = ?)',
+    'DELETE FROM thread_drafts WHERE thread_id IN (SELECT id FROM threads WHERE collective_id = ?)',
     'DELETE FROM attachments WHERE message_id IN (SELECT m.id FROM messages m JOIN threads t ON t.id = m.thread_id WHERE t.collective_id = ?)',
     'DELETE FROM note_mentions WHERE note_id IN (SELECT n.id FROM notes n JOIN threads t ON t.id = n.thread_id WHERE t.collective_id = ?)',
     'DELETE FROM notes WHERE thread_id IN (SELECT id FROM threads WHERE collective_id = ?)',
@@ -90,6 +99,7 @@ export async function purgeDeletedTick(): Promise<void> {
       const blobs = await all<{ path: string }>(
         'SELECT a.path FROM attachments a JOIN messages m ON m.id = a.message_id WHERE m.thread_id = ? AND a.path IS NOT NULL', [t.id])
       for (const b of blobs) await deleteBlob(b.path)
+      await deleteDrafts({ threadId: t.id })
       for (const sql of [
         'DELETE FROM attachments WHERE message_id IN (SELECT id FROM messages WHERE thread_id = ?)',
         'DELETE FROM note_mentions WHERE note_id IN (SELECT id FROM notes WHERE thread_id = ?)',
