@@ -933,7 +933,7 @@ async function oneClick(c: Context<Env>): Promise<Response> {
       return c.html(
         <AuthCard title="Muted">
           <h1>✓ You won't get emails from {sender} anymore</h1>
-          <p class="muted">{target.slug}@{cfg.emailDomain} still receives everything they send — their messages stay in the shared inbox for the whole collective, you just won't be emailed about them. Manage this any time under Notifications.</p>
+          <p class="muted">{publicAddress(target)} still receives everything they send — their messages stay in the shared inbox for the whole collective, you just won't be emailed about them. Manage this any time under Notifications.</p>
           <div class="btn-row">
             <a class="btn ghost" href={undo}>Undo</a>
             <a class="btn" href={`/inbox/${target.slug}/notifications`}>Notification settings</a>
@@ -969,7 +969,7 @@ async function oneClick(c: Context<Env>): Promise<Response> {
     const { sendCreditEmail } = await import('../notify.js')
     await sendCreditEmail(target, admins,
       `+${n} credit${n > 1 ? 's' : ''} for your contribution 🙌`,
-      `Thank you for contributing to collective.email! ${n} credit${n > 1 ? 's' : ''} (${n} month${n > 1 ? 's' : ''} of service) were added to ${target.slug}@${cfg.emailDomain}. Balance: ${await creditBalance(target.id)}.`).catch(() => {})
+      `Thank you for contributing to collective.email! ${n} credit${n > 1 ? 's' : ''} (${n} month${n > 1 ? 's' : ''} of service) were added to ${publicAddress(target)}. Balance: ${await creditBalance(target.id)}.`).catch(() => {})
     return c.html(
       <AuthCard title="Credits granted">
         <h1>✓ Granted {String(n)} credit{n > 1 ? 's' : ''} to {target.slug}</h1>
@@ -997,11 +997,11 @@ async function oneClick(c: Context<Env>): Promise<Response> {
       [Math.max(target.trial_ends_at || 0, now()) + months * 30 * 86400, target.id])
     const admins = (await activeMembers(target.id)).filter((m) => m.role === 'admin')
     const { sendCreditEmail } = await import('../notify.js')
-    await sendCreditEmail(target, admins, `${target.slug}@${cfg.emailDomain} is now on Pro 🎉`,
+    await sendCreditEmail(target, admins, `${publicAddress(target)} is now on Pro 🎉`,
       `Your Pro application was approved for ${months} months — you can now connect your own domain from the Domain page. Enjoy!`).catch(() => {})
     return c.html(
       <AuthCard title="Pro approved">
-        <h1>✓ {target.slug}@{cfg.emailDomain} is now Pro</h1>
+        <h1>✓ {publicAddress(target)} is now Pro</h1>
         <p class="muted">{String(months)} months granted. The admins just got an email pointing them to the Domain page.</p>
         <a class="btn" href="/">Open collective.email</a>
       </AuthCard>,
@@ -1343,7 +1343,7 @@ app.post('/admin/credits', async (c) => {
   if (amount > 0) {
     const admins = (await activeMembers(target.id)).filter((m) => m.role === 'admin')
     const { sendCreditEmail } = await import('../notify.js')
-    await sendCreditEmail(target, admins, `+${amount} credit${amount > 1 ? 's' : ''} for ${target.slug}@${cfg.emailDomain}`,
+    await sendCreditEmail(target, admins, `+${amount} credit${amount > 1 ? 's' : ''} for ${publicAddress(target)}`,
       `${reason} — ${amount} credit${amount > 1 ? 's' : ''} added. Balance: ${await creditBalance(target.id)}.`).catch(() => {})
   }
   return c.redirect('/admin?m=' + encodeURIComponent(`${amount > 0 ? '+' : ''}${amount} credits → ${target.slug} (balance ${await creditBalance(target.id)})`))
@@ -4834,7 +4834,7 @@ app.get('/inbox/:addr/billing', async (c) => {
           <span class="kv"><span class="k">READERS</span> {seats - contributors} (always free, unlimited)</span>
           <span class="kv"><span class="k">CONTRIB.</span> {contributors}{plan.seats ? ` of ${plan.seats}` : ' (no limit)'}</span>
           <span class="kv"><span class="k">REPLIES</span> {used} of {limits.replies} this month</span>
-          <span class="kv"><span class="k">ADDRESS</span> {collective.slug}@{cfg.emailDomain}</span>
+          <span class="kv"><span class="k">ADDRESS</span> {publicAddress(collective)}</span>
           <span class="kv"><span class="k">STATUS</span> {
             state === 'subscribed' ? <span class="chip status-answered">subscribed{collective.billing_cycle ? ` · ${collective.billing_cycle}` : ''}</span>
             : state === 'comped' ? <span class="chip status-answered">free (courtesy of collective.email)</span>
@@ -5976,7 +5976,7 @@ app.get('/claim/:slug/invite', async (c) => {
     invite = (await get<Invite>('SELECT * FROM invites WHERE token = ?', [token]))!
   }
   const url = `${cfg.baseUrl}/join/${invite.token}`
-  const addr = `${collective.slug}@${cfg.emailDomain}`
+  const addr = publicAddress(collective)
   const reserved = collective.status !== 'active'
   return c.html(
     <AuthCard title="Invite your collective" flash={c.req.query('m')}>

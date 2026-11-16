@@ -8,6 +8,7 @@ import { billingState } from './billing.js'
 import { now, signToken } from './util.js'
 import { ingestInbound } from './ingest.js'
 import { sendCreditEmail } from './notify.js'
+import { publicAddress } from './outbound.js'
 
 /** Credits are an append-only ledger; 1 credit = 1 month of service.
  *  The ledger (mint/burn with provenance) is deliberately shaped like an
@@ -54,7 +55,7 @@ export async function autoExtendTick() {
     await mintCredits(c.id, -cost, 'monthly_extension')
     const admins = (await activeMembers(c.id)).filter((m) => m.role === 'admin')
     await sendCreditEmail(c, admins,
-      `${cost} credit${cost > 1 ? 's' : ''} used — ${c.slug}@${cfg.emailDomain} extended a month`,
+      `${cost} credit${cost > 1 ? 's' : ''} used — ${publicAddress(c)} extended a month`,
       `Your balance covered another month automatically (${balance - cost} credit${balance - cost === 1 ? '' : 's'} left). Keep earning by referring other collectives or contributing.`).catch(() => {})
     console.log(`[credits] extended ${c.slug} by 30d (-${cost}, balance now ${balance - cost})`)
   }
@@ -87,7 +88,7 @@ export async function referralMintTick() {
     await mintCredits(referrer.id, 1, 'referral', 'system', `collective:${referred.id}`)
     const admins = (await activeMembers(referrer.id)).filter((m) => m.role === 'admin')
     await sendCreditEmail(referrer, admins,
-      `+1 credit — ${referred.slug}@${cfg.emailDomain} is actively using collective.email`,
+      `+1 credit — ${publicAddress(referred)} is actively using collective.email`,
       `You referred ${referred.slug} a month ago and they're actively using their inbox — you earned 1 credit (1 month of service). Balance: ${await creditBalance(referrer.id)}.`).catch(() => {})
     console.log(`[credits] referral mint: +1 to ${referrer.slug} for ${referred.slug}`)
   }
@@ -109,13 +110,13 @@ export async function fileContribution(collective: Collective, member: Member, t
   const raw = [
     `From: ${(member.name || member.email).replace(/[\r\n<>"]+/g, ' ').trim()} <${member.email}>`,
     `To: ${CONTRIBUTE_SLUG}@${cfg.emailDomain}`,
-    `Subject: Contribution from ${collective.slug}@${cfg.emailDomain}`,
+    `Subject: Contribution from ${publicAddress(collective)}`,
     `Message-ID: <contribution-${collective.id}-${now()}@${cfg.emailDomain}>`,
     'Content-Type: text/plain; charset=utf-8',
     '',
     text.trim(),
     '',
-    `— ${member.name || member.email}, for ${collective.slug}@${cfg.emailDomain} (balance: ${await creditBalance(collective.id)})`,
+    `— ${member.name || member.email}, for ${publicAddress(collective)} (balance: ${await creditBalance(collective.id)})`,
   ].join('\r\n')
   const parsed = await simpleParser(raw)
   const grants = [1, 2, 3].map((n) => ({

@@ -5,7 +5,7 @@ import {
   type Collective, type Member, type Message, type Thread,
 } from './db.js'
 import { sendAppEmail } from './appmail.js'
-import { outboundFrom } from './outbound.js'
+import { outboundFrom, publicAddress } from './outbound.js'
 import { escapeHtml, excerpt, fmtDateTime, signToken, splitQuotedTail, waitingFor } from './util.js'
 import { mintNoteReplyAddress, mintReplyAddress } from './reply-tokens.js'
 import { noteParts } from './mentions.js'
@@ -110,7 +110,7 @@ export async function sendLoginCode(email: string, code: string) {
 // ---------- new collective onboarding ----------
 
 export async function sendOnboarding(collective: Collective, adminEmail: string) {
-  const addr = `${collective.slug}@${cfg.emailDomain}`
+  const addr = publicAddress(collective)
   const html = shell('collective.email', `
     <p style="margin:0 0 8px;font-size:16px"><b>${escapeHtml(collective.name)}</b> is live! 🎉</p>
     <p style="margin:0 0 14px;font-size:14px;color:#4b5563">Your collective's address is ready to receive email:</p>
@@ -606,7 +606,7 @@ export async function trialTick() {
           `The free trial of ${collective.name} has ended. Incoming email still arrives and nothing is lost, but nobody can reply until you subscribe. After 30 days the address stops receiving.`)
       } else {
         await sendTrialEmail(collective, admins, `${collective.name}: ${days} days left in your free trial`,
-          `Your free trial of ${collective.name} ends in ${days} day${days === 1 ? '' : 's'}. Subscribe for €10/month (or €100/year) to keep replying as ${collective.slug}@${cfg.emailDomain}.`)
+          `Your free trial of ${collective.name} ends in ${days} day${days === 1 ? '' : 's'}. Subscribe for €10/month (or €100/year) to keep replying as ${publicAddress(collective)}.`)
       }
       await kvSet(key, String(Math.floor(Date.now() / 1000)))
     } catch (err) {

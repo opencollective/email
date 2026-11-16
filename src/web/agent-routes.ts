@@ -8,6 +8,7 @@ import { saveBlob } from '../storage.js'
 import { addNote } from '../notes.js'
 import { addDraftAttachment, deleteDrafts, draftAttachments, memberDraft, proposeDraft, removeDraftAttachment, type DraftAttachment } from '../drafts.js'
 import { cfg } from '../config.js'
+import { publicAddress } from '../outbound.js'
 import { now } from '../util.js'
 
 /** The agent-facing surface: one markdown skill, one invitation URL, five
@@ -257,7 +258,7 @@ agentApp.post('/:slug/join/:token', async (c) => {
   if (!res.ok) return c.json({ error: res.error }, 410)
   return c.json({
     ok: true,
-    collective: { slug: found.collective.slug, name: found.collective.name, address: `${found.collective.slug}@${cfg.emailDomain}` },
+    collective: { slug: found.collective.slug, name: found.collective.name, address: publicAddress(found.collective) },
     member: { id: res.member.id, name: res.member.name, role: res.member.role },
     token: res.token,
     cursor: await agentCursor(found.collective.id),
