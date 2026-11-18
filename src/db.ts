@@ -338,6 +338,10 @@ function init(): Promise<void> {
       // drafts: how many times saved, and by whom last
       'ALTER TABLE messages ADD COLUMN draft_rev INTEGER',
       'ALTER TABLE messages ADD COLUMN draft_editor_member_id INTEGER',
+      // the random name of the 1x1 image in an email we sent: loading it is
+      // the only thing that marks the email opened (see src/deliveries.ts)
+      'ALTER TABLE messages ADD COLUMN open_token TEXT',
+      'CREATE INDEX IF NOT EXISTS idx_messages_open ON messages(open_token)',
       // a share link for one thread: whoever joins with it is a guest on it
       'ALTER TABLE invites ADD COLUMN thread_id INTEGER',
       // ...and whether it also lets them send replies, on that thread only
@@ -486,6 +490,7 @@ export interface Message {
   body_html: string | null
   sent_by_member_id: number | null
   resend_email_id: string | null
+  open_token?: string | null
   sent_at: number | null
   created_at: number
   draft_rev?: number | null

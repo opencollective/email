@@ -74,6 +74,22 @@ export async function recordDeliveryEvent(payload: {
   return true
 }
 
+/** Someone's mail app loaded the image in one of our emails. We record that
+ *  it happened and when — not the IP address, not the user agent, not a
+ *  cookie, nothing that says who or where. */
+export async function recordPixelOpen(token: string): Promise<boolean> {
+  if (!/^[A-Za-z0-9_-]{16,64}$/.test(token)) return false
+  const msg = await get<{ id: number }>("SELECT id FROM messages WHERE open_token = ? AND direction = 'outbound' AND sent_at IS NOT NULL", [token])
+  if (!msg) return false
+  const at = now()
+  await record(msg.id, 'opened', [], 'pixel', at)
+  await record(msg.id, 'delivered', [], 'pixel', at)
+  return true
+}
+
+/** The image itself: a transparent 1x1 GIF. */
+export const PIXEL_GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64')
+
 export const messageEvents = async (messageIds: number[]): Promise<Map<number, MessageEvent[]>> => {
   const out = new Map<number, MessageEvent[]>()
   if (!messageIds.length) return out

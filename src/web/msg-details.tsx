@@ -31,7 +31,7 @@ export const DeliveryInfo: FC<{ msg: Message; events: MessageEvent[]; names?: Ma
   if (opened) lines.push({
     cls: 'dlv-ok',
     text: `Opened ${rcpts.length === 1 ? `by ${label(rcpts[0])}` : `by at least one of the ${rcpts.length} recipients`}${when(opened, 'last')}`,
-    title: 'Opened means their mail app loaded the tracking image. Apple Mail can do that without anyone reading; apps that block images never report it.',
+    title: 'Their mail app loaded the invisible image in our email. We keep only that it happened and when. Apple Mail can load it without anyone reading; apps that block images never report it. With several recipients there is one image for all, so we cannot tell who.',
   })
   if (!delivered && !bounced && delayed) lines.push({ cls: 'dlv-warn', text: `Delayed: the receiving server hasn't accepted it yet${when(delayed, 'last')}` })
   if (!lines.length) return null

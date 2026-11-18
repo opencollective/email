@@ -16,7 +16,7 @@ import {
   accountsFromCookie, checkCode, createSession, destroySession, issueCode,
   type Account, type LoginCodeRow,
 } from '../auth.js'
-import { messageEvents, refreshDelivery } from '../deliveries.js'
+import { messageEvents, PIXEL_GIF, recordPixelOpen, refreshDelivery } from '../deliveries.js'
 import { DeliveryInfo, MsgDetails } from './msg-details.js'
 import { addDraftAttachment, deleteDrafts, draftAttachments, loadDraftFiles, proposeDraft, removeDraftAttachment, type DraftAttachment } from '../drafts.js'
 import { forwardMessage, outboundFrom, publicAddress, replyAllCc, replyTarget, sendCollectiveReply, sendComposed, signatureFor, signOffDrift } from '../outbound.js'
@@ -3728,6 +3728,19 @@ app.post('/inbox/:addr/thread/:id/seen', async (c) => {
   const upTo = Number(body.up_to) || 0
   if (upTo > 0) await recordThreadSeenUpTo(thread.id, t.member.id, upTo, 'web')
   return c.body(null, 204)
+})
+
+// Our open-tracking image. Nothing but the token is read from the request,
+// and nothing but "opened, at this time" is kept. Never cached, so a second
+// open is seen too.
+app.get('/o/:file', async (c) => {
+  const token = c.req.param('file').replace(/\.gif$/, '')
+  await recordPixelOpen(token).catch(() => false)
+  return c.body(PIXEL_GIF, 200, {
+    'Content-Type': 'image/gif',
+    'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+    'Referrer-Policy': 'no-referrer',
+  })
 })
 
 // The delivery line of a message's details card, asked for when the card

@@ -44,6 +44,10 @@ export function sanitizeEmailHtml(html: string): string {
     allowedSchemesByTag: { img: ['http', 'https', 'data'] },
     allowProtocolRelative: false,
     disallowedTagsMode: 'discard',
+    // our own open-tracking image, quoted back to us inside someone's reply:
+    // showing that reply (here, or in a notification) must not count as the
+    // old email being opened
+    exclusiveFilter: (frame) => frame.tag === 'img' && /\/o\/[A-Za-z0-9_-]{16,64}\.gif/.test(String(frame.attribs?.src || '')),
     transformTags: {
       // every link opens in a new tab and never gets a referrer or opener
       a: sanitizeHtml.simpleTransform('a', { target: '_blank', rel: 'noopener noreferrer nofollow' }),

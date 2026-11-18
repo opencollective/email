@@ -50,6 +50,17 @@ export interface OutAttachment {
 /** Send a reply from <slug>@collective.email to the thread's counterpart via Resend,
  *  record it as an outbound message and flip the thread to answered. */
 /** The quoted tail, for HTML bodies: same text, muted, left-ruled. */
+/** A text email as HTML that reads the same: the text exactly as typed. */
+const textHtml = (text: string) =>
+  `<div style="white-space:pre-wrap;font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px">${escapeHtml(text)}</div>`
+
+/** Our own open-tracking image: a random name per email, nothing else in
+ *  the URL. Loading it records "opened" and the time, nothing about who or
+ *  where (see /o/:token in src/web/routes.tsx). */
+export const newOpenToken = () => crypto.randomBytes(16).toString('base64url')
+const openPixel = (token: string) =>
+  `<img src="${cfg.baseUrl}/o/${token}.gif" width="1" height="1" alt="" style="display:block;width:1px;height:1px;border:0;margin:0">`
+
 const quotedHtml = (history: string) => history
   ? `<blockquote style="margin:16px 0 0;padding-left:12px;border-left:2px solid #d5d7da;color:#6b7280;white-space:pre-wrap;font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:13px">${escapeHtml(history.trim())}</blockquote>`
   : ''
@@ -133,12 +144,11 @@ export async function sendCollectiveReply(
   // Image attachments are embedded inline in an HTML body (cid references),
   // so recipients see the pictures in the email itself.
   const hasImages = attachments.some((a) => a.contentType.startsWith('image/'))
-  const html = hasImages
-    ? `<div style="white-space:pre-wrap;font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px">${escapeHtml(body)}</div>` +
-      attachments.map((a, i) => a.contentType.startsWith('image/')
-        ? `<p style="margin:14px 0 0"><img src="cid:att${i}" alt="${escapeHtml(a.filename)}" style="max-width:100%;border-radius:8px"></p>`
-        : '').join('')
-    : undefined
+  const openToken = newOpenToken()
+  const html = (inline: boolean) => textHtml(body) +
+    (inline ? attachments.map((a, i) => a.contentType.startsWith('image/')
+      ? `<p style="margin:14px 0 0"><img src="cid:att${i}" alt="${escapeHtml(a.filename)}" style="max-width:100%;border-radius:8px"></p>`
+      : '').join('') : '')
 
   // The email carries the quoted conversation underneath, the way any mail
   // client's reply would — the recipient reads their own request at the
@@ -162,7 +172,7 @@ export async function sendCollectiveReply(
       reply_to: [fromAddress],
       subject,
       text: wireText,
-      ...(inline && html ? { html: html + quotedHtml(history) } : {}),
+      html: html(inline) + quotedHtml(history) + openPixel(openToken),
       headers,
       attachments: attachments.map((a, i) => ({
         filename: a.filename,
@@ -189,14 +199,14 @@ export async function sendCollectiveReply(
 
   const ts = now()
   const r = await run(`
-    INSERT INTO messages (thread_id, rfc822_message_id, in_reply_to, direction, from_email, from_name, to_json, cc_json, bcc_json, body_text, sent_by_member_id, resend_email_id, sent_at, created_at)
-    VALUES (?, ?, ?, 'outbound', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO messages (thread_id, rfc822_message_id, in_reply_to, direction, from_email, from_name, to_json, cc_json, bcc_json, body_text, sent_by_member_id, resend_email_id, open_token, sent_at, created_at)
+    VALUES (?, ?, ?, 'outbound', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     threadId, messageId, lastIn?.rfc822_message_id ?? null,
     fromAddress, collective.name, JSON.stringify([to]),
     // what the record must show: everyone holding this message, however it reached them
     JSON.stringify([...new Set([...cc, ...alreadyCopied])]), JSON.stringify(bcc),
-    body, member.id, resendEmailId, ts, ts,
+    body, member.id, resendEmailId, openToken, ts, ts,
   ])
   for (const [i, a] of attachments.entries()) await storeAttachment(r.lastId, a.filename, a.contentType, a.content, i)
 
@@ -362,6 +372,7 @@ export async function sendComposed(collective: Collective, threadId: number, mem
   const { files, missing } = await gatherAttachments(draft.id)
   if (missing.length) throw new Error(`Could not read ${missing.join(', ')} — remove and re-attach it.`)
 
+  const openToken = newOpenToken()
   let resendEmailId: string | null = null
   if (!cfg.resendKey) {
     console.log(`\n[outbound:dev] From: ${fromAddress}\n[outbound:dev] To: ${to.join(', ')}${cc.length ? `\n[outbound:dev] Cc: ${cc.join(', ')}` : ''}${bcc.length ? `\n[outbound:dev] Bcc: ${bcc.join(', ')}` : ''}\n[outbound:dev] Subject: ${thread.subject}\n${body}\n[outbound:dev] attachments: ${files.map((f) => f.filename).join(', ') || 'none'}\n`)
@@ -377,6 +388,7 @@ export async function sendComposed(collective: Collective, threadId: number, mem
         reply_to: [fromAddress],
         subject: thread.subject,
         text: body,
+        html: textHtml(body) + openPixel(openToken),
         headers: { 'Message-ID': messageId },
         ...(files.length ? { attachments: files.map((f) => ({ filename: f.filename, content: f.content.toString('base64') })) } : {}),
       }),
@@ -387,8 +399,8 @@ export async function sendComposed(collective: Collective, threadId: number, mem
 
   const ts = now()
   await run(
-    'UPDATE messages SET rfc822_message_id = ?, body_text = ?, resend_email_id = ?, sent_at = ? WHERE id = ?',
-    [messageId, body, resendEmailId, ts, draft.id])
+    'UPDATE messages SET rfc822_message_id = ?, body_text = ?, resend_email_id = ?, open_token = ?, sent_at = ? WHERE id = ?',
+    [messageId, body, resendEmailId, openToken, ts, draft.id])
   await run(
     "UPDATE threads SET counterpart_email = ?, last_message_at = ?, last_direction = 'outbound', updated_at = ? WHERE id = ?",
     [to[0], ts, ts, threadId])

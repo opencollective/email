@@ -79,3 +79,40 @@ test('a stranger cannot read another inbox message delivery', async () => {
   const r = await page(`/inbox/${fx.slug}/thread/${other.threadId}/message/${other.msgId}/delivery`, fx.sid)
   assert.notEqual(r.status, 200)
 })
+
+test('our own tracking image: a reply carries one, loading it records "opened" and nothing else', async () => {
+  const { sendCollectiveReply } = await import('../src/outbound.js')
+  const { createCollective: cc, get } = await import('../src/db.js')
+  const slug = `px${uniq()}`
+  const col = await cc(slug, 'Pixel Co')
+  const memEmail = `m-${uniq()}@t.test`
+  const m = await run("INSERT INTO members (collective_id, email, name, role, notify_level, created_at) VALUES (?, ?, 'Mo', 'admin', 'every', ?)", [col.id, memEmail, now()])
+  const t = await run(`INSERT INTO threads (collective_id, subject, status, counterpart_email, first_message_at, last_message_at, last_direction, created_at, updated_at)
+    VALUES (?, 'Hi', 'needs_reply', 'ext@out.test', ?, ?, 'inbound', ?, ?)`, [col.id, now(), now(), now(), now()])
+  await run(`INSERT INTO messages (thread_id, rfc822_message_id, direction, from_email, to_json, body_text, sent_at, created_at)
+    VALUES (?, ?, 'inbound', 'ext@out.test', '[]', 'hello', ?, ?)`, [t.lastId, `<px${uniq()}@x>`, now(), now()])
+  const member = (await get<any>('SELECT * FROM members WHERE id = ?', [m.lastId]))!
+  const sent = await sendCollectiveReply(col, t.lastId, 'Sure.', member, 'web')
+  assert.match(String(sent.open_token), /^[A-Za-z0-9_-]{20,}$/)
+  assert.equal(await get('SELECT * FROM message_events WHERE message_id = ?', [sent.id]), undefined, 'nothing before it is opened')
+
+  const r = await app.request(`/o/${sent.open_token}.gif`, { headers: { 'user-agent': 'Secret UA', 'x-forwarded-for': '203.0.113.9' } })
+  assert.equal(r.status, 200)
+  assert.equal(r.headers.get('content-type'), 'image/gif')
+  assert.match(String(r.headers.get('cache-control')), /no-store/)
+  await app.request(`/o/${sent.open_token}.gif`)
+  const ev = (await get<any>("SELECT * FROM message_events WHERE message_id = ? AND type = 'opened'", [sent.id]))!
+  assert.equal(ev.count, 2)
+  assert.equal(ev.recipients, null)
+  assert.doesNotMatch(JSON.stringify(ev), /Secret UA|203\.0\.113/, 'no user agent, no IP')
+  // an unknown token still answers with an image and records nothing
+  const bad = await app.request('/o/AAAAAAAAAAAAAAAAAAAAAA.gif')
+  assert.equal(bad.status, 200)
+})
+
+test('our image quoted inside someone else\'s reply is stripped before it can be shown', async () => {
+  const { sanitizeEmailHtml } = await import('../src/sanitize.js')
+  const html = sanitizeEmailHtml('<p>Thanks!</p><blockquote><img src="https://collective.email/o/abcdefghijklmnopqrstuv.gif" width="1" height="1"><img src="https://example.org/logo.png"></blockquote>')
+  assert.doesNotMatch(html, /\/o\/abcdef/)
+  assert.match(html, /logo\.png/)
+})
