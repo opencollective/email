@@ -7,6 +7,7 @@ import { resolveReplyAddress, viaSlug } from './reply-tokens.js'
 import { handleEmailNote, handleEmailReply, ingestInbound } from './ingest.js'
 import { applyCheckoutSession, verifyStripeSignature } from './stripe.js'
 import { billingState, canReceive } from './billing.js'
+import { isDeliveryEvent, recordDeliveryEvent } from './deliveries.js'
 
 /** Verify a svix-signed webhook (Resend uses svix).
  *  signature = base64(hmacSHA256(base64decode(secret_after_whsec), `${id}.${timestamp}.${body}`)) */
@@ -110,6 +111,11 @@ webhooks.post('/webhooks/resend', async (c) => {
     payload = JSON.parse(body)
   } catch {
     return c.json({ error: 'invalid json' }, 400)
+  }
+  // what became of an email we sent: delivered, bounced, opened…
+  if (isDeliveryEvent(payload.type)) {
+    const ours = await recordDeliveryEvent(payload as Parameters<typeof recordDeliveryEvent>[0])
+    return c.json({ ok: true, recorded: ours })
   }
   if (payload.type !== 'email.received') return c.json({ ok: true, ignored: payload.type })
 

@@ -16,6 +16,8 @@ import {
   accountsFromCookie, checkCode, createSession, destroySession, issueCode,
   type Account, type LoginCodeRow,
 } from '../auth.js'
+import { messageEvents, refreshDelivery } from '../deliveries.js'
+import { DeliveryInfo, MsgDetails } from './msg-details.js'
 import { addDraftAttachment, deleteDrafts, draftAttachments, loadDraftFiles, proposeDraft, removeDraftAttachment, type DraftAttachment } from '../drafts.js'
 import { forwardMessage, outboundFrom, publicAddress, replyAllCc, replyTarget, sendCollectiveReply, sendComposed, signatureFor, signOffDrift } from '../outbound.js'
 import { digestTick, receivingAddress, sendOnboarding, trialTick } from '../notify.js'
@@ -2144,6 +2146,13 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
   // the files they carry — they follow the draft into the reply that uses it
   const draftAtts = await draftAttachments(proposedDrafts.map((d) => d.id))
   const myProposal = proposedDrafts.find((d) => d.member_id === member.id)
+  // what became of each email we sent (delivered, bounced, opened)
+  const msgEvents = await messageEvents(msgs.filter((m) => m.direction === 'outbound' && m.sent_at).map((m) => m.id))
+  // names for the addresses in To/Cc: members first, then what people called
+  // themselves when they wrote in
+  const addrNames = new Map<string, string>()
+  for (const m of msgs) if (m.direction === 'inbound' && m.from_email && m.from_name) addrNames.set(m.from_email.toLowerCase(), m.from_name)
+  for (const m of members.values()) if (m.email) addrNames.set(m.email.toLowerCase(), memberName(m))
   // every other thread this contact is part of — sender OR merely Cc'd (the
   //  Odoo pattern: a quote emailed to the contact with the collective in copy)
   const otherAll = invQ ? (batch[10] as Thread[]) : []
@@ -2628,6 +2637,7 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                         )
                       })()}
                     </span>
+                    <span class="meta" data-meta>
                     <span class="who">
                       {g.direction === 'outbound' && !g.sent_at ? (
                         <small class="sentby">· draft v{String(g.draft_rev ?? 1)} by {memberName(members.get(g.draft_editor_member_id ?? g.sent_by_member_id ?? 0))}</small>
@@ -2636,11 +2646,24 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                       ) : null}
                     </span>
                     <span class="when">{g.sent_at ? fmtDateTime(g.sent_at) : 'not sent yet'}</span>
+                    {(() => {
+                      const outbound = g.direction === 'outbound'
+                      const sender = g.sent_by_member_id ? members.get(g.sent_by_member_id) : undefined
+                      return (
+                        <MsgDetails msg={g} sender={sender} names={addrNames} events={msgEvents.get(g.id) ?? []}
+                          fromName={outbound ? (g.from_name || collective.name) : (g.from_name || '')}
+                          fromAddr={outbound ? (g.from_email || collectiveAddr) : (g.from_email || '')}
+                          showBcc={member.role !== 'guest'}
+                          deliveryUrl={outbound && g.sent_at && g.resend_email_id ? `${base}/thread/${thread.id}/message/${g.id}/delivery` : undefined} />
+                      )
+                    })()}
+                    </span>
                     {/* everything about this one message lives behind one quiet menu */}
                     <details class="msg-menu">
                       <summary title="Message options" aria-label="Message options">⋯</summary>
                       <div class="menu-pop">
                         <button class="menu-item" type="button" data-copy={`${cfg.baseUrl}${base}/thread/${thread.id}?focus=${g.id}#m${g.id}`}>Copy link</button>
+                        <button class="menu-item" type="button" data-meta-open>Details</button>
                         {sends ? <a class="menu-item" href="#composer">Reply</a> : null}
                         {sends ? (
                           <details class="menu-sub">
@@ -2705,6 +2728,13 @@ app.get('/inbox/:addr/thread/:id', async (c) => {
                   ) : null}
                 </div>
               )}
+              {/* the outside world's side of "seen": did our email arrive, did they open it */}
+              {!Array.isArray(g) && (msgEvents.get(g.id) ?? []).length ? (
+                <div class="ext-seen">
+                  <span class="seen-eye" aria-hidden="true">✉</span>
+                  <DeliveryInfo msg={g} events={msgEvents.get(g.id) ?? []} names={addrNames} />
+                </div>
+              ) : null}
               <SeenMarker at={gi} />
             </>)}
           </div>
@@ -3698,6 +3728,21 @@ app.post('/inbox/:addr/thread/:id/seen', async (c) => {
   const upTo = Number(body.up_to) || 0
   if (upTo > 0) await recordThreadSeenUpTo(thread.id, t.member.id, upTo, 'web')
   return c.body(null, 204)
+})
+
+// The delivery line of a message's details card, asked for when the card
+// opens: Resend is only consulted for emails we have no final word on.
+app.get('/inbox/:addr/thread/:id/message/:mid/delivery', async (c) => {
+  const t = await tenant(c)
+  if (t instanceof Response) return t
+  const thread = await threadOf(c, t)
+  if (!thread) return c.notFound()
+  const msg = await get<Message>('SELECT * FROM messages WHERE id = ? AND thread_id = ?', [Number(c.req.param('mid')), thread.id])
+  if (!msg || msg.direction !== 'outbound') return c.notFound()
+  const events = await refreshDelivery(msg)
+  const names = new Map<string, string>()
+  for (const m of (await memberMap(t.collective.id)).values()) if (m.email) names.set(m.email.toLowerCase(), memberName(m))
+  return c.html(DeliveryInfo({ msg, events, names }) ?? <span class="dlv-line">No report from the mail server yet</span>)
 })
 
 // Soft delete: the thread leaves every list for the Deleted view, where it

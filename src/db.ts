@@ -234,6 +234,20 @@ const SCHEMA = [
     created_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_draft_attachments_draft ON draft_attachments(draft_id)`,
+  // What happened to an email after we handed it to Resend: delivered,
+  // bounced, delayed, complained, opened. One row per message and kind, with
+  // the first and latest time and the recipients the event named.
+  `CREATE TABLE IF NOT EXISTS message_events (
+    message_id INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    recipients TEXT,
+    detail TEXT,
+    first_at INTEGER NOT NULL,
+    last_at INTEGER NOT NULL,
+    count INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (message_id, type)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_messages_resend ON messages(resend_email_id)`,
   // one ordered feed of things an agent can be woken by — a single sequence,
   // so the API has ONE cursor and new event types are just new rows
   // which threads a GUEST member may see — guests are commenters whose world

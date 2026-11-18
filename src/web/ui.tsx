@@ -533,6 +533,7 @@ document.addEventListener('click', (e) => {
 // Sender cards: CSS opens them on hover where there is a pointer; on a
 // touchscreen the first tap opens the card instead of following the link.
 document.addEventListener('click', (e) => {
+  if (!(e.target.closest && e.target.closest('.meta-card'))) document.querySelectorAll('[data-meta].open').forEach((o) => o.classList.remove('open'));
   if (e.target.closest && e.target.closest('[data-person]')) return;
   document.querySelectorAll('[data-person].open').forEach((o) => o.classList.remove('open'));
 });
@@ -757,6 +758,35 @@ root.querySelectorAll('[data-msg]').forEach((msg) => {
   if (head) head.addEventListener('click', (e) => {
     if (e.target.closest('.person, .msg-menu, a, button, input, select, textarea, label')) return;
     toggle(e);
+  });
+});
+// Message details (the header's author and date): hover where there is a pointer, the
+// "Details" menu item on a touchscreen. The delivery line is asked for once,
+// the first time the card shows.
+const loadDlv = (meta) => {
+  const slot = meta.querySelector('[data-dlv]');
+  if (!slot || slot.dataset.loaded) return;
+  slot.dataset.loaded = '1';
+  fetch(slot.dataset.dlv, { credentials: 'same-origin' })
+    .then((r) => r.ok ? r.text() : null)
+    .then((html) => { if (html) slot.innerHTML = html; })
+    .catch(() => {});
+};
+root.querySelectorAll('[data-meta]').forEach((meta) => {
+  meta.querySelectorAll('.who, .when').forEach((el) => el.addEventListener('mouseenter', () => loadDlv(meta)));
+});
+root.querySelectorAll('[data-meta-open]').forEach((b) => {
+  b.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const msg = b.closest('.msg');
+    const meta = msg && msg.querySelector('[data-meta]');
+    const menu = b.closest('details');
+    if (menu) menu.open = false;
+    if (!meta) return;
+    const wasOpen = meta.classList.contains('open');
+    document.querySelectorAll('[data-meta].open').forEach((o) => o.classList.remove('open'));
+    if (!wasOpen) { meta.classList.add('open'); loadDlv(meta); }
   });
 });
 root.querySelectorAll('[data-person]').forEach((p) => {
@@ -1056,7 +1086,7 @@ wireLive(document);
   const busy = () => {
     const a = document.activeElement;
     if (a && (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && a.type !== 'submit') || a.tagName === 'SELECT')) return true;
-    return !!document.querySelector('.tl details[open], .thread-sub details[open], dialog[open], [data-person].open, .swipe.open-l, .swipe.open-r, .swipe.dragging')
+    return !!document.querySelector('.tl details[open], .thread-sub details[open], dialog[open], [data-person].open, [data-meta].open, .swipe.open-l, .swipe.open-r, .swipe.dragging')
       || document.body.classList.contains('swipe-pending');
   };
   let inflight = false;
@@ -1424,7 +1454,7 @@ export function eventText(
 /** One version for every static asset reference. With /static cached as
  *  immutable, this bump is what makes browsers fetch the new css/js — raise it
  *  whenever style.css or a client bundle changes. */
-export const ASSET_V = '114'
+export const ASSET_V = '115'
 
 export const Page: FC<{ title?: string; flash?: string; bundle?: string; children?: Child }> = (props) => (
   <html lang="en">

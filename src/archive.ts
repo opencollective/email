@@ -49,6 +49,7 @@ export async function deleteCollectiveForever(collective: Collective): Promise<v
     'DELETE FROM draft_attachments WHERE draft_id IN (SELECT d.id FROM thread_drafts d JOIN threads t ON t.id = d.thread_id WHERE t.collective_id = ?)',
     'DELETE FROM thread_drafts WHERE thread_id IN (SELECT id FROM threads WHERE collective_id = ?)',
     'DELETE FROM attachments WHERE message_id IN (SELECT m.id FROM messages m JOIN threads t ON t.id = m.thread_id WHERE t.collective_id = ?)',
+    'DELETE FROM message_events WHERE message_id IN (SELECT m.id FROM messages m JOIN threads t ON t.id = m.thread_id WHERE t.collective_id = ?)',
     'DELETE FROM note_mentions WHERE note_id IN (SELECT n.id FROM notes n JOIN threads t ON t.id = n.thread_id WHERE t.collective_id = ?)',
     'DELETE FROM notes WHERE thread_id IN (SELECT id FROM threads WHERE collective_id = ?)',
     'DELETE FROM messages WHERE thread_id IN (SELECT id FROM threads WHERE collective_id = ?)',
@@ -102,6 +103,7 @@ export async function purgeDeletedTick(): Promise<void> {
       await deleteDrafts({ threadId: t.id })
       for (const sql of [
         'DELETE FROM attachments WHERE message_id IN (SELECT id FROM messages WHERE thread_id = ?)',
+        'DELETE FROM message_events WHERE message_id IN (SELECT id FROM messages WHERE thread_id = ?)',
         'DELETE FROM note_mentions WHERE note_id IN (SELECT id FROM notes WHERE thread_id = ?)',
         'DELETE FROM notes WHERE thread_id = ?',
         'DELETE FROM messages WHERE thread_id = ?',
