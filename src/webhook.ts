@@ -2,9 +2,9 @@ import crypto from 'node:crypto'
 import { Hono } from 'hono'
 import { simpleParser, type ParsedMail } from 'mailparser'
 import { cfg } from './config.js'
-import { getCollectiveBySlug, getCollectiveByCustomAddress, getCollectiveByCustomDomain, run } from './db.js'
-import { resolveReplyAddress, viaSlug } from './reply-tokens.js'
-import { handleEmailNote, handleEmailReply, ingestInbound } from './ingest.js'
+import { getCollective, getCollectiveBySlug, getCollectiveByCustomAddress, getCollectiveByCustomDomain, getMember, getThread, run } from './db.js'
+import { refFromReferences, resolveReplyAddress, viaSlug } from './reply-tokens.js'
+import { externalRecipient, handleEmailNote, handleEmailReply, ingestInbound, teamSender } from './ingest.js'
 import { applyCheckoutSession, verifyStripeSignature } from './stripe.js'
 import { billingState, canReceive } from './billing.js'
 import { isDeliveryEvent, recordDeliveryEvent } from './deliveries.js'
@@ -149,6 +149,36 @@ webhooks.post('/webhooks/resend', async (c) => {
       }
       await handleEmailReply(parsed, ref)
       return c.json({ ok: true, handled: 'member_reply' })
+    }
+  }
+
+  // 1b. A teammate answering one of our notifications whose reply address got
+  // lost on the way: their mail app answered the From instead of Reply-To, or
+  // the address had expired. Our notification's signed Message-ID is still in
+  // In-Reply-To / References. Only when it was written to us alone: if they
+  // put the outside person in To themselves, that person already has it.
+  const refIds = [
+    ...(parsed.inReplyTo ? [parsed.inReplyTo] : []),
+    ...(Array.isArray(parsed.references) ? parsed.references : parsed.references ? [parsed.references] : []),
+  ]
+  const notified = refIds.length ? await refFromReferences(refIds) : null
+  if (notified) {
+    const member = await getMember(notified.memberId)
+    const thread = await getThread(notified.threadId)
+    const collective = thread ? await getCollective(thread.collective_id) : undefined
+    const fromAddr = (Array.isArray(parsed.from) ? parsed.from[0] : parsed.from)?.value?.[0]?.address?.toLowerCase() || ''
+    if (member && collective && !member.removed_at) {
+      const { member: who } = await teamSender(collective, fromAddr)
+      const rcpts = [...(Array.isArray(parsed.to) ? parsed.to : parsed.to ? [parsed.to] : []),
+        ...(Array.isArray(parsed.cc) ? parsed.cc : parsed.cc ? [parsed.cc] : [])]
+        .flatMap((a) => a.value.map((v) => ({ address: (v.address || '').toLowerCase(), name: v.name || '' })))
+      const outsider = await externalRecipient(collective, rcpts)
+      if ((fromAddr === member.email.toLowerCase() || who?.id === member.id) && !outsider) {
+        console.log(`[webhook] reply to notification (thread ${notified.threadId}) reached us without its reply address — routed by Message-ID`)
+        if (notified.kind === 'note') await handleEmailNote(parsed, notified)
+        else await handleEmailReply(parsed, notified)
+        return c.json({ ok: true, handled: notified.kind === 'note' ? 'member_note' : 'member_reply', via: 'references' })
+      }
     }
   }
 

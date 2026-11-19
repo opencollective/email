@@ -787,10 +787,10 @@ test('notifications come "from" the person who wrote, on our own sending domain'
     await inboundEmail(col.slug, { from: 'Marie Vandenberghe <marie@sender.test>' })
     const notif = sent.find((m) => m.subject.includes('Booking'))
     assert.ok(notif, 'a notification went out')
-    assert.equal(notif.from, `Marie Vandenberghe via ${col.slug}@collective.email <${col.slug}@collective.email>`)
+    assert.equal(notif.from, `"Marie Vandenberghe via ${col.slug}@collective.email" <${col.slug}@collective.email>`, 'the name quoted: it holds an @')
     // the address must stay ours: we sign it, and the loop guard keys on it
     assert.ok(!notif.from.includes('<marie@sender.test>'), 'never sends AS the sender')
-    assert.match(notif.replyTo, new RegExp(`^Marie Vandenberghe via ${col.slug}@collective\\.email <`), 'Reply-To reads like a person, routes to us')
+    assert.match(notif.replyTo, new RegExp(`^"Marie Vandenberghe via ${col.slug}@collective\\.email" <`), 'Reply-To reads like a person, routes to us')
     assert.match(notif.replyTo, new RegExp(`<marie-sender\\.test-via-${col.slug}\\+[a-z0-9]{10}@collective\\.email>$`), 'reads "to marie@sender.test via the collective"')
 
     // no display name on the sender → fall back to the address' local part
@@ -801,7 +801,7 @@ test('notifications come "from" the person who wrote, on our own sending domain'
       message_id: `<nn-${uniq()}@agency.test>`,
     })
     const second = sent.find((m) => m.subject.includes('No name'))
-    assert.equal(second.from, `contact via ${col.slug}@collective.email <${col.slug}@collective.email>`)
+    assert.equal(second.from, `"contact via ${col.slug}@collective.email" <${col.slug}@collective.email>`)
 
     // a name that would break the header is defanged, not passed through
     sent.length = 0
@@ -826,7 +826,7 @@ test('notifications come "from" the person who wrote, on our own sending domain'
       '', 'hello',
     ].join('\r\n')))
     const custom = sent.find((m) => m.subject.includes('Custom domain'))
-    assert.equal(custom.from, `Marie Vandenberghe via hello@commonshub.brussels <${col.slug}@collective.email>`)
+    assert.equal(custom.from, `"Marie Vandenberghe via hello@commonshub.brussels" <${col.slug}@collective.email>`)
   } finally {
     __observeAppMail(null)
   }

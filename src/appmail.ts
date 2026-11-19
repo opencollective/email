@@ -27,6 +27,8 @@ export async function sendAppEmail(opts: {
    *  Must stay on our own sending domain (Resend verification + the inbound
    *  loop guard both depend on it). */
   from?: string
+  /** extra headers, e.g. our own Message-ID on notifications */
+  headers?: Record<string, string>
 }): Promise<boolean> {
   observer?.(opts)
   if (!cfg.resendKey) {
@@ -48,6 +50,7 @@ export async function sendAppEmail(opts: {
         html: opts.html,
         text: opts.text,
         ...(opts.replyTo ? { reply_to: [opts.replyTo] } : {}),
+        ...(opts.headers ? { headers: opts.headers } : {}),
       }),
     })
     if (!res.ok) {

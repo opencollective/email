@@ -7,7 +7,7 @@ import {
 import { sendAppEmail } from './appmail.js'
 import { outboundFrom, publicAddress } from './outbound.js'
 import { escapeHtml, excerpt, fmtDateTime, signToken, splitQuotedTail, waitingFor } from './util.js'
-import { mintNoteReplyAddress, mintReplyAddress } from './reply-tokens.js'
+import { mintNoteReplyAddress, mintReplyAddress, notificationMessageId } from './reply-tokens.js'
 import { noteParts } from './mentions.js'
 
 const threadUrl = (c: Collective, id: number) => `${cfg.baseUrl}/inbox/${c.slug}/thread/${id}`
@@ -48,13 +48,17 @@ const shell = (title: string, inner: string) => `
  *  what makes a list scannable at a glance, and keep authentication intact. */
 /** Strip what would break a quoted display name in a From/Reply-To header. */
 const clean = (v: string) => v.replace(/["\\<>\n\r]/g, '').trim()
+/** A display name and address, the name always quoted: "Carole via
+ *  hello@x.org" holds an @, and unquoted that is not a valid address header
+ *  (some mail apps then fail to read Reply-To and answer the From instead). */
+const mailbox = (name: string, address: string) => `"${clean(name)}" <${address}>`
 
 const notifyFrom = (collective: Collective, sender?: { name?: string | null; email?: string | null }) => {
   const who = sender ? clean(sender.name || (sender.email || '').split('@')[0] || '') : ''
   // "via <the address they wrote to>" — the same shape a group uses, and it
   // says which inbox this landed in when someone reads several of them
   const label = who ? `${who} via ${receivingAddress(collective)}` : clean(collective.name)
-  return `${label.slice(0, 78)} <${collective.slug}@${cfg.emailDomain}>`
+  return mailbox(label.slice(0, 78), `${collective.slug}@${cfg.emailDomain}`)
 }
 
 /** The address the outside world writes to: the custom one for Pro domains,
@@ -273,7 +277,9 @@ export async function notifyInbound(
       text,
       from: notifyFrom(collective, { name: message.from_name, email: message.from_email }),
       // the compose window then shows "Rūta … via hello@… " instead of a token
-      replyTo: `${notifyFrom(collective, { name: message.from_name, email: message.from_email }).split(' <')[0]} <${await mintReplyAddress(collective.slug, message.from_email, thread.id, m.id, message.id)}>`,
+      replyTo: mailbox(notifyFrom(collective, { name: message.from_name, email: message.from_email }).split(' <')[0],
+        await mintReplyAddress(collective.slug, message.from_email, thread.id, m.id, message.id)),
+      headers: { 'Message-ID': notificationMessageId('reply', thread.id, message.id, m.id) },
     })
   }
 }
@@ -342,7 +348,8 @@ export async function notifyMention(
       from: notifyFrom(collective, { name: author.name, email: author.email }),
       // a note-kind address: replying files an internal note, and cannot reach
       // the outside sender even by accident
-      replyTo: `${clean(`${authorName} · internal note`)} <${await mintNoteReplyAddress(collective.slug, thread.id, m.id, author.id)}>`,
+      replyTo: mailbox(`${authorName} · internal note`, await mintNoteReplyAddress(collective.slug, thread.id, m.id, author.id)),
+      headers: { 'Message-ID': notificationMessageId('note', thread.id, 0, m.id, author.id) },
     })
   }
 }

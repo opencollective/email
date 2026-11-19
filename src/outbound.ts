@@ -12,9 +12,11 @@ import { assertCanSend, assertRecipientCap } from './billing.js'
 export function outboundFrom(collective: Collective): { fromAddress: string; fromHeader: string } {
   const custom = collective.plan === 'pro' && collective.custom_domain && collective.custom_local
   const addr = publicAddress(collective)
-  if (custom && collective.domain_status === 'verified') return { fromAddress: addr, fromHeader: `${collective.name} <${addr}>` }
+  // the name is always quoted: a comma or an @ in it would otherwise break the header
+  const quoted = (n: string) => `"${n.replace(/["\\<>\r\n]/g, '').trim()}" <${addr}>`
+  if (custom && collective.domain_status === 'verified') return { fromAddress: addr, fromHeader: quoted(collective.name) }
   const name = custom ? `${collective.name} · ${collective.custom_local}@${collective.custom_domain}` : collective.name
-  return { fromAddress: addr, fromHeader: `${name} <${addr}>` }
+  return { fromAddress: addr, fromHeader: quoted(name) }
 }
 
 /** The collective's address as the world sees it: the custom one once its

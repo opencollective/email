@@ -211,7 +211,10 @@ export async function ingestInbound(
   //   → ordinary inbound, but claimed by that member so it never sits
   //   "unclaimed" in the inbox
   let counterpart = from
-  let teamAnswer = team && !!thread
+  // only an answer if it went to someone outside: a teammate's reply written
+  // to the inbox alone (a mail app that answered our notification's From)
+  // reached nobody, and must not make the thread look answered
+  let teamAnswer = team && !!thread && !!ext
   if (!thread && team && isReply && ext) { counterpart = ext; teamAnswer = true }
 
   // Sender rules: newsletters & co. get tagged and filed — closed, never
@@ -278,6 +281,15 @@ export async function ingestInbound(
   if (rule?.tag) await addTag(collective.id, thread.id, rule.tag, null, true)
   if (rule?.assign_member_id && !thread.assignee_member_id) {
     await setAssignee(thread, rule.assign_member_id, null, 'auto_sender')
+  }
+
+  // A teammate's reply that reached only the inbox: tell them straight away,
+  // with their text, so it can still go out. Silence here means a client
+  // believes they were answered when they never were.
+  if (team && member && !ext && isReply && !isAutoSubmitted(parsed) && !isForwardTest) {
+    await sendReplyFailure(collective, member, thread,
+      `It was addressed to ${[...tos, ...ccs].map((a) => a.address).filter(Boolean).join(', ') || 'the inbox'} — the shared inbox itself — so it was filed there and nobody outside received it. This happens when a mail app answers a notification's From instead of its Reply-To, or when the reply address is very old.`,
+      plainText(parsed, true)).catch((err) => console.error('[ingest] could not warn about an inbox-only reply:', err))
   }
 
   // The answer's author claims the thread. A member's genuine question or

@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import { cfg } from './config.js'
 import { get, run } from './db.js'
-import { now, parseReplyAddress } from './util.js'
+import { hmac, now, parseReplyAddress } from './util.js'
 
 /** Reply addresses that say what they do:
  *
@@ -16,6 +16,11 @@ import { now, parseReplyAddress } from './util.js'
  *  real-world clients mangle — so: not that. */
 
 const TOKEN_LEN = 10
+/** How long a reply address keeps working. Long on purpose: people answer a
+ *  notification weeks later, and an address that has quietly stopped working
+ *  loses their answer. The address alone never sends anything — the From must
+ *  be the member it was minted for, and pass DMARC. */
+export const TOKEN_DAYS = 120
 const ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789'
 const shortToken = () =>
   Array.from(crypto.randomBytes(TOKEN_LEN), (b) => ALPHABET[b % ALPHABET.length]).join('')
@@ -52,7 +57,7 @@ async function mint(
   const token = shortToken()
   await run(`INSERT INTO reply_tokens (token, slug, thread_id, member_id, message_id, kind, author_member_id, expires_at, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [token, slug, threadId, memberId, msgId, kind, authorMemberId, now() + 60 * 60 * 24 * 14, now()])
+    [token, slug, threadId, memberId, msgId, kind, authorMemberId, now() + TOKEN_DAYS * 86400, now()])
   if (Math.random() < 0.05) await run('DELETE FROM reply_tokens WHERE expires_at < ?', [now()]).catch(() => {})
   // local parts are capped at 64 chars (RFC 5321) — the friendly part absorbs the cut
   const fixed = `-via-${slug}+${token}`
@@ -98,4 +103,35 @@ export async function resolveReplyAddress(addr: string): Promise<ReplyRef | null
   // legacy signed addresses only ever meant "answer the sender"
   const legacy = parseReplyAddress(addr)
   return legacy ? { ...legacy, kind: 'reply', authorMemberId: null } : null
+}
+
+/** The Message-ID we give each notification: signed, and saying which thread,
+ *  message and member it was for. A mail app that ignores Reply-To (or a
+ *  reply to an address that has expired) still carries it in In-Reply-To /
+ *  References, so the answer can find its way back to the right thread
+ *  instead of landing in the inbox as a new email nobody outside receives. */
+export function notificationMessageId(kind: ReplyKind, threadId: number, msgId: number, memberId: number, authorMemberId = 0): string {
+  const body = `${kind === 'note' ? 'nn' : 'nr'}.${threadId}.${msgId}.${memberId}.${authorMemberId}`
+  return `<${body}.${hmac(`notif:${body}`, 16)}@${cfg.emailDomain}>`
+}
+
+/** The notification an email answers, from its In-Reply-To / References. */
+export async function refFromReferences(ids: string[]): Promise<ReplyRef | null> {
+  const domain = cfg.emailDomain.replace(/\./g, '\\.')
+  const re = new RegExp(`^<?(n[rn])\\.(\\d+)\\.(\\d+)\\.(\\d+)\\.(\\d+)\\.([A-Za-z0-9_-]+)@${domain}>?$`)
+  for (const raw of ids) {
+    const m = String(raw || '').trim().match(re)
+    if (!m) continue
+    const [, k, t, msg, mem, author, sig] = m
+    const body = `${k}.${t}.${msg}.${mem}.${author}`
+    if (sig !== hmac(`notif:${body}`, 16)) continue
+    const thread = await get<{ collective_id: number }>('SELECT collective_id FROM threads WHERE id = ?', [Number(t)])
+    const col = thread ? await get<{ slug: string }>('SELECT slug FROM collectives WHERE id = ?', [thread.collective_id]) : undefined
+    if (!col) continue
+    return {
+      slug: col.slug, threadId: Number(t), memberId: Number(mem), msgId: Number(msg),
+      kind: k === 'nn' ? 'note' : 'reply', authorMemberId: Number(author) || null,
+    }
+  }
+  return null
 }
